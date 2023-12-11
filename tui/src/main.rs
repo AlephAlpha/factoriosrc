@@ -1,7 +1,7 @@
-use factoriosrc::{Config, ConfigError, World};
+use factoriosrc_lib::{Config, ConfigError, World};
 
 fn main() -> Result<(), ConfigError> {
-    let config = Config::new(10, 10, 2);
+    let config = Config::new(5, 5, 2);
     let mut world = World::new(config)?;
 
     world.search(None);
