@@ -2,6 +2,8 @@ use crate::{
     error::{ConfigError, ParseSymmetryError},
     rule::CellState,
 };
+#[cfg(feature = "clap")]
+use clap::{Args, ValueEnum};
 use std::{
     fmt::{self, Display, Formatter},
     str::FromStr,
@@ -16,19 +18,23 @@ use std::{
 /// The notation is borrowed from the Oscar Cunningham's
 /// [Logic Life Search](https://github.com/OscarCunningham/logic-life-search).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "clap", derive(ValueEnum))]
 pub enum Symmetry {
     /// No symmetry.
     #[default]
+    #[cfg_attr(feature = "clap", value(name = "C1"))]
     C1,
 
     /// Symmetry with respect to 180-degree rotation.
     ///
     /// This requires the world to have no translation.
+    #[cfg_attr(feature = "clap", value(name = "C2"))]
     C2,
 
     /// Symmetry with respect to 90-degree rotation.
     ///
     /// This requires the world to be square, have no diagonal width, and have no translation.
+    #[cfg_attr(feature = "clap", value(name = "C4"))]
     C4,
 
     /// Symmetry with respect to horizontal reflection.
@@ -36,6 +42,7 @@ pub enum Symmetry {
     /// Denoted by `D2|`.
     ///
     /// This requires the world to have no diagonal width, and have no horizontal translation.
+    #[cfg_attr(feature = "clap", value(name = "D2|"))]
     D2H,
 
     /// Symmetry with respect to vertical reflection.
@@ -43,6 +50,7 @@ pub enum Symmetry {
     /// Denoted by `D2-`.
     ///
     /// This requires the world to have no diagonal width, and have no vertical translation.
+    #[cfg_attr(feature = "clap", value(name = "D2-"))]
     D2V,
 
     /// Symmetry with respect to diagonal reflection.
@@ -50,6 +58,7 @@ pub enum Symmetry {
     /// Denoted by `D2\`.
     ///
     /// This requires the world to be square, and the horizontal and vertical translations to be equal.
+    #[cfg_attr(feature = "clap", value(name = "D2\\"))]
     D2D,
 
     /// Symmetry with respect to antidiagonal reflection.
@@ -57,6 +66,7 @@ pub enum Symmetry {
     /// Denoted by `D2/`.
     ///
     /// This requires the world to be square, and the horizontal and vertical translations to add up to zero.
+    #[cfg_attr(feature = "clap", value(name = "D2/"))]
     D2A,
 
     /// Symmetry with respect to both horizontal and vertical reflections.
@@ -64,6 +74,7 @@ pub enum Symmetry {
     /// Denoted by `D4+`.
     ///
     /// This requires the world to have no diagonal width, and have no translation.
+    #[cfg_attr(feature = "clap", value(name = "D4+"))]
     D4O,
 
     /// Symmetry with respect to both diagonal and antidiagonal reflections.
@@ -71,11 +82,13 @@ pub enum Symmetry {
     /// Denoted by `D4X`.
     ///
     /// This requires the world to be square, and have no translation.
+    #[cfg_attr(feature = "clap", value(name = "D4X"))]
     D4X,
 
     /// Symmetry with respect to all the above rotations and reflections.
     ///
     /// Requires the world to be square and have no diagonal width, and have no translation.
+    #[cfg_attr(feature = "clap", value(name = "D8"))]
     D8,
 }
 
@@ -175,6 +188,7 @@ impl Symmetry {
 ///
 /// This is used to determine how we find the next unknown cell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "clap", derive(ValueEnum))]
 pub enum SearchOrder {
     /// Search in row-major order.
     ///
@@ -183,6 +197,7 @@ pub enum SearchOrder {
     /// 4 5 6
     /// 7 8 9
     /// ```
+    #[cfg_attr(feature = "clap", value(name = "row", alias = "r"))]
     RowFirst,
 
     /// Search in column-major order.
@@ -192,6 +207,7 @@ pub enum SearchOrder {
     /// 2 5 8
     /// 3 6 9
     /// ```
+    #[cfg_attr(feature = "clap", value(name = "column", alias = "c"))]
     ColumnFirst,
 
     /// Search in diagonal order.
@@ -205,11 +221,13 @@ pub enum SearchOrder {
     /// This is useful for finding diagonal spaceships.
     ///
     /// This requires the world to be square.
+    #[cfg_attr(feature = "clap", value(name = "diagonal", alias = "d"))]
     Diagonal,
 }
 
 /// Configuration for the search.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "clap", derive(Args))]
 pub struct Config {
     /// Width of the world.
     pub width: usize,
@@ -218,16 +236,25 @@ pub struct Config {
     pub height: usize,
 
     /// Period of the pattern.
+    #[cfg_attr(feature = "clap", arg(default_value = "1"))]
     pub period: usize,
 
     /// Horizontal translation of the world.
     ///
     /// The pattern is translated by `x` cells to the left in each period.
+    #[cfg_attr(
+        feature = "clap",
+        arg(short = 'x', long, allow_negative_numbers = true, default_value = "0")
+    )]
     pub dx: isize,
 
     /// Vertical translation of the world.
     ///
     /// The pattern is translated by `y` cells upwards in each period.
+    #[cfg_attr(
+        feature = "clap",
+        arg(short = 'y', long, allow_negative_numbers = true, default_value = "0")
+    )]
     pub dy: isize,
 
     /// Diagonal width of the world.
@@ -238,17 +265,21 @@ pub struct Config {
     /// This is useful for finding diagonal spaceships.
     ///
     /// If this is not `None`, then the world must be square.
+    #[cfg_attr(feature = "clap", arg(short, long))]
     pub diagonal_width: Option<usize>,
 
     /// Symmetry of the pattern.
+    #[cfg_attr(feature = "clap", arg(short, long, value_enum, default_value = "C1"))]
     pub symmetry: Symmetry,
 
     /// Search order.
     ///
     /// `None` means that the search order is automatically determined.
+    #[cfg_attr(feature = "clap", arg(short = 'o', long, value_enum))]
     pub search_order: Option<SearchOrder>,
 
     /// The first state to try for an unknown cell.
+    #[cfg_attr(feature = "clap", arg(short, long, value_enum, default_value = "dead"))]
     pub new_state: CellState,
 }
 

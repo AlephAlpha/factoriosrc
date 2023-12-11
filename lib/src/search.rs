@@ -82,7 +82,7 @@ impl World {
     ///
     /// If a conflict is found, return `None`.
     fn check_affected(&mut self, id: CellId) -> Option<()> {
-        if self.use_front && self.front_count == 0 {
+        if self.front_count == 0 {
             return None;
         }
 
@@ -196,8 +196,9 @@ impl World {
     /// Search for a solution, or until the maximum number of steps is reached.
     ///
     /// Update and return the search status.
-    pub fn search(&mut self, max_steps: Option<usize>) -> Status {
+    pub fn search(&mut self, max_steps: impl Into<Option<usize>>) -> Status {
         let mut steps = 0;
+        let max_steps = max_steps.into();
         let mut status = Status::Running;
 
         while !max_steps.is_some_and(|max_steps| steps >= max_steps) {

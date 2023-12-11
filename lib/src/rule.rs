@@ -4,6 +4,8 @@
 //! - A dead cell comes to life if it has exactly 3 living neighbors.
 //! - A living cell stays alive if it has exactly 2 living neighbors.
 
+#[cfg(feature = "clap")]
+use clap::ValueEnum;
 use enumflags2::{bitflags, BitFlags};
 use std::{
     fmt::{self, Debug, Formatter},
@@ -11,12 +13,15 @@ use std::{
 };
 
 /// The state of a known cell.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "clap", derive(ValueEnum))]
 pub enum CellState {
     /// The cell is dead.
+    #[cfg_attr(feature = "clap", value(name = "dead", aliases = ["d", "0"]))]
     Dead = 0b01,
 
     /// The cell is alive.
+    #[cfg_attr(feature = "clap", value(name = "alive", aliases = ["a", "1"]))]
     Alive = 0b10,
 }
 

@@ -50,11 +50,6 @@ pub struct World {
     /// depending on the search order.
     ///
     /// This is used to ensure that the front is always non-empty.
-    pub(crate) front_count: usize,
-
-    /// Whether to use the front heuristic.
-    ///
-    /// If this is `true`, the search will ensure that the front is always non-empty.
     ///
     /// If we find a pattern where the front is always empty, we can move the whole pattern
     /// one cell towards the front, and the pattern will still be valid.
@@ -62,7 +57,9 @@ pub struct World {
     /// This will reduce the search space.
     ///
     /// However, some symmetries may disallow such a move.
-    pub(crate) use_front: bool,
+    /// In that case, we will view the whole pattern at the first generation as the front,
+    /// so that we won't find an empty pattern.
+    pub(crate) front_count: usize,
 
     /// A stack for backtracking.
     ///
@@ -101,7 +98,6 @@ impl World {
             rule,
             cells,
             front_count: 0,
-            use_front: false,
             stack: Vec::with_capacity(size),
             stack_index: 0,
             start: None,
@@ -170,13 +166,15 @@ impl World {
 
     /// For each cell, check if it is on the front.
     fn init_front(&mut self) {
+        let mut use_front = false;
+
         match self.config.search_order.unwrap() {
             // If the search order is row-first, the front is the first row.
             SearchOrder::RowFirst => {
                 if self.config.symmetry.is_subgroup_of(Symmetry::D2H)
                     && self.config.diagonal_width.is_none()
                 {
-                    self.use_front = true;
+                    use_front = true;
 
                     // If dx is zero, a pattern is still valid if we reflect it horizontally.
                     // So we only need to consider the left half of the first row.
@@ -202,7 +200,7 @@ impl World {
                 if self.config.symmetry.is_subgroup_of(Symmetry::D2V)
                     && self.config.diagonal_width.is_none()
                 {
-                    self.use_front = true;
+                    use_front = true;
 
                     // If dy is zero, a pattern is still valid if we reflect it vertically.
                     // So we only need to consider the top half of the first column.
@@ -226,7 +224,7 @@ impl World {
             // If the search order is diagonal, the front is both the first row and the first column.
             SearchOrder::Diagonal => {
                 if self.config.symmetry.is_subgroup_of(Symmetry::D2D) {
-                    self.use_front = true;
+                    use_front = true;
 
                     let d = self.config.diagonal_width.unwrap_or(self.config.width);
 
@@ -250,6 +248,17 @@ impl World {
                             }
                         }
                     }
+                }
+            }
+        }
+
+        // If `use_front` is false, the front is the whole pattern at the first generation.
+        if !use_front {
+            for x in 0..self.config.width as isize {
+                for y in 0..self.config.height as isize {
+                    let id = self.get_cell_id_by_coord((x, y, 0)).unwrap();
+                    self.get_cell_mut(id).is_front = true;
+                    self.front_count += 1;
                 }
             }
         }
@@ -304,13 +313,13 @@ impl World {
                     let id = self.get_cell_id_by_coord((x, y, t)).unwrap();
 
                     let predecessor_coord = if t == 0 {
-                        (x + self.config.dx, y + self.config.dy, p - 1)
+                        (x - self.config.dx, y - self.config.dy, p - 1)
                     } else {
                         (x, y, t - 1)
                     };
 
                     let successor_coord = if t == p - 1 {
-                        (x - self.config.dx, y - self.config.dy, 0)
+                        (x + self.config.dx, y + self.config.dy, 0)
                     } else {
                         (x, y, t + 1)
                     };
@@ -537,7 +546,7 @@ impl World {
         }
 
         // If the cell is on the front, update the front count.
-        if self.use_front && self.get_cell(id).is_front && state == CellState::Dead {
+        if self.get_cell(id).is_front && state == CellState::Dead {
             self.front_count -= 1;
         }
 
@@ -571,7 +580,7 @@ impl World {
         }
 
         // If the cell is on the front, update the front count.
-        if self.use_front && self.get_cell(id).is_front && state == CellState::Dead {
+        if self.get_cell(id).is_front && state == CellState::Dead {
             self.front_count += 1;
         }
     }
