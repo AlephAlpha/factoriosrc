@@ -28,6 +28,7 @@ pub enum CellState {
 impl Not for CellState {
     type Output = Self;
 
+    #[inline]
     fn not(self) -> Self::Output {
         match self {
             Self::Dead => Self::Alive,

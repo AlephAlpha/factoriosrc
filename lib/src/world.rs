@@ -590,6 +590,7 @@ impl World {
     /// If the cell is outside the world, it is considered to be dead.
     ///
     /// If the cell is unknown, return `None`.
+    #[inline]
     pub fn get_cell_state(&self, coord: Coord) -> Option<CellState> {
         if let Some(id) = self.get_cell_id_by_coord(coord) {
             self.get_cell(id).state
@@ -599,11 +600,13 @@ impl World {
     }
 
     /// Get the search status.
+    #[inline]
     pub fn get_status(&self) -> Status {
         self.status
     }
 
     /// Get the configuration.
+    #[inline]
     pub fn get_config(&self) -> &Config {
         &self.config
     }

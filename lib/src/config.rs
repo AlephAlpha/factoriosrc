@@ -285,6 +285,7 @@ pub struct Config {
 
 impl Config {
     /// Creates a new configuration.
+    #[inline]
     pub fn new(width: usize, height: usize, period: usize) -> Self {
         Self {
             width,
@@ -300,6 +301,7 @@ impl Config {
     }
 
     /// Sets horizontal and vertical translations.
+    #[inline]
     pub fn with_translations(mut self, dx: isize, dy: isize) -> Self {
         self.dx = dx;
         self.dy = dy;
@@ -307,30 +309,35 @@ impl Config {
     }
 
     /// Sets the diagonal width.
+    #[inline]
     pub fn with_diagonal_width(mut self, diagonal_width: usize) -> Self {
         self.diagonal_width = Some(diagonal_width);
         self
     }
 
     /// Sets the symmetry.
+    #[inline]
     pub fn with_symmetry(mut self, symmetry: Symmetry) -> Self {
         self.symmetry = symmetry;
         self
     }
 
     /// Sets the search order.
+    #[inline]
     pub fn with_search_order(mut self, search_order: SearchOrder) -> Self {
         self.search_order = Some(search_order);
         self
     }
 
     /// Sets the first state to try for an unknown cell.
+    #[inline]
     pub fn with_new_state(mut self, new_state: CellState) -> Self {
         self.new_state = new_state;
         self
     }
 
     /// Whether the configuration requires the world to be square.
+    #[inline]
     pub fn requires_square(&self) -> bool {
         self.symmetry.requires_square()
             || self.diagonal_width.is_some()

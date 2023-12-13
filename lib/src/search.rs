@@ -127,8 +127,10 @@ impl World {
     /// Backtrack to the last cell whose state was chosen as a guess,
     /// and deduce that it should be the opposite state.
     ///
-    /// If this goes back to the time before the search started, return `None`.
-    fn backtrack(&mut self) -> Option<()> {
+    /// Return the status of the search after backtracking:
+    /// - If this goes back to the time before the search started, return `Unsolvable`.
+    /// - Otherwise, return `Running`.
+    fn backtrack(&mut self) -> Status {
         while let Some((id, reason)) = self.stack.pop() {
             match reason {
                 Reason::Known => break,
@@ -139,12 +141,12 @@ impl World {
                     self.start = self.get_cell(id).next;
                     self.unset_cell(id);
                     self.set_cell(id, !state, Reason::Deduced);
-                    return Some(());
+                    return Status::Running;
                 }
             }
         }
 
-        None
+        Status::Unsolvable
     }
 
     /// Find a cell whose state is unknown, and make a guess.
@@ -181,14 +183,50 @@ impl World {
             }
         } else {
             // Backtrack.
-            if let Some(()) = self.backtrack() {
-                // Try the other state.
-                Status::Running
-            } else {
-                // The search has failed.
-                Status::Unsolvable
+            self.backtrack()
+        }
+    }
+
+    /// When a pattern is found, check that its period is correct.
+    ///
+    /// For example, when we are searching for a period 4 oscillator,
+    /// we need to exclude still lifes and period 2 oscillators.
+    fn check_period(&self) -> bool {
+        let (w, h, p) = (
+            self.config.width as isize,
+            self.config.height as isize,
+            self.config.period as isize,
+        );
+        let dx = self.config.dx;
+        let dy = self.config.dy;
+
+        // The actual period of the pattern must be a divisor of the period we are searching for.
+
+        'd: for d in 2..=p {
+            if p % d == 0 && dx % d == 0 && dy % d == 0 {
+                // Check that if the actual period is p / d.
+                // If so, return false.
+
+                let p0 = p / d;
+                let dx0 = dx / d;
+                let dy0 = dy / d;
+
+                // We only need to check the cells in the first generation.
+                for x in 0..w {
+                    for y in 0..h {
+                        let state0 = self.get_cell_state((x, y, 0));
+                        let state1 = self.get_cell_state((x - dx0, y - dy0, p0));
+                        if state0 != state1 {
+                            continue 'd;
+                        }
+                    }
+                }
+
+                return false;
             }
         }
+
+        true
     }
 
     /// The main loop of the search.
@@ -203,6 +241,13 @@ impl World {
 
         while !max_steps.is_some_and(|max_steps| steps >= max_steps) {
             status = self.step();
+
+            // If a pattern is found, check that its period is correct,
+            // and backtrack if not.
+            if status == Status::Solved && !self.check_period() {
+                status = self.backtrack();
+            }
+
             steps += 1;
 
             if status != Status::Running {

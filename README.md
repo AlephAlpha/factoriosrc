@@ -28,6 +28,6 @@ cargo run --release -- 30 10 2 -x 1 -s "D2-"
 
 Currently it simply prints the intermediate results every 100000 steps to the standard output. So there may be a lot of output.
 
-If the search takes too long, you press `Ctrl+C` to stop.
+If the search takes too long, you can press `Ctrl+C` to stop.
 
 The program is still work in progress, so the usage may change in the future.
