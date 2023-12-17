@@ -62,9 +62,11 @@ impl World {
                 CellState::Dead
             };
 
-            for neighbor_id in self.get_cell(id).neighborhood.into_iter().flatten() {
-                if self.get_cell(neighbor_id).state.is_none() {
-                    self.set_cell(neighbor_id, state, Reason::Deduced);
+            for i in 0..self.rule.neighborhood_size {
+                if let Some(neighbor_id) = self.get_cell(id).neighborhood[i] {
+                    if self.get_cell(neighbor_id).state.is_none() {
+                        self.set_cell(neighbor_id, state, Reason::Deduced);
+                    }
                 }
             }
         }
@@ -100,8 +102,10 @@ impl World {
 
         self.check_descriptor(id)?;
 
-        for neighbor_id in self.get_cell(id).neighborhood.into_iter().flatten() {
-            self.check_descriptor(neighbor_id)?;
+        for i in 0..self.rule.neighborhood_size {
+            if let Some(neighbor_id) = self.get_cell(id).neighborhood[i] {
+                self.check_descriptor(neighbor_id)?;
+            }
         }
 
         if let Some(predecessor_id) = self.get_cell(id).predecessor {
@@ -238,6 +242,11 @@ impl World {
         let mut steps = 0;
         let max_steps = max_steps.into();
         let mut status = Status::Running;
+
+        // If the current status is `Solved`, backtrack to find the next solution.
+        if self.status == Status::Solved {
+            status = self.backtrack();
+        }
 
         while !max_steps.is_some_and(|max_steps| steps >= max_steps) {
             status = self.step();

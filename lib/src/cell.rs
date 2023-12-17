@@ -1,4 +1,4 @@
-use crate::rule::{CellState, Descriptor, Factorio};
+use crate::rule::{CellState, Descriptor, MAX_NEIGHBORHOOD_SIZE};
 use std::default::Default;
 
 /// A cell in the cellular automaton.
@@ -19,7 +19,7 @@ pub(crate) struct LifeCell {
     pub(crate) successor: Option<CellId>,
 
     /// The neighborhood of the cell.
-    pub(crate) neighborhood: [Option<CellId>; Factorio::NEIGHBORHOOD_SIZE],
+    pub(crate) neighborhood: [Option<CellId>; MAX_NEIGHBORHOOD_SIZE],
 
     /// Cells that are known to be equal to this cell because of the symmetry.
     pub(crate) symmetry: Vec<CellId>,
@@ -40,7 +40,7 @@ impl Default for LifeCell {
             descriptor: Descriptor::default(),
             predecessor: None,
             successor: None,
-            neighborhood: [None; Factorio::NEIGHBORHOOD_SIZE],
+            neighborhood: [None; MAX_NEIGHBORHOOD_SIZE],
             symmetry: Vec::new(),
             next: None,
             is_front: false,

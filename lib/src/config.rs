@@ -1,6 +1,6 @@
 use crate::{
     error::{ConfigError, ParseSymmetryError},
-    rule::CellState,
+    rule::{CellState, Rule},
 };
 #[cfg(feature = "clap")]
 use clap::{Args, ValueEnum};
@@ -229,6 +229,13 @@ pub enum SearchOrder {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "clap", derive(Args))]
 pub struct Config {
+    /// The cellular automaton rule.
+    #[cfg_attr(
+        feature = "clap",
+        arg(short, long, value_enum, default_value = "factorio")
+    )]
+    pub rule: Rule,
+
     /// Width of the world.
     pub width: usize,
 
@@ -286,8 +293,9 @@ pub struct Config {
 impl Config {
     /// Creates a new configuration.
     #[inline]
-    pub fn new(width: usize, height: usize, period: usize) -> Self {
+    pub fn new(rule: Rule, width: usize, height: usize, period: usize) -> Self {
         Self {
+            rule,
             width,
             height,
             period,

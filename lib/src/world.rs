@@ -2,7 +2,7 @@ use crate::{
     cell::{CellId, LifeCell},
     config::{Config, SearchOrder, Symmetry},
     error::ConfigError,
-    rule::{CellState, Factorio},
+    rule::{CellState, RuleTable},
 };
 use std::fmt::Write;
 
@@ -36,12 +36,13 @@ pub enum Status {
 }
 
 /// The main struct. It contains the world and some other data.
+#[derive(Debug)]
 pub struct World {
     /// The configuration of the world.
     pub(crate) config: Config,
 
-    /// The rule object.
-    pub(crate) rule: Factorio,
+    /// The rule table.
+    pub(crate) rule: RuleTable,
 
     /// The world itself. A list of cells.
     pub(crate) cells: Vec<LifeCell>,
@@ -84,14 +85,13 @@ impl World {
     pub fn new(config: Config) -> Result<Self, ConfigError> {
         let config = config.check()?;
 
+        let rule = config.rule.table();
+
         // Number of cells in the world.
-        let size = (config.width + 2 * Factorio::RADIUS)
-            * (config.height + 2 * Factorio::RADIUS)
-            * config.period;
+        let size =
+            (config.width + 2 * rule.radius) * (config.height + 2 * rule.radius) * config.period;
 
         let cells = vec![LifeCell::default(); size];
-
-        let rule = Factorio::new();
 
         let mut world = Self {
             config,
@@ -118,7 +118,7 @@ impl World {
             self.config.height as isize,
             self.config.period as isize,
         );
-        let r = Factorio::RADIUS as isize;
+        let r = self.rule.radius as isize;
 
         println!("w = {}, h = {}, p = {}", w, h, p);
         println!("States of all cells:");
@@ -274,25 +274,26 @@ impl World {
             self.config.height as isize,
             self.config.period as isize,
         );
-        let r = Factorio::RADIUS as isize;
+        let r = self.rule.radius as isize;
 
         for x in -r..w + r {
             for y in -r..h + r {
                 for t in 0..p {
                     let id = self.get_cell_id_by_coord((x, y, t)).unwrap();
 
-                    let neighborhood = Factorio::OFFSETS
-                        .map(|(ox, oy)| self.get_cell_id_by_coord((x + ox, y + oy, t)));
+                    for i in 0..self.rule.neighborhood_size {
+                        let (ox, oy) = self.rule.offsets[i];
+                        let neighbor_coord = (x + ox, y + oy, t);
+                        let neighbor_id = self.get_cell_id_by_coord(neighbor_coord);
 
-                    // If some neighbor is outside the world, the state of that neighbor is assumed to be dead.
-                    // So we update the neighborhood descriptor of the cell here.
-                    for neighbor_id in neighborhood {
+                        self.get_cell_mut(id).neighborhood[i] = neighbor_id;
+
+                        // If some neighbor is outside the world, the state of that neighbor is assumed to be dead.
+                        // So we update the neighborhood descriptor of the cell here.
                         if neighbor_id.is_none() {
                             self.get_cell_mut(id).descriptor.increment_dead();
                         }
                     }
-
-                    self.get_cell_mut(id).neighborhood = neighborhood;
                 }
             }
         }
@@ -305,7 +306,7 @@ impl World {
             self.config.height as isize,
             self.config.period as isize,
         );
-        let r = Factorio::RADIUS as isize;
+        let r = self.rule.radius as isize;
 
         for x in -r..w + r {
             for y in -r..h + r {
@@ -350,7 +351,7 @@ impl World {
             self.config.height as isize,
             self.config.period as isize,
         );
-        let r = Factorio::RADIUS as isize;
+        let r = self.rule.radius as isize;
 
         for x in -r..w + r {
             for y in -r..h + r {
@@ -413,7 +414,7 @@ impl World {
             self.config.height as isize,
             self.config.period as isize,
         );
-        let r = Factorio::RADIUS as isize;
+        let r = self.rule.radius as isize;
 
         for x in -r..w + r {
             for y in -r..h + r {
@@ -511,7 +512,7 @@ impl World {
             self.config.height as isize,
             self.config.period as isize,
         );
-        let r = Factorio::RADIUS as isize;
+        let r = self.rule.radius as isize;
 
         if (-r..w + r).contains(&x) && (-r..h + r).contains(&y) && (0..p).contains(&t) {
             let index = t + (x + r) * p + (y + r) * p * (w + 2 * r);
@@ -530,12 +531,14 @@ impl World {
         // Update the neighborhood descriptor of the cell, its neighbors and predecessor.
         cell.descriptor.set_current(state);
 
-        for neighbor_id in self.get_cell(id).neighborhood.into_iter().flatten() {
-            let neighbor = self.get_cell_mut(neighbor_id);
+        for i in 0..self.rule.neighborhood_size {
+            if let Some(neighbor_id) = self.get_cell(id).neighborhood[i] {
+                let neighbor = self.get_cell_mut(neighbor_id);
 
-            match state {
-                CellState::Dead => neighbor.descriptor.increment_dead(),
-                CellState::Alive => neighbor.descriptor.increment_alive(),
+                match state {
+                    CellState::Dead => neighbor.descriptor.increment_dead(),
+                    CellState::Alive => neighbor.descriptor.increment_alive(),
+                }
             }
         }
 
@@ -564,12 +567,14 @@ impl World {
         // Update the neighborhood descriptor of the cell, its neighbors and predecessor.
         cell.descriptor.set_current(state);
 
-        for neighbor_id in self.get_cell(id).neighborhood.into_iter().flatten() {
-            let neighbor = self.get_cell_mut(neighbor_id);
+        for i in 0..self.rule.neighborhood_size {
+            if let Some(neighbor_id) = self.get_cell(id).neighborhood[i] {
+                let neighbor = self.get_cell_mut(neighbor_id);
 
-            match state {
-                CellState::Dead => neighbor.descriptor.decrement_dead(),
-                CellState::Alive => neighbor.descriptor.decrement_alive(),
+                match state {
+                    CellState::Dead => neighbor.descriptor.decrement_dead(),
+                    CellState::Alive => neighbor.descriptor.decrement_alive(),
+                }
             }
         }
 
@@ -631,7 +636,7 @@ impl World {
 
         let t = t.rem_euclid(p);
 
-        writeln!(s, "x = {}, y = {}, rule = {}", w, h, Factorio::NAME).unwrap();
+        writeln!(s, "x = {}, y = {}, rule = {}", w, h, self.rule.name).unwrap();
 
         for y in 0..h {
             for x in 0..w {

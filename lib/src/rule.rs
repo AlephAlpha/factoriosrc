@@ -1,9 +1,4 @@
-//! Currently Factorio (R3,C2,S2,B3,N+) is the only supported rule.
-//!
-//! In this rule, a cell has 12 neighbors in a cross shape.
-//! - A dead cell comes to life if it has exactly 3 living neighbors.
-//! - A living cell stays alive if it has exactly 2 living neighbors.
-
+use crate::error::RuleError;
 #[cfg(feature = "clap")]
 use clap::ValueEnum;
 use enumflags2::{bitflags, BitFlags};
@@ -37,6 +32,10 @@ impl Not for CellState {
     }
 }
 
+/// Currently, the numbers of living and dead neighbors are represented by 4-bit integers
+/// in the neighborhood descriptor. So the neighborhood size is limited to 15.
+pub const MAX_NEIGHBORHOOD_SIZE: usize = 15;
+
 /// The neighborhood descriptor.
 ///
 /// A 12-bit integer value that represents the state of a cell and its neighbors.
@@ -57,9 +56,6 @@ impl Debug for Descriptor {
         let successor = (self.0 >> 2) & 0b11;
         let current = self.0 & 0b11;
 
-        assert!(dead + alive <= Factorio::NEIGHBORHOOD_SIZE as u16);
-        assert!(successor < 3 && current < 3);
-
         let successor = match successor {
             0b00 => None,
             0b01 => Some(CellState::Dead),
@@ -74,11 +70,13 @@ impl Debug for Descriptor {
             _ => unreachable!(),
         };
 
-        write!(
-            f,
-            "Descriptor {{ dead: {}, alive: {}, successor: {:?}, current: {:?}, value: {:b} }}",
-            dead, alive, successor, current, self.0
-        )
+        f.debug_struct("Descriptor")
+            .field("dead", &dead)
+            .field("alive", &alive)
+            .field("successor", &successor)
+            .field("current", &current)
+            .field("value", &format_args!("{:#014b}", self.0))
+            .finish()
     }
 }
 
@@ -89,7 +87,7 @@ impl Descriptor {
         successor: impl Into<Option<CellState>>,
         current: impl Into<Option<CellState>>,
     ) -> Self {
-        assert!(dead + alive <= Factorio::NEIGHBORHOOD_SIZE);
+        debug_assert!(dead + alive <= MAX_NEIGHBORHOOD_SIZE);
 
         let dead = dead as u16;
         let alive = alive as u16;
@@ -99,12 +97,12 @@ impl Descriptor {
     }
 
     pub(crate) fn increment_dead(&mut self) {
-        debug_assert!((self.0 >> 8) & 0b1111 < 12);
+        debug_assert!((self.0 >> 8) & 0b1111 < MAX_NEIGHBORHOOD_SIZE as u16);
         self.0 += 1 << 8;
     }
 
     pub(crate) fn increment_alive(&mut self) {
-        debug_assert!((self.0 >> 4) & 0b1111 < 12);
+        debug_assert!((self.0 >> 4) & 0b1111 < MAX_NEIGHBORHOOD_SIZE as u16);
         self.0 += 1 << 4;
     }
 
@@ -123,7 +121,7 @@ impl Descriptor {
     /// If the successor cell is known, sets it to unknown. In this case,
     /// the `state` argument should be equal to its current state.
     pub(crate) fn set_successor(&mut self, state: CellState) {
-        debug_assert!((self.0 >> 2) & 0b11 < 3);
+        debug_assert!((self.0 >> 2) & 0b11 == 0b00 || (self.0 >> 2) & 0b11 == state as u16);
         self.0 ^= (state as u16) << 2;
     }
 
@@ -132,7 +130,7 @@ impl Descriptor {
     /// If the current cell is known, sets it to unknown. In this case,
     /// the `state` argument should be equal to its current state.
     pub(crate) fn set_current(&mut self, state: CellState) {
-        debug_assert!(self.0 & 0b11 < 3);
+        debug_assert!(self.0 & 0b11 == 0b00 || self.0 & 0b11 == state as u16);
         self.0 ^= state as u16;
     }
 }
@@ -164,69 +162,194 @@ pub(crate) enum Implication {
     NeighborhoodDead,
 }
 
-/// The Factorio rule.
+/// The neighborhood type of a rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum NeighborhoodType {
+    /// The Moore neighborhood.
+    Moore,
+
+    /// The von Neumann neighborhood.
+    VonNeumann,
+
+    /// The cross neighborhood.
+    Cross,
+}
+
+impl NeighborhoodType {
+    /// Gets the offsets of the neighbors.
+    pub fn offsets(self, radius: usize) -> Vec<(isize, isize)> {
+        let radius = radius as isize;
+        match self {
+            Self::Moore => {
+                let mut offsets = Vec::new();
+                for x in -radius..=radius {
+                    for y in -radius..=radius {
+                        if x != 0 || y != 0 {
+                            offsets.push((x, y));
+                        }
+                    }
+                }
+                offsets.sort();
+                offsets
+            }
+            Self::VonNeumann => {
+                let mut offsets = Vec::new();
+                for x in -radius..=radius {
+                    for y in -radius..=radius {
+                        if x.abs() + y.abs() <= radius && (x != 0 || y != 0) {
+                            offsets.push((x, y));
+                        }
+                    }
+                }
+                offsets.sort();
+                offsets
+            }
+            Self::Cross => {
+                let mut offsets = Vec::new();
+                for x in -radius..=radius {
+                    if x != 0 {
+                        offsets.push((x, 0));
+                    }
+                }
+                for y in -radius..=radius {
+                    if y != 0 {
+                        offsets.push((0, y));
+                    }
+                }
+                offsets.sort();
+                offsets
+            }
+        }
+    }
+}
+
+/// A enum of all supported rules.
 ///
-/// In this rule, a cell has 12 neighbors in a cross shape.
-/// - A dead cell comes to life if it has exactly 3 living neighbors.
-/// - A living cell stays alive if it has exactly 2 living neighbors.
+/// Currently only two rules are supported: Factorio (`R3,C2,S2,B3,N+`),
+/// and Conway's Game of Life (`B3/S23`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "clap", derive(ValueEnum))]
+pub enum Rule {
+    /// Factorio (`R3,C2,S2,B3,N+`).
+    Factorio,
+
+    /// Conway's Game of Life (`B3/S23`).
+    Life,
+}
+
+impl Rule {
+    /// Creates a rule table from a rule.
+    pub fn table(self) -> RuleTable {
+        match self {
+            Self::Factorio => RuleTable::factorio(),
+            Self::Life => RuleTable::life(),
+        }
+    }
+}
+
+/// The lookup table and other information of a totalistic rule.
 ///
-/// This struct contains a lookup table for all possible neighborhood descriptors.
+/// In a totalistic rule, the state of a cell is determined by the state of itself and
+/// the number of living neighbors.
+///
+/// Currently, the numbers of living and dead neighbors are represented by 4-bit integers
+/// in the neighborhood descriptor. So the neighborhood size is limited to 15.
 #[derive(Clone)]
-pub struct Factorio {
+pub struct RuleTable {
+    /// Name of the rule.
+    pub(crate) name: String,
+
+    /// The size of the neighborhood.
+    pub(crate) neighborhood_size: usize,
+
+    /// The offsets of the neighbors.
+    pub(crate) offsets: Vec<(isize, isize)>,
+
+    /// The radius of the neighborhood.
+    pub(crate) radius: usize,
+
+    /// The lookup table.
     table: [BitFlags<Implication>; 1 << 12],
 }
 
-impl Factorio {
-    /// In Factorio, a cell has 12 neighbors in a cross shape.
-    pub const NEIGHBORHOOD_SIZE: usize = 12;
+impl Debug for RuleTable {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Rule")
+            .field("name", &self.name)
+            .field("neighborhood_size", &self.neighborhood_size)
+            .field("offsets", &self.offsets)
+            .field("radius", &self.radius)
+            .finish_non_exhaustive()
+    }
+}
 
-    /// Offsets of the neighbors.
-    pub const OFFSETS: [(isize, isize); Self::NEIGHBORHOOD_SIZE] = [
-        (-3, 0),
-        (-2, 0),
-        (-1, 0),
-        (0, -3),
-        (0, -2),
-        (0, -1),
-        (0, 1),
-        (0, 2),
-        (0, 3),
-        (1, 0),
-        (2, 0),
-        (3, 0),
-    ];
+impl RuleTable {
+    /// Creates and initializes a rule table.
+    ///
+    /// - `born` is the list of numbers of living neighbors that cause a dead cell to come to life.
+    /// - `survive` is the list of numbers of living neighbors that cause a living cell to stay alive.
+    pub fn new(
+        name: impl Into<String>,
+        neighborhood_type: NeighborhoodType,
+        radius: usize,
+        born: &[usize],
+        survive: &[usize],
+    ) -> Result<Self, RuleError> {
+        let offsets = neighborhood_type.offsets(radius);
 
-    /// Radius of the neighborhood.
-    pub const RADIUS: usize = 3;
+        let neighborhood_size = offsets.len();
 
-    /// Name of the rule.
-    pub const NAME: &'static str = "R3,C2,S2,B3,N+";
+        if neighborhood_size > MAX_NEIGHBORHOOD_SIZE {
+            return Err(RuleError::NeighborhoodTooLarge);
+        }
 
-    /// Creates a new Factorio object and initializes the lookup table.
-    pub fn new() -> Self {
         let table = [BitFlags::empty(); 1 << 12];
-        let mut rule = Self { table };
-        rule.init();
-        rule
+        let mut rule = Self {
+            name: name.into(),
+            neighborhood_size,
+            offsets,
+            radius,
+            table,
+        };
+        rule.init(born, survive);
+        Ok(rule)
+    }
+
+    /// The Factorio rule.
+    ///
+    /// In this rule, a cell has 12 neighbors in a cross shape of radius 3.
+    /// - A dead cell comes to life if it has exactly 3 living neighbors.
+    /// - A living cell stays alive if it has exactly 2 living neighbors.
+    fn factorio() -> Self {
+        Self::new("R3,C2,S2,B3,N+", NeighborhoodType::Cross, 3, &[3], &[2]).unwrap()
+    }
+
+    /// Conway's Game of Life.
+    ///
+    /// In this rule, a cell has 8 neighbors in a Moore neighborhood of radius 1.
+    /// - A dead cell comes to life if it has exactly 3 living neighbors.
+    /// - A living cell stays alive if it has exactly 2 or 3 living neighbors.
+    fn life() -> Self {
+        Self::new("B3/S23", NeighborhoodType::Moore, 1, &[3], &[2, 3]).unwrap()
     }
 
     /// Initializes the lookup table.
-    fn init(&mut self) {
-        self.deduce_successor();
+    fn init(&mut self, born: &[usize], survive: &[usize]) {
+        self.deduce_successor(born, survive);
         self.deduce_conflict();
         self.deduce_current();
         self.deduce_neighborhood();
     }
 
     /// Deduces the implication of the successor cell.
-    fn deduce_successor(&mut self) {
+    fn deduce_successor(&mut self, born: &[usize], survive: &[usize]) {
         // When all neighbors are known, the successor cell can be deduced directly from the rule.
-        for dead in 0..=Self::NEIGHBORHOOD_SIZE {
-            let alive = Self::NEIGHBORHOOD_SIZE - dead;
+        for dead in 0..=self.neighborhood_size {
+            let alive = self.neighborhood_size - dead;
 
             // When the current cell is dead.
             let descriptor_dead = Descriptor::new(dead, alive, None, CellState::Dead);
-            self.table[descriptor_dead.0 as usize] |= if alive == 3 {
+            self.table[descriptor_dead.0 as usize] |= if born.contains(&alive) {
                 Implication::SuccessorAlive
             } else {
                 Implication::SuccessorDead
@@ -234,7 +357,7 @@ impl Factorio {
 
             // When the current cell is alive.
             let descriptor_alive = Descriptor::new(dead, alive, None, CellState::Alive);
-            self.table[descriptor_alive.0 as usize] |= if alive == 2 {
+            self.table[descriptor_alive.0 as usize] |= if survive.contains(&alive) {
                 Implication::SuccessorAlive
             } else {
                 Implication::SuccessorDead
@@ -242,9 +365,9 @@ impl Factorio {
 
             // When the current cell is unknown.
             // In this case, the successor cell can still be deduced to be dead, if the number of living
-            // neighbors is neither 2 nor 3.
+            // neighbors is neither in `born` nor in `survive`.
             let descriptor_unknown = Descriptor::new(dead, alive, None, None);
-            if alive != 2 && alive != 3 {
+            if !born.contains(&alive) && !survive.contains(&alive) {
                 self.table[descriptor_unknown.0 as usize] |= Implication::SuccessorDead;
             }
         }
@@ -253,9 +376,9 @@ impl Factorio {
         //
         // If setting an unknown neighbor to both dead and alive leads to the same implication, then
         // we can deduce that the successor cell should be in that state.
-        for unknown in 1..=Self::NEIGHBORHOOD_SIZE {
-            for dead in 0..=Self::NEIGHBORHOOD_SIZE - unknown {
-                let alive = Self::NEIGHBORHOOD_SIZE - dead - unknown;
+        for unknown in 1..=self.neighborhood_size {
+            for dead in 0..=self.neighborhood_size - unknown {
+                let alive = self.neighborhood_size - dead - unknown;
 
                 for current in [None, Some(CellState::Dead), Some(CellState::Alive)] {
                     let descriptor = Descriptor::new(dead, alive, None, current);
@@ -273,8 +396,8 @@ impl Factorio {
     /// Deduces conflicts.
     fn deduce_conflict(&mut self) {
         // A conflict occurs when the successor cell is known but different from the deduced value.
-        for dead in 0..=Self::NEIGHBORHOOD_SIZE {
-            for alive in 0..=Self::NEIGHBORHOOD_SIZE - dead {
+        for dead in 0..=self.neighborhood_size {
+            for alive in 0..=self.neighborhood_size - dead {
                 for current in [None, Some(CellState::Dead), Some(CellState::Alive)] {
                     // First set the successor cell to be unknown.
                     let descriptor = Descriptor::new(dead, alive, None, current);
@@ -302,8 +425,8 @@ impl Factorio {
     fn deduce_current(&mut self) {
         // If setting the current cell to some state leads to a conflict, then it should be in the
         // opposite state.
-        for dead in 0..=Self::NEIGHBORHOOD_SIZE {
-            for alive in 0..=Self::NEIGHBORHOOD_SIZE - dead {
+        for dead in 0..=self.neighborhood_size {
+            for alive in 0..=self.neighborhood_size - dead {
                 for successor in [CellState::Dead, CellState::Alive] {
                     let descriptor = Descriptor::new(dead, alive, successor, None);
                     let current_dead = Descriptor::new(dead, alive, successor, CellState::Dead);
@@ -325,9 +448,9 @@ impl Factorio {
     fn deduce_neighborhood(&mut self) {
         // If setting an unknown neighbor to some state leads to a conflict, then all unknown
         // neighbors should be in the opposite state.
-        for unknown in 1..=Self::NEIGHBORHOOD_SIZE {
-            for dead in 0..=Self::NEIGHBORHOOD_SIZE - unknown {
-                let alive = Self::NEIGHBORHOOD_SIZE - dead - unknown;
+        for unknown in 1..=self.neighborhood_size {
+            for dead in 0..=self.neighborhood_size - unknown {
+                let alive = self.neighborhood_size - dead - unknown;
 
                 for successor in [CellState::Dead, CellState::Alive] {
                     for current in [None, Some(CellState::Dead), Some(CellState::Alive)] {
@@ -351,5 +474,63 @@ impl Factorio {
     /// Finds the implication of a neighborhood descriptor.
     pub(crate) fn implies(&self, descriptor: Descriptor) -> BitFlags<Implication> {
         self.table[descriptor.0 as usize]
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_offsets() {
+        assert_eq!(
+            NeighborhoodType::Moore.offsets(1),
+            [
+                (-1, -1),
+                (-1, 0),
+                (-1, 1),
+                (0, -1),
+                (0, 1),
+                (1, -1),
+                (1, 0),
+                (1, 1)
+            ]
+        );
+
+        assert_eq!(
+            NeighborhoodType::VonNeumann.offsets(2),
+            [
+                (-2, 0),
+                (-1, -1),
+                (-1, 0),
+                (-1, 1),
+                (0, -2),
+                (0, -1),
+                (0, 1),
+                (0, 2),
+                (1, -1),
+                (1, 0),
+                (1, 1),
+                (2, 0)
+            ]
+        );
+
+        assert_eq!(
+            NeighborhoodType::Cross.offsets(3),
+            [
+                (-3, 0),
+                (-2, 0),
+                (-1, 0),
+                (0, -3),
+                (0, -2),
+                (0, -1),
+                (0, 1),
+                (0, 2),
+                (0, 3),
+                (1, 0),
+                (2, 0),
+                (3, 0)
+            ]
+        );
     }
 }
