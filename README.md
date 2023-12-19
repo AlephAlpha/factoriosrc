@@ -2,7 +2,7 @@
 
 Search for patterns in [Factorio (R3,C2,S2,B3,N+)](https://conwaylife.com/forums/viewtopic.php?f=11&t=6166) cellular automata, using an algorithm similar to [rlifesrc](https://github.com/AlephAlpha/rlifesrc).
 
-This program is still work in progress. It is still much slower than rlifesrc, and the only supported rules are Factorio and Conway's Game of Life. Currently there is only an extremely simple command line interface.
+This program is still work in progress. It is still much slower than rlifesrc, and the only supported rules are Factorio and Conway's Game of Life.
 
 ## Usage
 
@@ -25,9 +25,5 @@ Search for a c/2 spaceship with [D2-](https://conwaylife.com/wiki/Static_symmetr
 ```bash
 cargo run --release -- 30 10 2 -x 1 -s "D2-"
 ```
-
-Currently it simply prints the intermediate results every 100000 steps to the standard output. So there may be a lot of output.
-
-If the search takes too long, you can press `Ctrl+C` to stop.
 
 The program is still work in progress, so the usage may change in the future.

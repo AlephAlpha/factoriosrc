@@ -1,42 +1,38 @@
-use clap::{error::ErrorKind, CommandFactory, Parser};
-use factoriosrc_lib::{Config, Status, World};
+mod app;
+mod args;
+mod event;
+mod tui;
+mod ui;
 
-#[derive(Debug, Parser)]
-struct Args {
-    #[command(flatten)]
-    config: Config,
+use crate::{args::Args, tui::Tui};
+use color_eyre::Result;
+use crossterm::tty::IsTty;
+use factoriosrc_lib::{Status, World};
+use std::io::stdout;
 
-    /// Step size for showing intermediate results
-    ///
-    /// Prints the current result every `step` iterations.
-    #[arg(long, default_value = "100000")]
-    step: usize,
-}
-
-impl Args {
-    fn new() -> Self {
-        let args = Self::parse();
-
-        if args.step == 0 {
-            Self::command()
-                .error(ErrorKind::ValueValidation, "step must be > 0")
-                .exit();
-        }
-
-        match args.config.check() {
-            Ok(config) => Self { config, ..args },
-            Err(e) => Self::command().error(ErrorKind::ValueValidation, e).exit(),
-        }
-    }
-}
-
-fn main() {
-    let args = Args::new();
-
-    let mut world = World::new(args.config).unwrap();
+/// Run the program without the TUI interface.
+fn run_no_tui(args: Args) -> Result<()> {
+    let mut world = World::new(args.config)?;
 
     while matches!(world.get_status(), Status::NotStarted | Status::Running) {
         world.search(args.step);
         println!("{}", world.rle(0));
     }
+
+    Ok(())
+}
+
+fn main() -> Result<()> {
+    let args = Args::parse_and_validate();
+
+    let stdout = stdout();
+
+    if args.no_tui || !stdout.is_tty() {
+        return run_no_tui(args);
+    }
+
+    let mut tui = Tui::new(args)?;
+    tui.run()?;
+
+    Ok(())
 }

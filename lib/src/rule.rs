@@ -231,9 +231,17 @@ impl NeighborhoodType {
 #[cfg_attr(feature = "clap", derive(ValueEnum))]
 pub enum Rule {
     /// Factorio (`R3,C2,S2,B3,N+`).
+    ///
+    /// In this rule, a cell has 12 neighbors in a cross shape of radius 3.
+    /// - A dead cell comes to life if it has exactly 3 living neighbors.
+    /// - A living cell stays alive if it has exactly 2 living neighbors.
     Factorio,
 
     /// Conway's Game of Life (`B3/S23`).
+    ///
+    /// In this rule, a cell has 8 neighbors in a Moore neighborhood of radius 1.
+    /// - A dead cell comes to life if it has exactly 3 living neighbors.
+    /// - A living cell stays alive if it has exactly 2 or 3 living neighbors.
     Life,
 }
 
@@ -241,8 +249,20 @@ impl Rule {
     /// Creates a rule table from a rule.
     pub fn table(self) -> RuleTable {
         match self {
-            Self::Factorio => RuleTable::factorio(),
-            Self::Life => RuleTable::life(),
+            Self::Factorio => {
+                RuleTable::new(self.name(), NeighborhoodType::Cross, 3, &[3], &[2]).unwrap()
+            }
+            Self::Life => {
+                RuleTable::new(self.name(), NeighborhoodType::Moore, 1, &[3], &[2, 3]).unwrap()
+            }
+        }
+    }
+
+    /// Name of the rule.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Factorio => "R3,C2,S2,B3,N+",
+            Self::Life => "B3/S23",
         }
     }
 }
@@ -313,24 +333,6 @@ impl RuleTable {
         };
         rule.init(born, survive);
         Ok(rule)
-    }
-
-    /// The Factorio rule.
-    ///
-    /// In this rule, a cell has 12 neighbors in a cross shape of radius 3.
-    /// - A dead cell comes to life if it has exactly 3 living neighbors.
-    /// - A living cell stays alive if it has exactly 2 living neighbors.
-    fn factorio() -> Self {
-        Self::new("R3,C2,S2,B3,N+", NeighborhoodType::Cross, 3, &[3], &[2]).unwrap()
-    }
-
-    /// Conway's Game of Life.
-    ///
-    /// In this rule, a cell has 8 neighbors in a Moore neighborhood of radius 1.
-    /// - A dead cell comes to life if it has exactly 3 living neighbors.
-    /// - A living cell stays alive if it has exactly 2 or 3 living neighbors.
-    fn life() -> Self {
-        Self::new("B3/S23", NeighborhoodType::Moore, 1, &[3], &[2, 3]).unwrap()
     }
 
     /// Initializes the lookup table.

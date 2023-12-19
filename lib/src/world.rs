@@ -32,10 +32,10 @@ pub enum Status {
     /// The search has found a solution.
     Solved,
     /// The search has shown that there is no solution.
-    Unsolvable,
+    NoSolution,
 }
 
-/// The main struct. It contains the world and some other data.
+/// The main struct of the search algorithm.
 #[derive(Debug)]
 pub struct World {
     /// The configuration of the world.

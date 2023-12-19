@@ -150,7 +150,7 @@ impl World {
             }
         }
 
-        Status::Unsolvable
+        Status::NoSolution
     }
 
     /// Find a cell whose state is unknown, and make a guess.

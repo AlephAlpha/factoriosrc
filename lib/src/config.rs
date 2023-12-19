@@ -225,7 +225,6 @@ pub enum SearchOrder {
     Diagonal,
 }
 
-/// Configuration for the search.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "clap", derive(Args))]
 pub struct Config {
