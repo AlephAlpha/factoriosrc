@@ -135,7 +135,7 @@ impl Symmetry {
     ///
     /// For example, `D2H` is a subgroup of `D4O`.
     /// This means that if a pattern has `D4O` symmetry, it also has `D2H` symmetry.
-    pub fn is_subgroup_of(self, other: Self) -> bool {
+    pub const fn is_subgroup_of(self, other: Self) -> bool {
         matches!(
             (self, other),
             (Self::C1, _)
@@ -156,19 +156,19 @@ impl Symmetry {
     /// Whether the symmetry requires the world to be square.
     ///
     /// This is true for `C4`, `D2D`, `D2A`, `D4X`, and `D8`.
-    pub fn requires_square(self) -> bool {
+    pub const fn requires_square(self) -> bool {
         !self.is_subgroup_of(Self::D4O)
     }
 
     /// Whether the symmetry requires the world to have no diagonal width.
     ///
     /// This is true for `C4`, `D2H`, `D2V`, `D4O`, and `D8`.
-    pub fn requires_no_diagonal_width(self) -> bool {
+    pub const fn requires_no_diagonal_width(self) -> bool {
         !self.is_subgroup_of(Self::D4X)
     }
 
     /// Whether the translation satisfies the symmetry.
-    pub fn is_translation_valid(self, dx: isize, dy: isize) -> bool {
+    pub const fn is_translation_valid(self, dx: isize, dy: isize) -> bool {
         match self {
             Self::C1 => true,
             Self::C2 => dx == 0 && dy == 0,
@@ -225,6 +225,7 @@ pub enum SearchOrder {
     Diagonal,
 }
 
+/// The configuration of the world.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "clap", derive(Args))]
 pub struct Config {
@@ -292,7 +293,7 @@ pub struct Config {
 impl Config {
     /// Creates a new configuration.
     #[inline]
-    pub fn new(rule: Rule, width: usize, height: usize, period: usize) -> Self {
+    pub const fn new(rule: Rule, width: usize, height: usize, period: usize) -> Self {
         Self {
             rule,
             width,
@@ -309,7 +310,7 @@ impl Config {
 
     /// Sets horizontal and vertical translations.
     #[inline]
-    pub fn with_translations(mut self, dx: isize, dy: isize) -> Self {
+    pub const fn with_translations(mut self, dx: isize, dy: isize) -> Self {
         self.dx = dx;
         self.dy = dy;
         self
@@ -317,38 +318,38 @@ impl Config {
 
     /// Sets the diagonal width.
     #[inline]
-    pub fn with_diagonal_width(mut self, diagonal_width: usize) -> Self {
+    pub const fn with_diagonal_width(mut self, diagonal_width: usize) -> Self {
         self.diagonal_width = Some(diagonal_width);
         self
     }
 
     /// Sets the symmetry.
     #[inline]
-    pub fn with_symmetry(mut self, symmetry: Symmetry) -> Self {
+    pub const fn with_symmetry(mut self, symmetry: Symmetry) -> Self {
         self.symmetry = symmetry;
         self
     }
 
     /// Sets the search order.
     #[inline]
-    pub fn with_search_order(mut self, search_order: SearchOrder) -> Self {
+    pub const fn with_search_order(mut self, search_order: SearchOrder) -> Self {
         self.search_order = Some(search_order);
         self
     }
 
     /// Sets the first state to try for an unknown cell.
     #[inline]
-    pub fn with_new_state(mut self, new_state: CellState) -> Self {
+    pub const fn with_new_state(mut self, new_state: CellState) -> Self {
         self.new_state = new_state;
         self
     }
 
     /// Whether the configuration requires the world to be square.
     #[inline]
-    pub fn requires_square(&self) -> bool {
+    pub const fn requires_square(&self) -> bool {
         self.symmetry.requires_square()
             || self.diagonal_width.is_some()
-            || self.search_order == Some(SearchOrder::Diagonal)
+            || matches!(self.search_order, Some(SearchOrder::Diagonal))
     }
 
     /// Checks whether the configuration is valid,

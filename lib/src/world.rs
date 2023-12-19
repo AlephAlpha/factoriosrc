@@ -108,52 +108,6 @@ impl World {
         Ok(world)
     }
 
-    /// Print world information for debugging.
-    #[allow(dead_code)]
-    #[cfg(debug_assertions)]
-    fn print_info(&self) {
-        // Print the state of all cells.
-        let (w, h, p) = (
-            self.config.width as isize,
-            self.config.height as isize,
-            self.config.period as isize,
-        );
-        let r = self.rule.radius as isize;
-
-        println!("w = {}, h = {}, p = {}", w, h, p);
-        println!("States of all cells:");
-        for y in -r..w + r {
-            for x in -r..h + r {
-                print!("{{");
-                for t in 0..p {
-                    let id = self.get_cell_id_by_coord((x, y, t)).unwrap();
-                    match self.get_cell(id).state {
-                        Some(CellState::Dead) => print!("."),
-                        Some(CellState::Alive) => print!("o"),
-                        None => print!("?"),
-                    }
-                }
-                print!("}} ");
-            }
-            println!();
-        }
-
-        println!("Descriptors of all cells:");
-        for y in -r..w + r {
-            for x in -r..h + r {
-                print!("{{");
-                for t in 0..p {
-                    let id = self.get_cell_id_by_coord((x, y, t)).unwrap();
-                    let descriptor = self.get_cell(id).descriptor.0;
-                    // Print the descriptor in hex.
-                    print!("{:#x} ", descriptor);
-                }
-                print!("}} ");
-            }
-            println!();
-        }
-    }
-
     /// Initialize the world.
     fn init(&mut self) {
         self.init_front();
@@ -597,22 +551,19 @@ impl World {
     /// If the cell is unknown, return `None`.
     #[inline]
     pub fn get_cell_state(&self, coord: Coord) -> Option<CellState> {
-        if let Some(id) = self.get_cell_id_by_coord(coord) {
-            self.get_cell(id).state
-        } else {
-            Some(CellState::Dead)
-        }
+        self.get_cell_id_by_coord(coord)
+            .map_or(Some(CellState::Dead), |id| self.get_cell(id).state)
     }
 
     /// Get the search status.
     #[inline]
-    pub fn get_status(&self) -> Status {
+    pub const fn get_status(&self) -> Status {
         self.status
     }
 
     /// Get the configuration.
     #[inline]
-    pub fn get_config(&self) -> &Config {
+    pub const fn get_config(&self) -> &Config {
         &self.config
     }
 
@@ -636,7 +587,14 @@ impl World {
 
         let t = t.rem_euclid(p);
 
-        writeln!(s, "x = {}, y = {}, rule = {}", w, h, self.rule.name).unwrap();
+        writeln!(
+            s,
+            "x = {}, y = {}, rule = {}",
+            w,
+            h,
+            self.config.rule.name()
+        )
+        .unwrap();
 
         for y in 0..h {
             for x in 0..w {

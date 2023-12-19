@@ -176,9 +176,9 @@ impl World {
     /// Check all cells in the stack that have not been checked yet,
     /// backtrack if a conflict is found, and make a guess if all cells are checked.
     fn step(&mut self) -> Status {
-        if let Some(()) = self.check_stack() {
+        if self.check_stack().is_some() {
             // All cells have been checked.
-            if let Some(()) = self.guess() {
+            if self.guess().is_some() {
                 // A guess was made.
                 Status::Running
             } else {
@@ -241,14 +241,15 @@ impl World {
     pub fn search(&mut self, max_steps: impl Into<Option<usize>>) -> Status {
         let mut steps = 0;
         let max_steps = max_steps.into();
-        let mut status = Status::Running;
 
-        // If the current status is `Solved`, backtrack to find the next solution.
-        if self.status == Status::Solved {
-            status = self.backtrack();
-        }
+        let mut status = match self.status {
+            // If the current status is `Solved`, backtrack to find the next solution.
+            Status::Solved => self.backtrack(),
+            Status::NoSolution => Status::NoSolution,
+            _ => Status::Running,
+        };
 
-        while !max_steps.is_some_and(|max_steps| steps >= max_steps) {
+        while status == Status::Running && !max_steps.is_some_and(|max_steps| steps >= max_steps) {
             status = self.step();
 
             // If a pattern is found, check that its period is correct,
@@ -258,10 +259,6 @@ impl World {
             }
 
             steps += 1;
-
-            if status != Status::Running {
-                break;
-            }
         }
 
         self.status = status;

@@ -249,12 +249,8 @@ impl Rule {
     /// Creates a rule table from a rule.
     pub fn table(self) -> RuleTable {
         match self {
-            Self::Factorio => {
-                RuleTable::new(self.name(), NeighborhoodType::Cross, 3, &[3], &[2]).unwrap()
-            }
-            Self::Life => {
-                RuleTable::new(self.name(), NeighborhoodType::Moore, 1, &[3], &[2, 3]).unwrap()
-            }
+            Self::Factorio => RuleTable::new(NeighborhoodType::Cross, 3, &[3], &[2]).unwrap(),
+            Self::Life => RuleTable::new(NeighborhoodType::Moore, 1, &[3], &[2, 3]).unwrap(),
         }
     }
 
@@ -276,9 +272,6 @@ impl Rule {
 /// in the neighborhood descriptor. So the neighborhood size is limited to 15.
 #[derive(Clone)]
 pub struct RuleTable {
-    /// Name of the rule.
-    pub(crate) name: String,
-
     /// The size of the neighborhood.
     pub(crate) neighborhood_size: usize,
 
@@ -295,7 +288,6 @@ pub struct RuleTable {
 impl Debug for RuleTable {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("Rule")
-            .field("name", &self.name)
             .field("neighborhood_size", &self.neighborhood_size)
             .field("offsets", &self.offsets)
             .field("radius", &self.radius)
@@ -309,7 +301,6 @@ impl RuleTable {
     /// - `born` is the list of numbers of living neighbors that cause a dead cell to come to life.
     /// - `survive` is the list of numbers of living neighbors that cause a living cell to stay alive.
     pub fn new(
-        name: impl Into<String>,
         neighborhood_type: NeighborhoodType,
         radius: usize,
         born: &[usize],
@@ -325,7 +316,6 @@ impl RuleTable {
 
         let table = [BitFlags::empty(); 1 << 12];
         let mut rule = Self {
-            name: name.into(),
             neighborhood_size,
             offsets,
             radius,
@@ -474,7 +464,7 @@ impl RuleTable {
     }
 
     /// Finds the implication of a neighborhood descriptor.
-    pub(crate) fn implies(&self, descriptor: Descriptor) -> BitFlags<Implication> {
+    pub(crate) const fn implies(&self, descriptor: Descriptor) -> BitFlags<Implication> {
         self.table[descriptor.0 as usize]
     }
 }

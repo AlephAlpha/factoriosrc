@@ -172,7 +172,7 @@ struct Rle<'a> {
 
 impl<'a> Rle<'a> {
     /// Create a new RLE widget from the app.
-    pub fn new(app: &'a App) -> Self {
+    fn new(app: &'a App) -> Self {
         Self {
             t: app.generation,
             world: &app.world,
