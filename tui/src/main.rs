@@ -14,7 +14,7 @@ use std::io::stdout;
 fn run_no_tui(args: Args) -> Result<()> {
     let mut world = World::new(args.config)?;
 
-    while matches!(world.get_status(), Status::NotStarted | Status::Running) {
+    while matches!(world.status(), Status::NotStarted | Status::Running) {
         world.search(args.step);
         println!("{}", world.rle(0));
     }

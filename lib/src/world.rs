@@ -557,13 +557,13 @@ impl World {
 
     /// Get the search status.
     #[inline]
-    pub const fn get_status(&self) -> Status {
+    pub const fn status(&self) -> Status {
         self.status
     }
 
     /// Get the configuration.
     #[inline]
-    pub const fn get_config(&self) -> &Config {
+    pub const fn config(&self) -> &Config {
         &self.config
     }
 

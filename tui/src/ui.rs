@@ -74,7 +74,7 @@ impl App {
 
         let style = Style::new().black().on_light_blue();
 
-        let status_str = match self.get_status() {
+        let status_str = match self.status() {
             Status::NotStarted => "Not started yet.",
             Status::Running => {
                 if self.mode == Mode::Running {
@@ -182,8 +182,8 @@ impl<'a> Rle<'a> {
 
 impl<'a> Widget for Rle<'a> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        let w = self.world.get_config().width as u16;
-        let h = self.world.get_config().height as u16;
+        let w = self.world.config().width as u16;
+        let h = self.world.config().height as u16;
 
         let header = Line::from(vec![
             Span::styled("x", Style::new().magenta()),
@@ -196,7 +196,7 @@ impl<'a> Widget for Rle<'a> {
             Span::raw(", "),
             Span::styled("rule", Style::new().magenta()),
             Span::raw(" = "),
-            Span::styled(self.world.get_config().rule.name(), Style::new().cyan()),
+            Span::styled(self.world.config().rule.name(), Style::new().cyan()),
         ]);
 
         buf.set_line(area.x, area.y, &header, area.width);

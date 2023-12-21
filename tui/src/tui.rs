@@ -10,7 +10,7 @@ use crossterm::terminal::{
 use ratatui::{backend::CrosstermBackend, terminal::Terminal};
 use std::io::{stdout, Stdout};
 
-/// The terminal user interface.
+/// The text-based user interface.
 #[derive(Debug)]
 pub struct Tui {
     /// The terminal.
@@ -60,13 +60,13 @@ impl Tui {
         Ok(())
     }
 
-    /// Draw the terminal user interface.
+    /// Draw the text-based user interface.
     fn draw(&mut self) -> Result<()> {
         self.terminal.draw(|f| self.app.render(f))?;
         Ok(())
     }
 
-    /// Exit the terminal user interface.
+    /// Exit the text-based user interface.
     fn exit(&mut self) -> Result<()> {
         self.cleanup()?;
         self.app.print_solution();

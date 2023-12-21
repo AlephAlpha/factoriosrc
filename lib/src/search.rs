@@ -132,7 +132,7 @@ impl World {
     /// and deduce that it should be the opposite state.
     ///
     /// Return the status of the search after backtracking:
-    /// - If this goes back to the time before the search started, return `Unsolvable`.
+    /// - If this goes back to the time before the search started, return `NoSolution`.
     /// - Otherwise, return `Running`.
     fn backtrack(&mut self) -> Status {
         while let Some((id, reason)) = self.stack.pop() {

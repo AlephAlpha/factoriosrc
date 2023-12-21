@@ -69,7 +69,7 @@ impl App {
     ///
     /// If the current generation is the last one, do nothing.
     pub fn next_generation(&mut self) {
-        let period = self.get_config().period as isize;
+        let period = self.config().period as isize;
 
         if self.generation < period - 1 {
             self.generation += 1;
