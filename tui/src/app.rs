@@ -7,6 +7,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+const DEFAULT_STEP: usize = 100000;
+
 /// Application modes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -45,7 +47,7 @@ impl App {
     /// Create a new `App` from the command line arguments.
     pub fn new(args: Args) -> Result<Self> {
         let world = World::new(args.config)?;
-        let step = args.step;
+        let step = args.step.unwrap_or(DEFAULT_STEP);
         let mode = Mode::Paused;
         let generation = 0;
         let start = None;

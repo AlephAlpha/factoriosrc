@@ -598,9 +598,7 @@ impl World {
 
         for y in 0..h {
             for x in 0..w {
-                let id = self.get_cell_id_by_coord((x, y, t)).unwrap();
-
-                let c = match self.get_cell(id).state {
+                let c = match self.get_cell_state((x, y, t)) {
                     Some(CellState::Dead) => '.',
                     Some(CellState::Alive) => 'o',
                     None => '?',
