@@ -23,7 +23,7 @@ pub struct Tui<'a> {
 }
 
 impl<'a> Tui<'a> {
-    /// Create a new `Tui` from the command line arguments and the world allocator.
+    /// Create a new [`Tui`] from the command line arguments and the world allocator.
     pub fn new(args: Args, allocator: &'a mut WorldAllocator<'a>) -> Result<Self> {
         let backend = CrosstermBackend::new(stdout());
         let terminal = Terminal::new(backend)?;
@@ -95,7 +95,7 @@ impl<'a> Tui<'a> {
     }
 }
 
-impl<'a> Drop for Tui<'a> {
+impl Drop for Tui<'_> {
     fn drop(&mut self) {
         self.exit().ok();
     }

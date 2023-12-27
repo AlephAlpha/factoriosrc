@@ -3,7 +3,7 @@ use std::cell::{Cell, RefCell};
 
 /// A cell in the cellular automaton.
 ///
-/// The name `LifeCell` is used to avoid confusion with the `Cell` type in `std::cell`.
+/// The name `LifeCell` is used to avoid confusion with the [`Cell`] type in `std::cell`.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct LifeCell<'a> {
     /// The state of the cell.

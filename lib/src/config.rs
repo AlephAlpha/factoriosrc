@@ -1,6 +1,6 @@
 use crate::{
     error::{ConfigError, ParseSymmetryError},
-    rule::{CellState, Rule},
+    rule::Rule,
 };
 #[cfg(feature = "clap")]
 use clap::{Args, ValueEnum};
@@ -225,6 +225,28 @@ pub enum SearchOrder {
     Diagonal,
 }
 
+/// How to guess the state of an unknown cell.
+///
+/// The default is [`Alive`](NewState::Alive).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "clap", derive(ValueEnum))]
+pub enum NewState {
+    /// Guess that the cell is alive.
+    #[default]
+    #[cfg_attr(feature = "clap", value(name = "alive", alias = "a"))]
+    Alive,
+
+    /// Guess that the cell is dead.
+    #[cfg_attr(feature = "clap", value(name = "dead", alias = "d"))]
+    Dead,
+
+    /// Make a random guess.
+    ///
+    /// The probability of each state is 50%.
+    #[cfg_attr(feature = "clap", value(name = "random", alias = "r"))]
+    Random,
+}
+
 /// The configuration of the world.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "clap", derive(Args))]
@@ -285,9 +307,20 @@ pub struct Config {
     #[cfg_attr(feature = "clap", arg(short = 'o', long, value_enum))]
     pub search_order: Option<SearchOrder>,
 
-    /// The first state to try for an unknown cell.
-    #[cfg_attr(feature = "clap", arg(short, long, value_enum, default_value = "dead"))]
-    pub new_state: CellState,
+    /// How to guess the state of an unknown cell.
+    #[cfg_attr(
+        feature = "clap",
+        arg(short, long, value_enum, default_value = "alive")
+    )]
+    pub new_state: NewState,
+
+    /// Random seed for guessing the state of an unknown cell.
+    ///
+    /// Only used if `new_state` is [`Random`](NewState::Random).
+    ///
+    /// If this is `None`, then the seed is randomly generated.
+    #[cfg_attr(feature = "clap", arg(long))]
+    pub seed: Option<u64>,
 }
 
 impl Config {
@@ -304,7 +337,8 @@ impl Config {
             diagonal_width: None,
             symmetry: Symmetry::C1,
             search_order: None,
-            new_state: CellState::Dead,
+            new_state: NewState::Alive,
+            seed: None,
         }
     }
 
@@ -337,10 +371,17 @@ impl Config {
         self
     }
 
-    /// Sets the first state to try for an unknown cell.
+    /// Sets how to guess the state of an unknown cell.
     #[inline]
-    pub const fn with_new_state(mut self, new_state: CellState) -> Self {
+    pub const fn with_new_state(mut self, new_state: NewState) -> Self {
         self.new_state = new_state;
+        self
+    }
+
+    /// Sets the random seed for guessing the state of an unknown cell.
+    #[inline]
+    pub const fn with_seed(mut self, seed: u64) -> Self {
+        self.seed = Some(seed);
         self
     }
 

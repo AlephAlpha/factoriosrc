@@ -2,6 +2,10 @@ use crate::error::RuleError;
 #[cfg(feature = "clap")]
 use clap::ValueEnum;
 use enumflags2::{bitflags, BitFlags};
+use rand::{
+    distributions::{Distribution, Standard},
+    Rng,
+};
 use std::{
     fmt::{self, Debug, Formatter},
     ops::Not,
@@ -9,14 +13,11 @@ use std::{
 
 /// The state of a known cell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "clap", derive(ValueEnum))]
 pub enum CellState {
     /// The cell is dead.
-    #[cfg_attr(feature = "clap", value(name = "dead", aliases = ["d", "0"]))]
     Dead = 0b01,
 
     /// The cell is alive.
-    #[cfg_attr(feature = "clap", value(name = "alive", aliases = ["a", "1"]))]
     Alive = 0b10,
 }
 
@@ -28,6 +29,17 @@ impl Not for CellState {
         match self {
             Self::Dead => Self::Alive,
             Self::Alive => Self::Dead,
+        }
+    }
+}
+
+impl Distribution<CellState> for Standard {
+    #[inline]
+    fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> CellState {
+        match rng.gen_range(0..2) {
+            0 => CellState::Dead,
+            1 => CellState::Alive,
+            _ => unreachable!(),
         }
     }
 }

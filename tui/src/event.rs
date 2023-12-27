@@ -26,7 +26,7 @@ pub struct EventHandler {
 }
 
 impl EventHandler {
-    /// Create a new `EventHandler`.
+    /// Create a new [`EventHandler`].
     pub fn new() -> Self {
         let (tx, rx) = mpsc::channel();
         let _tx: Sender<TermEvent> = tx.clone();

@@ -12,7 +12,7 @@ use ratatui::{
     },
 };
 
-impl<'a> App<'a> {
+impl App<'_> {
     /// Render the TUI interface.
     pub fn render(&self, frame: &mut Frame) {
         let chunks = Layout::new(
@@ -166,7 +166,7 @@ impl<'a> App<'a> {
 struct Rle<'a, 'b> {
     /// The current generation.
     t: isize,
-    /// The world.
+    /// A reference to the world.
     world: &'b World<'a>,
 }
 
@@ -180,7 +180,7 @@ impl<'a, 'b> Rle<'a, 'b> {
     }
 }
 
-impl<'a, 'b> Widget for Rle<'a, 'b> {
+impl Widget for Rle<'_, '_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let w = self.world.config().width as u16;
         let h = self.world.config().height as u16;

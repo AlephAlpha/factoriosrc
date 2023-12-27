@@ -1,5 +1,8 @@
+use rand::Rng;
+
 use crate::{
     cell::LifeCell,
+    config::NewState,
     rule::{CellState, Implication},
     world::{Reason, Status, World},
 };
@@ -130,8 +133,8 @@ impl<'a> World<'a> {
     /// and deduce that it should be the opposite state.
     ///
     /// Return the status of the search after backtracking:
-    /// - If this goes back to the time before the search started, return `NoSolution`.
-    /// - Otherwise, return `Running`.
+    /// - If this goes back to the time before the search started, return [`NoSolution`](Status::NoSolution).
+    /// - Otherwise, return [`Running`](Status::Running).
     fn backtrack(&mut self) -> Status {
         while let Some((cell, reason)) = self.stack.pop() {
             match reason {
@@ -157,7 +160,11 @@ impl<'a> World<'a> {
     fn guess(&mut self) -> Option<()> {
         while let Some(cell) = self.start {
             if cell.state().is_none() {
-                let state = self.config.new_state;
+                let state = match self.config.new_state {
+                    NewState::Alive => CellState::Alive,
+                    NewState::Dead => CellState::Dead,
+                    NewState::Random => self.rng.gen(),
+                };
                 self.set_cell(cell, state, Reason::Guessed);
                 self.start = cell.next.get();
                 return Some(());

@@ -4,6 +4,7 @@ use crate::{
     error::ConfigError,
     rule::{CellState, RuleTable},
 };
+use rand::{rngs::StdRng, SeedableRng};
 use std::fmt::Write;
 
 /// Coordinates of a cell in the world.
@@ -74,12 +75,12 @@ pub struct WorldAllocator<'a> {
 }
 
 impl<'a> WorldAllocator<'a> {
-    /// Create a new `WorldAllocator`.
+    /// Create a new [`WorldAllocator`].
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Create a new `World` from a configuration and the allocator.
+    /// Create a new [`World`] from a configuration and the allocator.
     pub fn new_world(&'a mut self, config: Config) -> Result<World<'a>, ConfigError> {
         World::new(config, self)
     }
@@ -118,6 +119,9 @@ pub struct World<'a> {
 
     /// The world itself. A list of cells.
     pub(crate) cells: &'a [LifeCell<'a>],
+
+    /// A random number generator for guessing the state of an unknown cell.
+    pub(crate) rng: StdRng,
 
     /// The number of unknown or living cells on the front, i.e. the first row or column,
     /// depending on the search order.
@@ -170,10 +174,15 @@ impl<'a> World<'a> {
 
         let cells = allocator.cells.as_slice();
 
+        let rng = config
+            .seed
+            .map_or_else(StdRng::from_entropy, StdRng::seed_from_u64);
+
         let mut world = Self {
             config,
             rule,
             cells,
+            rng,
             front_count: 0,
             stack: Vec::with_capacity(size),
             stack_index: 0,

@@ -44,7 +44,7 @@ pub struct App<'a> {
 }
 
 impl<'a> App<'a> {
-    /// Create a new `App` from the command line arguments and the world allocator.
+    /// Create a new [`App`] from the command line arguments and the world allocator.
     pub fn new(args: Args, allocator: &'a mut WorldAllocator<'a>) -> Result<Self> {
         let world = allocator.new_world(args.config)?;
         let step = args.step.unwrap_or(DEFAULT_STEP);
