@@ -1,7 +1,7 @@
 use crate::{args::Args, event::TermEvent};
 use color_eyre::Result;
 use crossterm::event::KeyCode;
-use factoriosrc_lib::{Status, World};
+use factoriosrc_lib::{Status, World, WorldAllocator};
 use std::{
     ops::{Deref, DerefMut},
     time::{Duration, Instant},
@@ -24,9 +24,9 @@ pub enum Mode {
 
 /// Application state.
 #[derive(Debug)]
-pub struct App {
+pub struct App<'a> {
     /// The main struct of the search algorithm.
-    pub world: World,
+    pub world: World<'a>,
     /// Number of steps between each display of the current partial result.
     pub step: usize,
     /// Current mode of the application.
@@ -43,10 +43,10 @@ pub struct App {
     pub should_quit: bool,
 }
 
-impl App {
-    /// Create a new `App` from the command line arguments.
-    pub fn new(args: Args) -> Result<Self> {
-        let world = World::new(args.config)?;
+impl<'a> App<'a> {
+    /// Create a new `App` from the command line arguments and the world allocator.
+    pub fn new(args: Args, allocator: &'a mut WorldAllocator<'a>) -> Result<Self> {
+        let world = allocator.new_world(args.config)?;
         let step = args.step.unwrap_or(DEFAULT_STEP);
         let mode = Mode::Paused;
         let generation = 0;
@@ -198,15 +198,15 @@ impl App {
     }
 }
 
-impl Deref for App {
-    type Target = World;
+impl<'a> Deref for App<'a> {
+    type Target = World<'a>;
 
     fn deref(&self) -> &Self::Target {
         &self.world
     }
 }
 
-impl DerefMut for App {
+impl<'a> DerefMut for App<'a> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.world
     }

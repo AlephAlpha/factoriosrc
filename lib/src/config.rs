@@ -192,7 +192,7 @@ impl Symmetry {
 pub enum SearchOrder {
     /// Search in row-major order.
     ///
-    /// ```
+    /// ```text
     /// 1 2 3
     /// 4 5 6
     /// 7 8 9
@@ -202,7 +202,7 @@ pub enum SearchOrder {
 
     /// Search in column-major order.
     ///
-    /// ```
+    /// ```text
     /// 1 4 7
     /// 2 5 8
     /// 3 6 9
@@ -212,7 +212,7 @@ pub enum SearchOrder {
 
     /// Search in diagonal order.
     ///
-    /// ```
+    /// ```text
     /// 1 3 6
     /// 2 5 8
     /// 4 7 9

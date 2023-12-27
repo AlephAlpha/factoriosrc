@@ -1,19 +1,17 @@
 use crate::{
-    cell::CellId,
+    cell::LifeCell,
     rule::{CellState, Implication},
     world::{Reason, Status, World},
 };
 
-impl World {
+impl<'a> World<'a> {
     /// Check the neighborhood descriptor for a cell to see what it implies.
     ///
     /// It may deduce the state of some related cells, or find a conflict.
     ///
     /// If a conflict is found, return `None`.
-    fn check_descriptor(&mut self, id: CellId) -> Option<()> {
-        let descriptor = self.get_cell(id).descriptor;
-
-        let implication = self.rule.implies(descriptor);
+    fn check_descriptor(&mut self, cell: &'a LifeCell<'a>) -> Option<()> {
+        let implication = self.rule.implies(cell.descriptor());
 
         // The descriptor does not imply anything.
         if implication.is_empty() {
@@ -36,8 +34,8 @@ impl World {
                 CellState::Dead
             };
 
-            if let Some(successor_id) = self.get_cell(id).successor {
-                self.set_cell(successor_id, state, Reason::Deduced);
+            if let Some(successor) = cell.successor.get() {
+                self.set_cell(successor, state, Reason::Deduced);
 
                 return Some(());
             }
@@ -51,7 +49,7 @@ impl World {
                 CellState::Dead
             };
 
-            self.set_cell(id, state, Reason::Deduced);
+            self.set_cell(cell, state, Reason::Deduced);
         }
 
         // The descriptor implies that all unknown neighbors are dead or alive.
@@ -63,9 +61,9 @@ impl World {
             };
 
             for i in 0..self.rule.neighborhood_size {
-                if let Some(neighbor_id) = self.get_cell(id).neighborhood[i] {
-                    if self.get_cell(neighbor_id).state.is_none() {
-                        self.set_cell(neighbor_id, state, Reason::Deduced);
+                if let Some(neighbor) = cell.neighborhood[i].get() {
+                    if neighbor.state().is_none() {
+                        self.set_cell(neighbor, state, Reason::Deduced);
                     }
                 }
             }
@@ -83,33 +81,33 @@ impl World {
     /// by symmetry.
     ///
     /// If a conflict is found, return `None`.
-    fn check_affected(&mut self, id: CellId) -> Option<()> {
+    fn check_affected(&mut self, cell: &'a LifeCell<'a>) -> Option<()> {
         if self.front_count == 0 {
             return None;
         }
 
-        let state = self.get_cell(id).state.unwrap();
-        for i in 0..self.get_cell(id).symmetry.len() {
-            let symmetry_id = self.get_cell(id).symmetry[i];
-            let symmetry_state = self.get_cell(symmetry_id).state;
+        let state = cell.state().unwrap();
+        for i in 0..cell.symmetry.borrow().len() {
+            let symmetry = cell.symmetry.borrow()[i];
+            let symmetry_state = symmetry.state();
 
             if symmetry_state.is_none() {
-                self.set_cell(symmetry_id, state, Reason::Deduced);
+                self.set_cell(symmetry, state, Reason::Deduced);
             } else if symmetry_state.unwrap() != state {
                 return None;
             }
         }
 
-        self.check_descriptor(id)?;
+        self.check_descriptor(cell)?;
 
         for i in 0..self.rule.neighborhood_size {
-            if let Some(neighbor_id) = self.get_cell(id).neighborhood[i] {
-                self.check_descriptor(neighbor_id)?;
+            if let Some(neighbor) = cell.neighborhood[i].get() {
+                self.check_descriptor(neighbor)?;
             }
         }
 
-        if let Some(predecessor_id) = self.get_cell(id).predecessor {
-            self.check_descriptor(predecessor_id)?;
+        if let Some(predecessor) = cell.predecessor.get() {
+            self.check_descriptor(predecessor)?;
         }
 
         Some(())
@@ -120,8 +118,8 @@ impl World {
     /// If a conflict is found, return `None`.
     fn check_stack(&mut self) -> Option<()> {
         while self.stack_index < self.stack.len() {
-            let id = self.stack[self.stack_index].0;
-            self.check_affected(id)?;
+            let cell = self.stack[self.stack_index].0;
+            self.check_affected(cell)?;
             self.stack_index += 1;
         }
 
@@ -135,16 +133,16 @@ impl World {
     /// - If this goes back to the time before the search started, return `NoSolution`.
     /// - Otherwise, return `Running`.
     fn backtrack(&mut self) -> Status {
-        while let Some((id, reason)) = self.stack.pop() {
+        while let Some((cell, reason)) = self.stack.pop() {
             match reason {
                 Reason::Known => break,
-                Reason::Deduced => self.unset_cell(id),
+                Reason::Deduced => self.unset_cell(cell),
                 Reason::Guessed => {
-                    let state = self.get_cell(id).state.unwrap();
+                    let state = cell.state().unwrap();
                     self.stack_index = self.stack.len();
-                    self.start = self.get_cell(id).next;
-                    self.unset_cell(id);
-                    self.set_cell(id, !state, Reason::Deduced);
+                    self.start = cell.next.get();
+                    self.unset_cell(cell);
+                    self.set_cell(cell, !state, Reason::Deduced);
                     return Status::Running;
                 }
             }
@@ -157,14 +155,14 @@ impl World {
     ///
     /// If no cell is found, return `None`.
     fn guess(&mut self) -> Option<()> {
-        while let Some(id) = self.start {
-            if self.get_cell(id).state.is_none() {
+        while let Some(cell) = self.start {
+            if cell.state().is_none() {
                 let state = self.config.new_state;
-                self.set_cell(id, state, Reason::Guessed);
-                self.start = self.get_cell(id).next;
+                self.set_cell(cell, state, Reason::Guessed);
+                self.start = cell.next.get();
                 return Some(());
             } else {
-                self.start = self.get_cell(id).next;
+                self.start = cell.next.get();
             }
         }
 

@@ -34,7 +34,7 @@ The program is still work in progress, so the usage may change in the future.
 
 Features that rlifesrc has but factoriosrc doesn't:
 
-- [ ] Improve the performance, possibly by using some unsafe code.
+- [x] Improve the performance. <s>Possibly by using some unsafe code.</s> It turns out that we don't need unsafe code, at the cost of being less user-friendly.
 - [ ] Support transformations (rotation and reflection).
 - [ ] Count the number of living cells.
   - [ ] Max population constraint.
@@ -42,6 +42,7 @@ Features that rlifesrc has but factoriosrc doesn't:
 - [ ] Support more rules. Parse rule strings.
   - [ ] Non-totalistic rules.
   - [ ] Generations rules.
+  - [ ] Hexagonal rules.
   - [ ] Update (or completely rewrite) the [ca-rules](https://crates.io/crates/ca-rules) crate.
 - [ ] Support trying a random state for unknown cells.
 - [ ] Set some cells to be known in the configuration.
@@ -52,8 +53,12 @@ Features that rlifesrc has but factoriosrc doesn't:
 Features that rlifesrc doesn't have and factoriosrc may add:
 
 - [ ] Support searching non-periodic patterns. For example, find a parent of a given pattern.
-- [ ] Support hexagonal symmetries and transformations.
-- [ ] Support custom symmetries and transformations. Maybe describe them using a DSL.
+- [ ] Support more symmetries and transformations.
+  - [ ] Support hexagonal symmetries and transformations.
+  - [ ] Support custom symmetries and transformations. Maybe describe them using a DSL.
+  - [ ] Separate the symmetries and transformations into another crate.
+- [ ] A more user-friendly web UI.
+  - [ ] Set cells to be known by clicking.
 - [ ] More. See rlifesrc's issues.
 
 And finally:

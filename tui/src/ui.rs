@@ -12,7 +12,7 @@ use ratatui::{
     },
 };
 
-impl App {
+impl<'a> App<'a> {
     /// Render the TUI interface.
     pub fn render(&self, frame: &mut Frame) {
         let chunks = Layout::new(
@@ -107,12 +107,12 @@ impl App {
     }
 
     /// Render a popup window with some text.
-    fn render_popup<'a>(
+    fn render_popup<'b>(
         &self,
         frame: &mut Frame,
         area: Rect,
-        text: impl Into<Text<'a>>,
-        title: impl Into<Title<'a>>,
+        text: impl Into<Text<'b>>,
+        title: impl Into<Title<'b>>,
         style: Style,
     ) {
         let text = text.into();
@@ -163,16 +163,16 @@ impl App {
 
 /// A widget to show the current generation in the RLE format.
 #[derive(Debug)]
-struct Rle<'a> {
+struct Rle<'a, 'b> {
     /// The current generation.
     t: isize,
     /// The world.
-    world: &'a World,
+    world: &'b World<'a>,
 }
 
-impl<'a> Rle<'a> {
+impl<'a, 'b> Rle<'a, 'b> {
     /// Create a new RLE widget from the app.
-    fn new(app: &'a App) -> Self {
+    fn new(app: &'b App<'a>) -> Self {
         Self {
             t: app.generation,
             world: &app.world,
@@ -180,7 +180,7 @@ impl<'a> Rle<'a> {
     }
 }
 
-impl<'a> Widget for Rle<'a> {
+impl<'a, 'b> Widget for Rle<'a, 'b> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let w = self.world.config().width as u16;
         let h = self.world.config().height as u16;

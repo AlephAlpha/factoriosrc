@@ -81,6 +81,8 @@ impl Debug for Descriptor {
 }
 
 impl Descriptor {
+    /// Create a neighborhood descriptor from the number of dead and alive neighbors,
+    /// and the states of the successor and current cells.
     pub(crate) fn new(
         dead: usize,
         alive: usize,
@@ -96,40 +98,44 @@ impl Descriptor {
         Self(dead << 8 | alive << 4 | successor << 2 | current)
     }
 
+    /// Increment the number of dead neighbors.
     pub(crate) fn increment_dead(&mut self) {
         debug_assert!((self.0 >> 8) & 0b1111 < MAX_NEIGHBORHOOD_SIZE as u16);
         self.0 += 1 << 8;
     }
 
+    /// Increment the number of living neighbors.
     pub(crate) fn increment_alive(&mut self) {
         debug_assert!((self.0 >> 4) & 0b1111 < MAX_NEIGHBORHOOD_SIZE as u16);
         self.0 += 1 << 4;
     }
 
+    /// Decrement the number of dead neighbors.
     pub(crate) fn decrement_dead(&mut self) {
         debug_assert!((self.0 >> 8) & 0b1111 > 0);
         self.0 -= 1 << 8;
     }
 
+    /// Decrement the number of living neighbors.
     pub(crate) fn decrement_alive(&mut self) {
         debug_assert!((self.0 >> 4) & 0b1111 > 0);
         self.0 -= 1 << 4;
     }
 
-    /// If the successor cell is unknown, sets it to some state.
+    /// If the successor cell is unknown, set it to some state.
     ///
-    /// If the successor cell is known, sets it to unknown. In this case,
+    /// If the successor cell is known, set it to unknown. In this case,
     /// the `state` argument should be equal to its current state.
-    pub(crate) fn set_successor(&mut self, state: CellState) {
+    pub(crate) fn update_successor(&mut self, state: CellState) {
         debug_assert!((self.0 >> 2) & 0b11 == 0b00 || (self.0 >> 2) & 0b11 == state as u16);
         self.0 ^= (state as u16) << 2;
     }
 
-    /// If the current cell is unknown, sets it to some state.
+    /// If the current cell is unknown, set it to some state.
     ///
-    /// If the current cell is known, sets it to unknown. In this case,
+    /// If the current cell is known, set it to unknown. In this case,
     /// the `state` argument should be equal to its current state.
-    pub(crate) fn set_current(&mut self, state: CellState) {
+    pub(crate) fn update_current(&mut self, state: CellState) {
         debug_assert!(self.0 & 0b11 == 0b00 || self.0 & 0b11 == state as u16);
         self.0 ^= state as u16;
     }
@@ -296,7 +302,7 @@ impl Debug for RuleTable {
 }
 
 impl RuleTable {
-    /// Creates and initializes a rule table.
+    /// Create and initialize a rule table.
     ///
     /// - `born` is the list of numbers of living neighbors that cause a dead cell to come to life.
     /// - `survive` is the list of numbers of living neighbors that cause a living cell to stay alive.
@@ -325,7 +331,7 @@ impl RuleTable {
         Ok(rule)
     }
 
-    /// Initializes the lookup table.
+    /// Initialize the lookup table.
     fn init(&mut self, born: &[usize], survive: &[usize]) {
         self.deduce_successor(born, survive);
         self.deduce_conflict();
@@ -333,7 +339,7 @@ impl RuleTable {
         self.deduce_neighborhood();
     }
 
-    /// Deduces the implication of the successor cell.
+    /// Deduce the implication of the successor cell.
     fn deduce_successor(&mut self, born: &[usize], survive: &[usize]) {
         // When all neighbors are known, the successor cell can be deduced directly from the rule.
         for dead in 0..=self.neighborhood_size {
@@ -385,7 +391,7 @@ impl RuleTable {
         }
     }
 
-    /// Deduces conflicts.
+    /// Deduce conflicts.
     fn deduce_conflict(&mut self) {
         // A conflict occurs when the successor cell is known but different from the deduced value.
         for dead in 0..=self.neighborhood_size {
@@ -413,7 +419,7 @@ impl RuleTable {
         }
     }
 
-    /// Deduces the implication of the current cell.
+    /// Deduce the implication of the current cell.
     fn deduce_current(&mut self) {
         // If setting the current cell to some state leads to a conflict, then it should be in the
         // opposite state.
@@ -436,7 +442,7 @@ impl RuleTable {
         }
     }
 
-    /// Deduces the implication of the neighborhood.
+    /// Deduce the implication of the neighborhood.
     fn deduce_neighborhood(&mut self) {
         // If setting an unknown neighbor to some state leads to a conflict, then all unknown
         // neighbors should be in the opposite state.
@@ -463,7 +469,7 @@ impl RuleTable {
         }
     }
 
-    /// Finds the implication of a neighborhood descriptor.
+    /// Find the implication of a neighborhood descriptor.
     pub(crate) const fn implies(&self, descriptor: Descriptor) -> BitFlags<Implication> {
         self.table[descriptor.0 as usize]
     }

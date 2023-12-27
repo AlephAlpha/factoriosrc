@@ -1,5 +1,5 @@
 use crate::{
-    cell::{CellId, LifeCell},
+    cell::LifeCell,
     config::{Config, SearchOrder, Symmetry},
     error::ConfigError,
     rule::{CellState, RuleTable},
@@ -35,9 +35,81 @@ pub enum Status {
     NoSolution,
 }
 
+/// A helper struct to allocate cells for the world.
+///
+/// # Why do we need this?
+///
+/// **TLDR: to make Rust's borrow checker happy.**
+///
+/// We need to allocate a vector of cells for the world. Each cell contains some references to
+/// other cells. All the cells and the world itself have the same lifetime `'a`.
+///
+/// However, Rust does not allow self-referential struct in safe code. So we cannot put the
+/// vector in the [`World`] directly. To work around this, we put the vector in a separate struct,
+/// and use a reference to the vector in the [`World`].
+///
+/// The user should first create a [`WorldAllocator`], and then create a [`World`] from a mutable
+/// reference to the [`WorldAllocator`].
+///
+/// Since the [`WorldAllocator`] and the [`World`] have the same lifetime `'a`, you cannot create
+/// multiple worlds from the same allocator.
+///
+/// # Example
+///
+/// ```
+/// use factoriosrc_lib::{Config, Rule, WorldAllocator};
+///
+/// // Create a world allocator.
+/// let mut allocator = WorldAllocator::new();
+/// // Create a configuration that searches for a 3x3 oscillator with period 2 in Conway's Life.
+/// let config = Config::new(Rule::Life, 3, 3, 2);
+/// // Create a world from the configuration and the allocator.
+/// let mut world = allocator.new_world(config).unwrap();
+/// // The world is now ready to be searched.
+/// ```
+#[derive(Debug, Clone, Default)]
+pub struct WorldAllocator<'a> {
+    /// A vector of cells.
+    cells: Vec<LifeCell<'a>>,
+}
+
+impl<'a> WorldAllocator<'a> {
+    /// Create a new `WorldAllocator`.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Create a new `World` from a configuration and the allocator.
+    pub fn new_world(&'a mut self, config: Config) -> Result<World<'a>, ConfigError> {
+        World::new(config, self)
+    }
+}
+
 /// The main struct of the search algorithm.
+///
+/// Due to the limitation of Rust's borrow checker, we need to create the world from a mutable
+/// reference to a [`WorldAllocator`]. Please see the documentation of [`WorldAllocator`] for more
+/// details.
+///
+/// # Example
+///
+/// ```
+/// use factoriosrc_lib::{Config, Rule, Status, WorldAllocator};
+///
+/// // Create a world allocator.
+/// let mut allocator = WorldAllocator::new();
+/// // Create a configuration that searches for a 3x3 oscillator with period 2 in Conway's Life.
+/// let config = Config::new(Rule::Life, 3, 3, 2);
+/// // Create a world from the configuration and the allocator.
+/// let mut world = allocator.new_world(config).unwrap();
+/// // Search for a solution.
+/// world.search(None);
+/// assert_eq!(world.status(), Status::Solved);
+/// // Print the solution in RLE format.
+/// println!("{}", world.rle(0));
+/// ```
 #[derive(Debug)]
-pub struct World {
+pub struct World<'a> {
     /// The configuration of the world.
     pub(crate) config: Config,
 
@@ -45,7 +117,7 @@ pub struct World {
     pub(crate) rule: RuleTable,
 
     /// The world itself. A list of cells.
-    pub(crate) cells: Vec<LifeCell>,
+    pub(crate) cells: &'a [LifeCell<'a>],
 
     /// The number of unknown or living cells on the front, i.e. the first row or column,
     /// depending on the search order.
@@ -66,7 +138,7 @@ pub struct World {
     ///
     /// It records the cells that have been set to a state,
     /// and the reason why they are set to that state.
-    pub(crate) stack: Vec<(CellId, Reason)>,
+    pub(crate) stack: Vec<(&'a LifeCell<'a>, Reason)>,
 
     /// The index of the next cell to be checked in the stack.
     ///
@@ -74,15 +146,15 @@ pub struct World {
     pub(crate) stack_index: usize,
 
     /// The starting point to look for an unknown cell according to the search order.
-    pub(crate) start: Option<CellId>,
+    pub(crate) start: Option<&'a LifeCell<'a>>,
 
     /// Search status.
     pub(crate) status: Status,
 }
 
-impl World {
-    /// Create a new world from a configuration.
-    pub fn new(config: Config) -> Result<Self, ConfigError> {
+impl<'a> World<'a> {
+    /// Create a new world from a configuration and a world allocator.
+    pub fn new(config: Config, allocator: &'a mut WorldAllocator<'a>) -> Result<Self, ConfigError> {
         let config = config.check()?;
 
         let rule = config.rule.table();
@@ -91,7 +163,12 @@ impl World {
         let size =
             (config.width + 2 * rule.radius) * (config.height + 2 * rule.radius) * config.period;
 
-        let cells = vec![LifeCell::default(); size];
+        allocator.cells.clear();
+        allocator
+            .cells
+            .extend((0..size).map(|_| LifeCell::default()));
+
+        let cells = allocator.cells.as_slice();
 
         let mut world = Self {
             config,
@@ -141,8 +218,8 @@ impl World {
 
                     for x in 0..w as isize {
                         for t in 0..self.config.period as isize {
-                            let id = self.get_cell_id_by_coord((x, 0, t)).unwrap();
-                            self.get_cell_mut(id).is_front = true;
+                            let cell = self.get_cell_by_coord((x, 0, t)).unwrap();
+                            cell.is_front.set(true);
                             self.front_count += 1;
                         }
                     }
@@ -167,8 +244,8 @@ impl World {
 
                     for y in 0..h as isize {
                         for t in 0..self.config.period as isize {
-                            let id = self.get_cell_id_by_coord((0, y, t)).unwrap();
-                            self.get_cell_mut(id).is_front = true;
+                            let cell = self.get_cell_by_coord((0, y, t)).unwrap();
+                            cell.is_front.set(true);
                             self.front_count += 1;
                         }
                     }
@@ -184,8 +261,8 @@ impl World {
 
                     for x in 0..d as isize {
                         for t in 0..self.config.period as isize {
-                            let id = self.get_cell_id_by_coord((x, 0, t)).unwrap();
-                            self.get_cell_mut(id).is_front = true;
+                            let cell = self.get_cell_by_coord((x, 0, t)).unwrap();
+                            cell.is_front.set(true);
                             self.front_count += 1;
                         }
                     }
@@ -196,8 +273,8 @@ impl World {
                     if self.config.dx != self.config.dy {
                         for y in 1..d as isize {
                             for t in 0..self.config.period as isize {
-                                let id = self.get_cell_id_by_coord((0, y, t)).unwrap();
-                                self.get_cell_mut(id).is_front = true;
+                                let cell = self.get_cell_by_coord((0, y, t)).unwrap();
+                                cell.is_front.set(true);
                                 self.front_count += 1;
                             }
                         }
@@ -210,8 +287,8 @@ impl World {
         if !use_front {
             for x in 0..self.config.width as isize {
                 for y in 0..self.config.height as isize {
-                    let id = self.get_cell_id_by_coord((x, y, 0)).unwrap();
-                    self.get_cell_mut(id).is_front = true;
+                    let cell = self.get_cell_by_coord((x, y, 0)).unwrap();
+                    cell.is_front.set(true);
                     self.front_count += 1;
                 }
             }
@@ -233,19 +310,19 @@ impl World {
         for x in -r..w + r {
             for y in -r..h + r {
                 for t in 0..p {
-                    let id = self.get_cell_id_by_coord((x, y, t)).unwrap();
+                    let cell = self.get_cell_by_coord((x, y, t)).unwrap();
 
                     for i in 0..self.rule.neighborhood_size {
                         let (ox, oy) = self.rule.offsets[i];
                         let neighbor_coord = (x + ox, y + oy, t);
-                        let neighbor_id = self.get_cell_id_by_coord(neighbor_coord);
+                        let neighbor = self.get_cell_by_coord(neighbor_coord);
 
-                        self.get_cell_mut(id).neighborhood[i] = neighbor_id;
+                        cell.neighborhood[i].set(neighbor);
 
                         // If some neighbor is outside the world, the state of that neighbor is assumed to be dead.
                         // So we update the neighborhood descriptor of the cell here.
-                        if neighbor_id.is_none() {
-                            self.get_cell_mut(id).descriptor.increment_dead();
+                        if neighbor.is_none() {
+                            cell.increment_dead();
                         }
                     }
                 }
@@ -265,7 +342,7 @@ impl World {
         for x in -r..w + r {
             for y in -r..h + r {
                 for t in 0..p {
-                    let id = self.get_cell_id_by_coord((x, y, t)).unwrap();
+                    let cell = self.get_cell_by_coord((x, y, t)).unwrap();
 
                     let predecessor_coord = if t == 0 {
                         (x - self.config.dx, y - self.config.dy, p - 1)
@@ -279,20 +356,17 @@ impl World {
                         (x, y, t + 1)
                     };
 
-                    let predecessor = self.get_cell_id_by_coord(predecessor_coord);
-                    let successor = self.get_cell_id_by_coord(successor_coord);
+                    let predecessor = self.get_cell_by_coord(predecessor_coord);
+                    let successor = self.get_cell_by_coord(successor_coord);
 
                     // If the successor is outside the world, the state of the successor is assumed to be dead.
                     // So we update the neighborhood descriptor of the cell here.
                     if successor.is_none() {
-                        self.get_cell_mut(id)
-                            .descriptor
-                            .set_successor(CellState::Dead);
+                        cell.update_successor(CellState::Dead);
                     }
 
-                    let cell = self.get_cell_mut(id);
-                    cell.predecessor = predecessor;
-                    cell.successor = successor;
+                    cell.predecessor.set(predecessor);
+                    cell.successor.set(successor);
                 }
             }
         }
@@ -310,7 +384,7 @@ impl World {
         for x in -r..w + r {
             for y in -r..h + r {
                 for t in 0..p {
-                    let id = self.get_cell_id_by_coord((x, y, t)).unwrap();
+                    let cell = self.get_cell_by_coord((x, y, t)).unwrap();
 
                     let symmetry = self.config.symmetry;
 
@@ -346,10 +420,9 @@ impl World {
 
                     let symmetry_cells = symmetry_coords
                         .into_iter()
-                        .filter_map(|coord| self.get_cell_id_by_coord(coord))
-                        .collect();
+                        .filter_map(|coord| self.get_cell_by_coord(coord));
 
-                    self.get_cell_mut(id).symmetry = symmetry_cells;
+                    cell.symmetry.borrow_mut().extend(symmetry_cells);
                 }
             }
         }
@@ -373,7 +446,7 @@ impl World {
         for x in -r..w + r {
             for y in -r..h + r {
                 for t in 0..p {
-                    let id = self.get_cell_id_by_coord((x, y, t)).unwrap();
+                    let cell = self.get_cell_by_coord((x, y, t)).unwrap();
 
                     if !(0..w).contains(&x)
                         || !(0..h).contains(&y)
@@ -381,9 +454,9 @@ impl World {
                             .config
                             .diagonal_width
                             .is_some_and(|d| (x - y).abs() >= d as isize)
-                        || self.get_cell(id).predecessor.is_none()
+                        || cell.predecessor.get().is_none()
                     {
-                        self.set_cell(id, CellState::Dead, Reason::Known);
+                        self.set_cell(cell, CellState::Dead, Reason::Known);
                     }
                 }
             }
@@ -397,11 +470,11 @@ impl World {
                 for y in (0..self.config.height as isize).rev() {
                     for x in (0..self.config.width as isize).rev() {
                         for t in (0..self.config.period as isize).rev() {
-                            let id = self.get_cell_id_by_coord((x, y, t)).unwrap();
+                            let cell = self.get_cell_by_coord((x, y, t)).unwrap();
 
-                            if self.get_cell(id).state.is_none() {
-                                self.get_cell_mut(id).next = self.start;
-                                self.start = Some(id);
+                            if cell.state().is_none() {
+                                cell.next.set(self.start);
+                                self.start = Some(cell);
                             }
                         }
                     }
@@ -412,11 +485,11 @@ impl World {
                 for x in (0..self.config.width as isize).rev() {
                     for y in (0..self.config.height as isize).rev() {
                         for t in (0..self.config.period as isize).rev() {
-                            let id = self.get_cell_id_by_coord((x, y, t)).unwrap();
+                            let cell = self.get_cell_by_coord((x, y, t)).unwrap();
 
-                            if self.get_cell(id).state.is_none() {
-                                self.get_cell_mut(id).next = self.start;
-                                self.start = Some(id);
+                            if cell.state().is_none() {
+                                cell.next.set(self.start);
+                                self.start = Some(cell);
                             }
                         }
                     }
@@ -437,11 +510,11 @@ impl World {
                                 .is_some_and(|d| (x - y).abs() >= d as isize)
                         {
                             for t in (0..self.config.period as isize).rev() {
-                                let id = self.get_cell_id_by_coord((x, y, t)).unwrap();
+                                let cell = self.get_cell_by_coord((x, y, t)).unwrap();
 
-                                if self.get_cell(id).state.is_none() {
-                                    self.get_cell_mut(id).next = self.start;
-                                    self.start = Some(id);
+                                if cell.state().is_none() {
+                                    cell.next.set(self.start);
+                                    self.start = Some(cell);
                                 }
                             }
                         }
@@ -451,15 +524,10 @@ impl World {
         }
     }
 
-    pub(crate) fn get_cell(&self, id: CellId) -> &LifeCell {
-        &self.cells[id.0]
-    }
-
-    pub(crate) fn get_cell_mut(&mut self, id: CellId) -> &mut LifeCell {
-        &mut self.cells[id.0]
-    }
-
-    fn get_cell_id_by_coord(&self, coord: Coord) -> Option<CellId> {
+    /// Get a cell by its coordinates.
+    ///
+    /// Return `None` if the cell is outside the world.
+    fn get_cell_by_coord(&self, coord: Coord) -> Option<&'a LifeCell<'a>> {
         let (x, y, t) = coord;
         let (w, h, p) = (
             self.config.width as isize,
@@ -470,76 +538,66 @@ impl World {
 
         if (-r..w + r).contains(&x) && (-r..h + r).contains(&y) && (0..p).contains(&t) {
             let index = t + (x + r) * p + (y + r) * p * (w + 2 * r);
-            Some(CellId(index as usize))
+            Some(&self.cells[index as usize])
         } else {
             None
         }
     }
 
     /// Set the state of a cell. The cell should be unknown.
-    pub(crate) fn set_cell(&mut self, id: CellId, state: CellState, reason: Reason) {
-        let cell = self.get_cell_mut(id);
-        debug_assert!(cell.state.is_none());
-        cell.state = Some(state);
+    pub(crate) fn set_cell(&mut self, cell: &'a LifeCell<'a>, state: CellState, reason: Reason) {
+        debug_assert!(cell.state().is_none());
+        cell.state.set(Some(state));
 
         // Update the neighborhood descriptor of the cell, its neighbors and predecessor.
-        cell.descriptor.set_current(state);
+        cell.update_current(state);
 
         for i in 0..self.rule.neighborhood_size {
-            if let Some(neighbor_id) = self.get_cell(id).neighborhood[i] {
-                let neighbor = self.get_cell_mut(neighbor_id);
-
+            if let Some(neighbor) = cell.neighborhood[i].get() {
                 match state {
-                    CellState::Dead => neighbor.descriptor.increment_dead(),
-                    CellState::Alive => neighbor.descriptor.increment_alive(),
+                    CellState::Dead => neighbor.increment_dead(),
+                    CellState::Alive => neighbor.increment_alive(),
                 }
             }
         }
 
-        if let Some(predecessor_id) = self.get_cell(id).predecessor {
-            let predecessor = self.get_cell_mut(predecessor_id);
-
-            predecessor.descriptor.set_successor(state);
+        if let Some(predecessor) = cell.predecessor.get() {
+            predecessor.update_successor(state);
         }
 
         // If the cell is on the front, update the front count.
-        if self.get_cell(id).is_front && state == CellState::Dead {
+        if cell.is_front() && state == CellState::Dead {
             self.front_count -= 1;
         }
 
         // Push the cell to the stack.
-        self.stack.push((id, reason));
+        self.stack.push((cell, reason));
     }
 
     /// Unset the state of a cell. The cell should be known.
-    pub(crate) fn unset_cell(&mut self, id: CellId) {
-        let cell = self.get_cell_mut(id);
-        debug_assert!(cell.state.is_some());
-        let state = cell.state.unwrap();
-        cell.state = None;
+    pub(crate) fn unset_cell(&mut self, cell: &'a LifeCell<'a>) {
+        debug_assert!(cell.state().is_some());
+        let state = cell.state().unwrap();
+        cell.state.set(None);
 
         // Update the neighborhood descriptor of the cell, its neighbors and predecessor.
-        cell.descriptor.set_current(state);
+        cell.update_current(state);
 
         for i in 0..self.rule.neighborhood_size {
-            if let Some(neighbor_id) = self.get_cell(id).neighborhood[i] {
-                let neighbor = self.get_cell_mut(neighbor_id);
-
+            if let Some(neighbor) = cell.neighborhood[i].get() {
                 match state {
-                    CellState::Dead => neighbor.descriptor.decrement_dead(),
-                    CellState::Alive => neighbor.descriptor.decrement_alive(),
+                    CellState::Dead => neighbor.decrement_dead(),
+                    CellState::Alive => neighbor.decrement_alive(),
                 }
             }
         }
 
-        if let Some(predecessor_id) = self.get_cell(id).predecessor {
-            let predecessor = self.get_cell_mut(predecessor_id);
-
-            predecessor.descriptor.set_successor(state);
+        if let Some(predecessor) = cell.predecessor.get() {
+            predecessor.update_successor(state);
         }
 
         // If the cell is on the front, update the front count.
-        if self.get_cell(id).is_front && state == CellState::Dead {
+        if cell.is_front() && state == CellState::Dead {
             self.front_count += 1;
         }
     }
@@ -551,8 +609,8 @@ impl World {
     /// If the cell is unknown, return `None`.
     #[inline]
     pub fn get_cell_state(&self, coord: Coord) -> Option<CellState> {
-        self.get_cell_id_by_coord(coord)
-            .map_or(Some(CellState::Dead), |id| self.get_cell(id).state)
+        self.get_cell_by_coord(coord)
+            .map_or(Some(CellState::Dead), |cell| cell.state())
     }
 
     /// Get the search status.
