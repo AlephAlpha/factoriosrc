@@ -4,11 +4,14 @@ use std::cell::{Cell, RefCell};
 /// A cell in the cellular automaton.
 ///
 /// The name `LifeCell` is used to avoid confusion with the [`Cell`] type in `std::cell`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub(crate) struct LifeCell<'a> {
+    /// The generation of the cell.
+    pub(crate) generation: isize,
+
     /// The state of the cell.
     ///
-    /// `None` means the cell is unknown.
+    /// [`None`] means the cell is unknown.
     pub(crate) state: Cell<Option<CellState>>,
 
     /// The neighborhood descriptor of the cell.
@@ -36,6 +39,23 @@ pub(crate) struct LifeCell<'a> {
 }
 
 impl<'a> LifeCell<'a> {
+    /// Create a new cell in the given generation.
+    ///
+    /// Other fields are initialized to their default values.
+    pub(crate) fn new(generation: isize) -> Self {
+        Self {
+            generation,
+            state: Cell::new(None),
+            descriptor: Cell::default(),
+            predecessor: Cell::new(None),
+            successor: Cell::new(None),
+            neighborhood: Default::default(),
+            symmetry: RefCell::new(Vec::new()),
+            next: Cell::new(None),
+            is_front: Cell::new(false),
+        }
+    }
+
     /// Get the state of the cell.
     pub(crate) fn state(&self) -> Option<CellState> {
         self.state.get()

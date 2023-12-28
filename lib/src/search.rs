@@ -12,7 +12,7 @@ impl<'a> World<'a> {
     ///
     /// It may deduce the state of some related cells, or find a conflict.
     ///
-    /// If a conflict is found, return `None`.
+    /// If a conflict is found, return [`None`].
     fn check_descriptor(&mut self, cell: &'a LifeCell<'a>) -> Option<()> {
         let implication = self.rule.implies(cell.descriptor());
 
@@ -31,13 +31,13 @@ impl<'a> World<'a> {
         // In this case, the successor was unknown, so there is no implication about the cell
         // itself or its neighbors. So we can return early.
         if implication.intersects(Implication::SuccessorDead | Implication::SuccessorAlive) {
-            let state = if implication.contains(Implication::SuccessorAlive) {
-                CellState::Alive
-            } else {
-                CellState::Dead
-            };
-
             if let Some(successor) = cell.successor.get() {
+                let state = if implication.contains(Implication::SuccessorAlive) {
+                    CellState::Alive
+                } else {
+                    CellState::Dead
+                };
+
                 self.set_cell(successor, state, Reason::Deduced);
 
                 return Some(());
@@ -80,15 +80,25 @@ impl<'a> World<'a> {
     /// When the state of a cell is set, these are all the cells whose descriptors
     /// may be affected.
     ///
-    /// This also checks if the front becomes empty, and deduces the state of some cells
-    /// by symmetry.
+    /// This also checks if the front becomes empty, checks if the population is too large,
+    /// and deduces the state of some cells by symmetry.
     ///
-    /// If a conflict is found, return `None`.
+    /// If a conflict is found, return [`None`].
     fn check_affected(&mut self, cell: &'a LifeCell<'a>) -> Option<()> {
+        // Check if the front becomes empty.
         if self.front_count == 0 {
             return None;
         }
 
+        // Check if the population is too large.
+        if self
+            .max_population
+            .is_some_and(|max_population| *self.population.iter().min().unwrap() > max_population)
+        {
+            return None;
+        }
+
+        // Deduce the state of some cells by symmetry.
         let state = cell.state().unwrap();
         for i in 0..cell.symmetry.borrow().len() {
             let symmetry = cell.symmetry.borrow()[i];
@@ -101,14 +111,17 @@ impl<'a> World<'a> {
             }
         }
 
+        // Check the neighborhood descriptor of the cell itself.
         self.check_descriptor(cell)?;
 
+        // Check the neighborhood descriptors of the neighbors.
         for i in 0..self.rule.neighborhood_size {
             if let Some(neighbor) = cell.neighborhood[i].get() {
                 self.check_descriptor(neighbor)?;
             }
         }
 
+        // Check the neighborhood descriptor of the predecessor.
         if let Some(predecessor) = cell.predecessor.get() {
             self.check_descriptor(predecessor)?;
         }
@@ -118,7 +131,7 @@ impl<'a> World<'a> {
 
     /// Check all cells in the stack that have not been checked yet.
     ///
-    /// If a conflict is found, return `None`.
+    /// If a conflict is found, return [`None`].
     fn check_stack(&mut self) -> Option<()> {
         while self.stack_index < self.stack.len() {
             let cell = self.stack[self.stack_index].0;
@@ -156,7 +169,7 @@ impl<'a> World<'a> {
 
     /// Find a cell whose state is unknown, and make a guess.
     ///
-    /// If no cell is found, return `None`.
+    /// If no cell is found, return [`None`].
     fn guess(&mut self) -> Option<()> {
         while let Some(cell) = self.start {
             if cell.state().is_none() {
@@ -249,7 +262,13 @@ impl<'a> World<'a> {
 
         let mut status = match self.status {
             // If the current status is `Solved`, backtrack to find the next solution.
-            Status::Solved => self.backtrack(),
+            Status::Solved => {
+                if self.config.reduce_max_population {
+                    let population = *self.population.iter().min().unwrap();
+                    self.max_population = Some(population - 1);
+                }
+                self.backtrack()
+            }
             Status::NoSolution => Status::NoSolution,
             _ => Status::Running,
         };

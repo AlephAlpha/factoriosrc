@@ -20,6 +20,10 @@ pub enum ConfigError {
     #[error("The width, height, period, or diagonal width is zero")]
     InvalidSize,
 
+    /// The population upper bound is zero.
+    #[error("The population upper bound is zero")]
+    InvalidMaxPopulation,
+
     /// The world is not a square when it should be.
     #[error("The world is not a square when it should be")]
     NotSquare,

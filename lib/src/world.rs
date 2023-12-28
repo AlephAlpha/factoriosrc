@@ -8,6 +8,9 @@ use rand::{rngs::StdRng, SeedableRng};
 use std::fmt::Write;
 
 /// Coordinates of a cell in the world.
+///
+/// The first two coordinates are the x and y coordinates, respectively.
+/// The third coordinate is the generation of the cell.
 pub type Coord = (isize, isize, isize);
 
 /// The reason why a cell is set to a state.
@@ -123,6 +126,12 @@ pub struct World<'a> {
     /// A random number generator for guessing the state of an unknown cell.
     pub(crate) rng: StdRng,
 
+    /// The number of living cells on each generation.
+    pub(crate) population: Vec<usize>,
+
+    /// The upper bound of the population.
+    pub(crate) max_population: Option<usize>,
+
     /// The number of unknown or living cells on the front, i.e. the first row or column,
     /// depending on the search order.
     ///
@@ -162,15 +171,22 @@ impl<'a> World<'a> {
         let config = config.check()?;
 
         let rule = config.rule.table();
+        let max_population = config.max_population;
+
+        let (w, h, p) = (
+            config.width as isize,
+            config.height as isize,
+            config.period as isize,
+        );
+        let r = rule.radius as isize;
 
         // Number of cells in the world.
-        let size =
-            (config.width + 2 * rule.radius) * (config.height + 2 * rule.radius) * config.period;
+        let size = ((w + 2 * r) * (h + 2 * r) * p) as usize;
 
         allocator.cells.clear();
         allocator
             .cells
-            .extend((0..size).map(|_| LifeCell::default()));
+            .extend((0..size).map(|i| LifeCell::new(i as isize % p)));
 
         let cells = allocator.cells.as_slice();
 
@@ -183,6 +199,8 @@ impl<'a> World<'a> {
             rule,
             cells,
             rng,
+            population: vec![0; p as usize],
+            max_population,
             front_count: 0,
             stack: Vec::with_capacity(size),
             stack_index: 0,
@@ -216,7 +234,7 @@ impl<'a> World<'a> {
                 {
                     use_front = true;
 
-                    // If dx is zero, a pattern is still valid if we reflect it horizontally.
+                    // If `dx` is zero, a pattern is still valid if we reflect it horizontally.
                     // So we only need to consider the left half of the first row.
 
                     let w = if self.config.dx == 0 {
@@ -225,11 +243,27 @@ impl<'a> World<'a> {
                         self.config.width
                     };
 
-                    for x in 0..w as isize {
-                        for t in 0..self.config.period as isize {
-                            let cell = self.get_cell_by_coord((x, 0, t)).unwrap();
+                    // If both `dx` and `dy` are zero, a pattern is still valid if we rotate the
+                    // generations, i.e. the first generation becomes the last, the second becomes
+                    // the first, and so on. So we only need to consider the first generation.
+
+                    // If `dx` is zero, `dy` is positive, a similar argument still applies.
+                    // But the front becomes the `dy-1`-th row of the first generation.
+
+                    if self.config.dx == 0 && self.config.dy >= 0 {
+                        let y = self.config.dy.max(1) - 1;
+                        for x in 0..w as isize {
+                            let cell = self.get_cell_by_coord((x, y, 0)).unwrap();
                             cell.is_front.set(true);
                             self.front_count += 1;
+                        }
+                    } else {
+                        for x in 0..w as isize {
+                            for t in 0..self.config.period as isize {
+                                let cell = self.get_cell_by_coord((x, 0, t)).unwrap();
+                                cell.is_front.set(true);
+                                self.front_count += 1;
+                            }
                         }
                     }
                 }
@@ -242,7 +276,7 @@ impl<'a> World<'a> {
                 {
                     use_front = true;
 
-                    // If dy is zero, a pattern is still valid if we reflect it vertically.
+                    // If `dy` is zero, a pattern is still valid if we reflect it vertically.
                     // So we only need to consider the top half of the first column.
 
                     let h = if self.config.dy == 0 {
@@ -251,11 +285,27 @@ impl<'a> World<'a> {
                         self.config.height
                     };
 
-                    for y in 0..h as isize {
-                        for t in 0..self.config.period as isize {
-                            let cell = self.get_cell_by_coord((0, y, t)).unwrap();
+                    // If both `dx` and `dy` are zero, a pattern is still valid if we rotate the
+                    // generations, i.e. the first generation becomes the last, the second becomes
+                    // the first, and so on. So we only need to consider the first generation.
+
+                    // If `dy` is zero, `dx` is positive, a similar argument still applies.
+                    // But the front becomes the `dx-1`-th column of the first generation.
+
+                    if self.config.dx >= 0 && self.config.dy == 0 {
+                        let x = self.config.dx.max(1) - 1;
+                        for y in 0..h as isize {
+                            let cell = self.get_cell_by_coord((x, y, 0)).unwrap();
                             cell.is_front.set(true);
                             self.front_count += 1;
+                        }
+                    } else {
+                        for y in 0..h as isize {
+                            for t in 0..self.config.period as isize {
+                                let cell = self.get_cell_by_coord((0, y, t)).unwrap();
+                                cell.is_front.set(true);
+                                self.front_count += 1;
+                            }
                         }
                     }
                 }
@@ -268,23 +318,39 @@ impl<'a> World<'a> {
 
                     let d = self.config.diagonal_width.unwrap_or(self.config.width);
 
-                    for x in 0..d as isize {
-                        for t in 0..self.config.period as isize {
-                            let cell = self.get_cell_by_coord((x, 0, t)).unwrap();
+                    // If `dx` equals `dy`, a pattern is still valid if we reflect it diagonally.
+                    // So we only need to consider the first row, not the first column.
+
+                    // If both `dx` and `dy` are zero, a pattern is still valid if we rotate the
+                    // generations, i.e. the first generation becomes the last, the second becomes
+                    // the first, and so on. So we only need to consider the first generation.
+
+                    // If `dx` equals `dy` and is positive, a similar argument still applies.
+                    // But the front becomes the `dy-1`-th row of the first generation.
+
+                    if self.config.dx == self.config.dy && self.config.dx >= 0 {
+                        let y = self.config.dy.max(1) - 1;
+                        for x in 0..d as isize {
+                            let cell = self.get_cell_by_coord((x, y, 0)).unwrap();
                             cell.is_front.set(true);
                             self.front_count += 1;
                         }
-                    }
-
-                    // If dx equals dy, a pattern is still valid if we reflect it diagonally.
-                    // So we only need to consider the first row, not the first column.
-
-                    if self.config.dx != self.config.dy {
-                        for y in 1..d as isize {
+                    } else {
+                        for x in 0..d as isize {
                             for t in 0..self.config.period as isize {
-                                let cell = self.get_cell_by_coord((0, y, t)).unwrap();
+                                let cell = self.get_cell_by_coord((x, 0, t)).unwrap();
                                 cell.is_front.set(true);
                                 self.front_count += 1;
+                            }
+                        }
+
+                        if self.config.dx != self.config.dy {
+                            for y in 1..d as isize {
+                                for t in 0..self.config.period as isize {
+                                    let cell = self.get_cell_by_coord((0, y, t)).unwrap();
+                                    cell.is_front.set(true);
+                                    self.front_count += 1;
+                                }
                             }
                         }
                     }
@@ -307,7 +373,7 @@ impl<'a> World<'a> {
     /// Set the neighborhood of each cell.
     ///
     /// Some cells may have a neighbor that is outside the world.
-    /// In this case, the neighbor is set to `None`.
+    /// In this case, the neighbor is set to [`None`].
     fn init_neighborhood(&mut self) {
         let (w, h, p) = (
             self.config.width as isize,
@@ -535,7 +601,7 @@ impl<'a> World<'a> {
 
     /// Get a cell by its coordinates.
     ///
-    /// Return `None` if the cell is outside the world.
+    /// Return [`None`] if the cell is outside the world.
     fn get_cell_by_coord(&self, coord: Coord) -> Option<&'a LifeCell<'a>> {
         let (x, y, t) = coord;
         let (w, h, p) = (
@@ -579,6 +645,11 @@ impl<'a> World<'a> {
             self.front_count -= 1;
         }
 
+        // If the cell is alive, update the population.
+        if state == CellState::Alive {
+            self.population[cell.generation as usize] += 1;
+        }
+
         // Push the cell to the stack.
         self.stack.push((cell, reason));
     }
@@ -609,13 +680,18 @@ impl<'a> World<'a> {
         if cell.is_front() && state == CellState::Dead {
             self.front_count += 1;
         }
+
+        // If the cell was alive, update the population.
+        if state == CellState::Alive {
+            self.population[cell.generation as usize] -= 1;
+        }
     }
 
     /// Get the state of a cell by its coordinates.
     ///
     /// If the cell is outside the world, it is considered to be dead.
     ///
-    /// If the cell is unknown, return `None`.
+    /// If the cell is unknown, return [`None`].
     #[inline]
     pub fn get_cell_state(&self, coord: Coord) -> Option<CellState> {
         self.get_cell_by_coord(coord)
@@ -632,6 +708,13 @@ impl<'a> World<'a> {
     #[inline]
     pub const fn config(&self) -> &Config {
         &self.config
+    }
+
+    /// Get the number of living cells on a generation.
+    #[inline]
+    pub fn population(&self, t: isize) -> usize {
+        let t = t.rem_euclid(self.config.period as isize);
+        self.population[t as usize]
     }
 
     /// Output a generation of the world in RLE format.

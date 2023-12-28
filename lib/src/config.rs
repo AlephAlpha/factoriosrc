@@ -87,7 +87,7 @@ pub enum Symmetry {
 
     /// Symmetry with respect to all the above rotations and reflections.
     ///
-    /// Requires the world to be square and have no diagonal width, and have no translation.
+    /// This requires the world to be square and have no diagonal width, and have no translation.
     #[cfg_attr(feature = "clap", value(name = "D8"))]
     D8,
 }
@@ -133,8 +133,9 @@ impl Symmetry {
     /// Each symmetry can be represented as a subgroup of the dihedral group D8.
     /// This function checks whether the symmetry is a subgroup of the other symmetry.
     ///
-    /// For example, `D2H` is a subgroup of `D4O`.
-    /// This means that if a pattern has `D4O` symmetry, it also has `D2H` symmetry.
+    /// For example, [`D2H`](Symmetry::D2H) is a subgroup of [`D4O`](Symmetry::D4O)
+    /// This means that if a pattern has [`D4O`](Symmetry::D4O) symmetry, it also has
+    /// [`D2H`](Symmetry::D2H) symmetry.
     pub const fn is_subgroup_of(self, other: Self) -> bool {
         matches!(
             (self, other),
@@ -168,7 +169,7 @@ impl Symmetry {
     }
 
     /// Whether the translation satisfies the symmetry.
-    pub const fn is_translation_valid(self, dx: isize, dy: isize) -> bool {
+    pub const fn translation_is_valid(self, dx: isize, dy: isize) -> bool {
         match self {
             Self::C1 => true,
             Self::C2 => dx == 0 && dy == 0,
@@ -227,16 +228,16 @@ pub enum SearchOrder {
 
 /// How to guess the state of an unknown cell.
 ///
-/// The default is [`Alive`](NewState::Alive).
+/// The default is [`Dead`](NewState::Dead).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "clap", derive(ValueEnum))]
 pub enum NewState {
     /// Guess that the cell is alive.
-    #[default]
     #[cfg_attr(feature = "clap", value(name = "alive", alias = "a"))]
     Alive,
 
     /// Guess that the cell is dead.
+    #[default]
     #[cfg_attr(feature = "clap", value(name = "dead", alias = "d"))]
     Dead,
 
@@ -271,6 +272,10 @@ pub struct Config {
     /// Horizontal translation of the world.
     ///
     /// The pattern is translated by `x` cells to the left in each period.
+    ///
+    /// In other words, if the period is `p`, then a cell at position `(x, y)`
+    /// on the `p`-th generation should have the same state as a cell at position
+    /// `(x + dx, y)` on the 0th generation.
     #[cfg_attr(
         feature = "clap",
         arg(short = 'x', long, allow_negative_numbers = true, default_value = "0")
@@ -280,6 +285,10 @@ pub struct Config {
     /// Vertical translation of the world.
     ///
     /// The pattern is translated by `y` cells upwards in each period.
+    ///
+    /// In other words, if the period is `p`, then a cell at position `(x, y)`
+    /// on the `p`-th generation should have the same state as a cell at position
+    /// `(x, y + dy)` on the 0th generation.
     #[cfg_attr(
         feature = "clap",
         arg(short = 'y', long, allow_negative_numbers = true, default_value = "0")
@@ -293,7 +302,7 @@ pub struct Config {
     ///
     /// This is useful for finding diagonal spaceships.
     ///
-    /// If this is not `None`, then the world must be square.
+    /// If this is not [`None`], then the world must be square.
     #[cfg_attr(feature = "clap", arg(short, long))]
     pub diagonal_width: Option<usize>,
 
@@ -303,28 +312,45 @@ pub struct Config {
 
     /// Search order.
     ///
-    /// `None` means that the search order is automatically determined.
+    /// [`None`] means that the search order is automatically determined.
     #[cfg_attr(feature = "clap", arg(short = 'o', long, value_enum))]
     pub search_order: Option<SearchOrder>,
 
     /// How to guess the state of an unknown cell.
-    #[cfg_attr(
-        feature = "clap",
-        arg(short, long, value_enum, default_value = "alive")
-    )]
+    ///
+    /// The default is [`Dead`](NewState::Dead).
+    #[cfg_attr(feature = "clap", arg(short, long, value_enum, default_value = "dead"))]
     pub new_state: NewState,
 
     /// Random seed for guessing the state of an unknown cell.
     ///
-    /// Only used if `new_state` is [`Random`](NewState::Random).
+    /// Only used if [`new_state`](Config::new_state) is [`Random`](NewState::Random).
     ///
-    /// If this is `None`, then the seed is randomly generated.
+    /// If this is [`None`], then the seed is randomly generated.
     #[cfg_attr(feature = "clap", arg(long))]
     pub seed: Option<u64>,
+
+    /// Upper bound of the population of the pattern.
+    ///
+    /// If the period is greater than 1, then this is the upper bound of the minimum population
+    /// among all the generations.
+    ///
+    /// If this is [`None`], then the population is not bounded.
+    #[cfg_attr(feature = "clap", arg(short, long))]
+    pub max_population: Option<usize>,
+
+    /// Whether to reduce the upper bound of the population when a solution is found.
+    ///
+    /// If this is [`true`], when a solution with population `p` is found, then
+    /// [`max_population`](Config::max_population) will be set to `p - 1`.
+    ///
+    /// This is useful for finding the smallest possible pattern.
+    #[cfg_attr(feature = "clap", arg(long))]
+    pub reduce_max_population: bool,
 }
 
 impl Config {
-    /// Creates a new configuration.
+    /// Create a new configuration.
     #[inline]
     pub const fn new(rule: Rule, width: usize, height: usize, period: usize) -> Self {
         Self {
@@ -337,12 +363,16 @@ impl Config {
             diagonal_width: None,
             symmetry: Symmetry::C1,
             search_order: None,
-            new_state: NewState::Alive,
+            new_state: NewState::Dead,
             seed: None,
+            max_population: None,
+            reduce_max_population: false,
         }
     }
 
-    /// Sets horizontal and vertical translations.
+    /// Set horizontal and vertical translations.
+    ///
+    /// See [`dx`](Config::dx) and [`dy`](Config::dy) for more details.
     #[inline]
     pub const fn with_translations(mut self, dx: isize, dy: isize) -> Self {
         self.dx = dx;
@@ -350,38 +380,66 @@ impl Config {
         self
     }
 
-    /// Sets the diagonal width.
+    /// Set the diagonal width.
+    ///
+    /// See [`diagonal_width`](Config::diagonal_width) for more details.
     #[inline]
     pub const fn with_diagonal_width(mut self, diagonal_width: usize) -> Self {
         self.diagonal_width = Some(diagonal_width);
         self
     }
 
-    /// Sets the symmetry.
+    /// Set the symmetry.
+    ///
+    /// See [`symmetry`](Config::symmetry) for more details.
     #[inline]
     pub const fn with_symmetry(mut self, symmetry: Symmetry) -> Self {
         self.symmetry = symmetry;
         self
     }
 
-    /// Sets the search order.
+    /// Set the search order.
+    ///
+    /// See [`search_order`](Config::search_order) for more details.
     #[inline]
     pub const fn with_search_order(mut self, search_order: SearchOrder) -> Self {
         self.search_order = Some(search_order);
         self
     }
 
-    /// Sets how to guess the state of an unknown cell.
+    /// Set how to guess the state of an unknown cell.
+    ///
+    /// See [`new_state`](Config::new_state) for more details.
     #[inline]
     pub const fn with_new_state(mut self, new_state: NewState) -> Self {
         self.new_state = new_state;
         self
     }
 
-    /// Sets the random seed for guessing the state of an unknown cell.
+    /// Set the random seed for guessing the state of an unknown cell.
+    ///
+    /// See [`seed`](Config::seed) for more details.
     #[inline]
     pub const fn with_seed(mut self, seed: u64) -> Self {
         self.seed = Some(seed);
+        self
+    }
+
+    /// Set the upper bound of the population of the pattern.
+    ///
+    /// See [`max_population`](Config::max_population) for more details.
+    #[inline]
+    pub const fn with_max_population(mut self, max_population: usize) -> Self {
+        self.max_population = Some(max_population);
+        self
+    }
+
+    /// Enable reducing the upper bound of the population when a solution is found.
+    ///
+    /// See [`reduce_max_population`](Config::reduce_max_population) for more details.
+    #[inline]
+    pub const fn with_reduce_max_population(mut self) -> Self {
+        self.reduce_max_population = true;
         self
     }
 
@@ -393,8 +451,8 @@ impl Config {
             || matches!(self.search_order, Some(SearchOrder::Diagonal))
     }
 
-    /// Checks whether the configuration is valid,
-    /// and finds a search order if it is not specified.
+    /// Check whether the configuration is valid,
+    /// and find a search order if it is not specified.
     pub fn check(mut self) -> Result<Self, ConfigError> {
         if self.width == 0
             || self.height == 0
@@ -402,6 +460,10 @@ impl Config {
             || self.diagonal_width.is_some_and(|d| d == 0)
         {
             return Err(ConfigError::InvalidSize);
+        }
+
+        if self.max_population.is_some_and(|p| p == 0) {
+            return Err(ConfigError::InvalidMaxPopulation);
         }
 
         if self.width != self.height && self.requires_square() {
@@ -412,7 +474,7 @@ impl Config {
             return Err(ConfigError::HasDiagonalWidth);
         }
 
-        if !self.symmetry.is_translation_valid(self.dx, self.dy) {
+        if !self.symmetry.translation_is_valid(self.dx, self.dy) {
             return Err(ConfigError::InvalidTranslation);
         }
 

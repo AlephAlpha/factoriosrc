@@ -39,11 +39,11 @@ impl App<'_> {
 
     /// Render the top bar.
     ///
-    /// This includes the current generation, and the elapsed time.
+    /// This includes the current generation, the population, and the elapsed time.
     fn render_top_bar(&self, frame: &mut Frame, area: Rect) {
         let chunks = Layout::new(
             Direction::Horizontal,
-            Constraint::from_percentages([50, 50]),
+            Constraint::from_ratios([(1, 3), (1, 3), (1, 3)]),
         )
         .split(area);
 
@@ -52,14 +52,21 @@ impl App<'_> {
         let generation = Paragraph::new(format!("Generation: {}", self.generation)).style(style);
         frame.render_widget(generation, chunks[0]);
 
+        let population = Paragraph::new(format!(
+            "Population: {}",
+            self.world.population(self.generation)
+        ))
+        .style(style);
+        frame.render_widget(population, chunks[1]);
+
         // Only show the elapsed time if the search not running.
         let elapsed_str = if self.mode == Mode::Running {
             String::new()
         } else {
-            format!("Time: {:?}", self.elapsed)
+            format!("Time: {:.3?}", self.elapsed)
         };
         let elapsed = Paragraph::new(elapsed_str).style(style);
-        frame.render_widget(elapsed, chunks[1]);
+        frame.render_widget(elapsed, chunks[2]);
     }
 
     /// Render the bottom bar.

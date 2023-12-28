@@ -36,7 +36,7 @@ Features that rlifesrc has but factoriosrc doesn't:
 
 - [x] Improve the performance. <s>Possibly by using some unsafe code.</s> It turns out that we don't need unsafe code, at the cost of being less user-friendly.
 - [ ] Support transformations (rotation and reflection).
-- [ ] Count the number of living cells.
+- [x] Count the number of living cells.
   - [ ] Max population constraint.
   - [ ] Dynamically adjust the max population constraint to find the smallest pattern.
 - [ ] Support more rules. Parse rule strings.

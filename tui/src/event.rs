@@ -55,7 +55,7 @@ impl EventHandler {
 
     /// Try to receive an event.
     ///
-    /// If no event is available, return `None`.
+    /// If no event is available, return [`None`].
     pub fn try_recv(&self) -> Result<Option<TermEvent>> {
         match self.rx.try_recv() {
             Ok(event) => Ok(Some(event)),

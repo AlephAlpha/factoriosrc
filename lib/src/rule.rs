@@ -264,7 +264,7 @@ pub enum Rule {
 }
 
 impl Rule {
-    /// Creates a rule table from a rule.
+    /// Create a rule table from a rule.
     pub fn table(self) -> RuleTable {
         match self {
             Self::Factorio => RuleTable::new(NeighborhoodType::Cross, 3, &[3], &[2]).unwrap(),
