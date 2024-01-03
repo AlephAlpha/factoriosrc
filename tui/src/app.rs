@@ -41,11 +41,13 @@ pub struct App<'a> {
     pub solution: Option<String>,
     /// Whether the application should quit.
     pub should_quit: bool,
+    /// Whether to increase the world size when the search fails.
+    pub increase_world_size: bool,
 }
 
 impl<'a> App<'a> {
     /// Create a new [`App`] from the command line arguments and the world allocator.
-    pub fn new(args: Args, allocator: &'a mut WorldAllocator<'a>) -> Result<Self> {
+    pub fn new(args: Args, allocator: &'a WorldAllocator) -> Result<Self> {
         let world = allocator.new_world(args.config)?;
         let step = args.step.unwrap_or(DEFAULT_STEP);
         let mode = Mode::Paused;
@@ -54,6 +56,7 @@ impl<'a> App<'a> {
         let elapsed = Duration::from_secs(0);
         let solution = None;
         let should_quit = false;
+        let increase_world_size = args.increase_world_size;
 
         Ok(Self {
             world,
@@ -64,6 +67,7 @@ impl<'a> App<'a> {
             elapsed,
             solution,
             should_quit,
+            increase_world_size,
         })
     }
 
@@ -88,7 +92,7 @@ impl<'a> App<'a> {
     }
 
     /// Start or resume the search.
-    pub fn start(&mut self) {
+    fn start(&mut self) {
         if self.mode == Mode::Paused {
             self.start = Some(Instant::now());
             self.mode = Mode::Running;
@@ -96,11 +100,25 @@ impl<'a> App<'a> {
     }
 
     /// Pause the search.
-    pub fn pause(&mut self) {
+    fn pause(&mut self) {
         if self.mode == Mode::Running {
             self.elapsed += self.start.take().unwrap().elapsed();
             self.mode = Mode::Paused;
         }
+    }
+
+    /// Increment the world size and restart the search.
+    fn increase_world_size(&mut self) {
+        let mut config = self.config().clone();
+        let w = config.width;
+        let h = config.height;
+        if h > w {
+            config.width = w + 1;
+        } else {
+            config.height = h + 1;
+        }
+
+        self.world.reset(config).unwrap();
     }
 
     /// Run the search for the given number of steps.
@@ -108,6 +126,9 @@ impl<'a> App<'a> {
         let status = self.world.search(self.step);
         if status == Status::Solved {
             self.solution = Some(self.rle(self.generation));
+        }
+        if status == Status::NoSolution && self.increase_world_size {
+            self.increase_world_size();
         }
         if status != Status::Running {
             self.pause();

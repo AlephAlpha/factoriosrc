@@ -34,7 +34,12 @@ The program is still work in progress, so the usage may change in the future.
 
 Features that rlifesrc has but factoriosrc doesn't:
 
-- [x] Improve the performance. <s>Possibly by using some unsafe code.</s> It turns out that we don't need unsafe code, at the cost of being less user-friendly.
+- [x] Improve the performance. <s>Possibly by using some unsafe code.</s> It turns out that we don't need unsafe code, at the cost of being less ergonomic.
+- [ ] A more ergonomic lib API. Possibly by using some unsafe code internally.
+  - [ ] Allow the user to reset the search using a new configuration.
+    - [ ] Currently I use `bumpalo` to allocate the cells, so it's the cells will not be dropped when the search is reset, which may cause memory leaks. This should be fixed.
+  - [ ] Remove the struct `WorldAllocator`. I can't find a way to do this without unsafe code.
+  - [ ] Remove the lifetime parameter of `World`. This would definitely require some unsafe code.
 - [ ] Support transformations (rotation and reflection).
 - [x] Count the number of living cells.
   - [ ] Max population constraint.

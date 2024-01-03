@@ -24,7 +24,7 @@ pub struct Tui<'a> {
 
 impl<'a> Tui<'a> {
     /// Create a new [`Tui`] from the command line arguments and the world allocator.
-    pub fn new(args: Args, allocator: &'a mut WorldAllocator<'a>) -> Result<Self> {
+    pub fn new(args: Args, allocator: &'a WorldAllocator) -> Result<Self> {
         let backend = CrosstermBackend::new(stdout());
         let terminal = Terminal::new(backend)?;
 

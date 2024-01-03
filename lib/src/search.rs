@@ -266,6 +266,7 @@ impl<'a> World<'a> {
                 if self.config.reduce_max_population {
                     let population = *self.population.iter().min().unwrap();
                     self.max_population = Some(population - 1);
+                    self.config.max_population = self.max_population;
                 }
                 self.backtrack()
             }

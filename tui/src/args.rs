@@ -22,6 +22,16 @@ pub struct Args {
     /// WARNING: the search may take a very long time.
     #[arg(long)]
     pub no_tui: bool,
+
+    /// Whether to increase the world size when the search fails.
+    ///
+    /// If the height is greater than the width, the width will increased by 1.
+    /// Otherwise, the height will increased by 1.
+    ///
+    /// When the world size is increased, the search will be restarted, and the current search
+    /// status will be lost.
+    #[arg(long)]
+    pub increase_world_size: bool,
 }
 
 impl Args {

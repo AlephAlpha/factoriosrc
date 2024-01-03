@@ -4,6 +4,7 @@ use crate::{
     error::ConfigError,
     rule::{CellState, RuleTable},
 };
+use bumpalo::Bump;
 use rand::{rngs::StdRng, SeedableRng};
 use std::fmt::Write;
 
@@ -49,14 +50,17 @@ pub enum Status {
 /// other cells. All the cells and the world itself have the same lifetime `'a`.
 ///
 /// However, Rust does not allow self-referential struct in safe code. So we cannot put the
-/// vector in the [`World`] directly. To work around this, we put the vector in a separate struct,
-/// and use a reference to the vector in the [`World`].
+/// vector in the [`World`] directly. To work around this, we allocate the vector in a separate
+/// struct [`WorldAllocator`], and pass a reference when creating the [`World`].
 ///
-/// The user should first create a [`WorldAllocator`], and then create a [`World`] from a mutable
-/// reference to the [`WorldAllocator`].
+/// The user should first create a [`WorldAllocator`], and then create a [`World`] from a reference
+/// to the [`WorldAllocator`].
 ///
-/// Since the [`WorldAllocator`] and the [`World`] have the same lifetime `'a`, you cannot create
-/// multiple worlds from the same allocator.
+/// # Warning
+///
+/// Internally, [`WorldAllocator`] uses a [`bumpalo`](bumpalo::Bump) allocator to allocate the cells.
+/// As a result, when the [`World`] is dropped or [`reset`](World::reset), the cells will not be dropped.
+/// **This may cause a memory leak.**
 ///
 /// # Example
 ///
@@ -71,20 +75,20 @@ pub enum Status {
 /// let mut world = allocator.new_world(config).unwrap();
 /// // The world is now ready to be searched.
 /// ```
-#[derive(Debug, Clone, Default)]
-pub struct WorldAllocator<'a> {
-    /// A vector of cells.
-    cells: Vec<LifeCell<'a>>,
+#[derive(Debug, Default)]
+pub struct WorldAllocator {
+    /// A `bumpalo` allocator.
+    pub(crate) bump: Bump,
 }
 
-impl<'a> WorldAllocator<'a> {
+impl<'a> WorldAllocator {
     /// Create a new [`WorldAllocator`].
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Create a new [`World`] from a configuration and the allocator.
-    pub fn new_world(&'a mut self, config: Config) -> Result<World<'a>, ConfigError> {
+    pub fn new_world(&'a self, config: Config) -> Result<World<'a>, ConfigError> {
         World::new(config, self)
     }
 }
@@ -119,6 +123,9 @@ pub struct World<'a> {
 
     /// The rule table.
     pub(crate) rule: RuleTable,
+
+    /// A reference to the allocator.
+    pub(crate) allocator: &'a WorldAllocator,
 
     /// The world itself. A list of cells.
     pub(crate) cells: &'a [LifeCell<'a>],
@@ -167,7 +174,7 @@ pub struct World<'a> {
 
 impl<'a> World<'a> {
     /// Create a new world from a configuration and a world allocator.
-    pub fn new(config: Config, allocator: &'a mut WorldAllocator<'a>) -> Result<Self, ConfigError> {
+    pub fn new(config: Config, allocator: &'a WorldAllocator) -> Result<Self, ConfigError> {
         let config = config.check()?;
 
         let rule = config.rule.table();
@@ -183,12 +190,9 @@ impl<'a> World<'a> {
         // Number of cells in the world.
         let size = ((w + 2 * r) * (h + 2 * r) * p) as usize;
 
-        allocator.cells.clear();
-        allocator
-            .cells
-            .extend((0..size).map(|i| LifeCell::new(i as isize % p)));
-
-        let cells = allocator.cells.as_slice();
+        let cells = allocator
+            .bump
+            .alloc_slice_fill_with(size, |i| LifeCell::new(i as isize % p));
 
         let rng = config
             .seed
@@ -197,6 +201,7 @@ impl<'a> World<'a> {
         let mut world = Self {
             config,
             rule,
+            allocator,
             cells,
             rng,
             population: vec![0; p as usize],
@@ -210,6 +215,53 @@ impl<'a> World<'a> {
         world.init();
 
         Ok(world)
+    }
+
+    /// Reset the world from a new configuration.
+    ///
+    /// If the new configuration provides a random seed, the random number generator will be reset.
+    /// Otherwise, the old RNG will be used.
+    ///
+    /// ## Warning
+    ///
+    /// The cells in the old world will not be dropped. **This may cause a memory leak.**
+    pub fn reset(&mut self, config: Config) -> Result<(), ConfigError> {
+        let config = config.check()?;
+
+        self.rule = config.rule.table();
+        self.max_population = config.max_population;
+
+        let (w, h, p) = (
+            config.width as isize,
+            config.height as isize,
+            config.period as isize,
+        );
+        let r = self.rule.radius as isize;
+
+        // Number of cells in the world.
+        let size = ((w + 2 * r) * (h + 2 * r) * p) as usize;
+
+        self.cells = self
+            .allocator
+            .bump
+            .alloc_slice_fill_with(size, |i| LifeCell::new(i as isize % p));
+
+        if let Some(seed) = config.seed {
+            self.rng = StdRng::seed_from_u64(seed);
+        }
+
+        self.population = vec![0; p as usize];
+        self.front_count = 0;
+        self.stack.clear();
+        self.stack_index = 0;
+        self.start = None;
+        self.status = Status::NotStarted;
+
+        self.config = config;
+
+        self.init();
+
+        Ok(())
     }
 
     /// Initialize the world.
