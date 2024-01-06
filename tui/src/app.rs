@@ -39,10 +39,14 @@ pub struct App<'a> {
     pub elapsed: Duration,
     /// The last found solution in RLE format.
     pub solution: Option<String>,
+    /// Number of solutions found.
+    pub solution_count: usize,
     /// Whether the application should quit.
     pub should_quit: bool,
     /// Whether to increase the world size when the search fails.
     pub increase_world_size: bool,
+    /// Whether not to stop the search when a solution is found.
+    pub no_stop: bool,
 }
 
 impl<'a> App<'a> {
@@ -55,8 +59,10 @@ impl<'a> App<'a> {
         let start = None;
         let elapsed = Duration::from_secs(0);
         let solution = None;
+        let solution_count = 0;
         let should_quit = false;
         let increase_world_size = args.increase_world_size;
+        let no_stop = args.no_stop;
 
         Ok(Self {
             world,
@@ -66,8 +72,10 @@ impl<'a> App<'a> {
             start,
             elapsed,
             solution,
+            solution_count,
             should_quit,
             increase_world_size,
+            no_stop,
         })
     }
 
@@ -112,7 +120,10 @@ impl<'a> App<'a> {
         let mut config = self.config().clone();
         let w = config.width;
         let h = config.height;
-        if h > w {
+        if config.requires_square() {
+            config.width = w + 1;
+            config.height = h + 1;
+        } else if h > w {
             config.width = w + 1;
         } else {
             config.height = h + 1;
@@ -123,14 +134,16 @@ impl<'a> App<'a> {
 
     /// Run the search for the given number of steps.
     pub fn step(&mut self) {
-        let status = self.world.search(self.step);
+        let mut status = self.world.search(self.step);
         if status == Status::Solved {
             self.solution = Some(self.rle(self.generation));
+            self.solution_count += 1;
         }
         if status == Status::NoSolution && self.increase_world_size {
             self.increase_world_size();
+            status = self.world.status();
         }
-        if status != Status::Running {
+        if status != Status::Running && !self.no_stop || status == Status::NoSolution {
             self.pause();
         }
     }

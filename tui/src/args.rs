@@ -28,10 +28,19 @@ pub struct Args {
     /// If the height is greater than the width, the width will increased by 1.
     /// Otherwise, the height will increased by 1.
     ///
+    /// If the configuration requires a square world, both the width and the height will be
+    /// increased by 1.
+    ///
     /// When the world size is increased, the search will be restarted, and the current search
     /// status will be lost.
     #[arg(long)]
     pub increase_world_size: bool,
+
+    /// Do not stop the search when a solution is found.
+    ///
+    /// The search will continue until no more solutions exist, or paused by the user.
+    #[arg(long)]
+    pub no_stop: bool,
 }
 
 impl Args {

@@ -261,6 +261,16 @@ pub enum Rule {
     /// - A dead cell comes to life if it has exactly 3 living neighbors.
     /// - A living cell stays alive if it has exactly 2 or 3 living neighbors.
     Life,
+
+    /// An unnamed rule (`R3,C2,S6-10,12,B3,N+`).
+    ///
+    /// This rule doesn't have a name yet. It is a variant of Factorio rule.
+    /// It's temporarily added until a rule parser is implemented.
+    ///
+    /// In this rule, a cell has 12 neighbors in a cross shape of radius 3.
+    /// - A dead cell comes to life if it has exactly 3 living neighbors.
+    /// - A living cell stays alive if it has exactly 6, 7, 8, 9, 10, or 12 living neighbors.
+    Unnamed,
 }
 
 impl Rule {
@@ -269,6 +279,9 @@ impl Rule {
         match self {
             Self::Factorio => RuleTable::new(NeighborhoodType::Cross, 3, &[3], &[2]).unwrap(),
             Self::Life => RuleTable::new(NeighborhoodType::Moore, 1, &[3], &[2, 3]).unwrap(),
+            Self::Unnamed => {
+                RuleTable::new(NeighborhoodType::Cross, 3, &[3], &[6, 7, 8, 9, 10, 12]).unwrap()
+            }
         }
     }
 
@@ -277,6 +290,7 @@ impl Rule {
         match self {
             Self::Factorio => "R3,C2,S2,B3,N+",
             Self::Life => "B3/S23",
+            Self::Unnamed => "R3,C2,S6-10,12,B3,N+",
         }
     }
 }

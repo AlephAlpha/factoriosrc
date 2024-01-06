@@ -39,11 +39,12 @@ impl App<'_> {
 
     /// Render the top bar.
     ///
-    /// This includes the current generation, the population, and the elapsed time.
+    /// This includes the current generation, the population, the number of solutions found, and the
+    /// elapsed time.
     fn render_top_bar(&self, frame: &mut Frame, area: Rect) {
         let chunks = Layout::new(
             Direction::Horizontal,
-            Constraint::from_ratios([(1, 3), (1, 3), (1, 3)]),
+            Constraint::from_ratios([(1, 4), (1, 4), (1, 4), (1, 4)]),
         )
         .split(area);
 
@@ -59,6 +60,10 @@ impl App<'_> {
         .style(style);
         frame.render_widget(population, chunks[1]);
 
+        let solution_count =
+            Paragraph::new(format!("Solutions: {}", self.solution_count)).style(style);
+        frame.render_widget(solution_count, chunks[2]);
+
         // Only show the elapsed time if the search not running.
         let elapsed_str = if self.mode == Mode::Running {
             String::new()
@@ -66,7 +71,7 @@ impl App<'_> {
             format!("Time: {:.3?}", self.elapsed)
         };
         let elapsed = Paragraph::new(elapsed_str).style(style);
-        frame.render_widget(elapsed, chunks[2]);
+        frame.render_widget(elapsed, chunks[3]);
     }
 
     /// Render the bottom bar.
