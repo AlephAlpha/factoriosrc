@@ -120,7 +120,10 @@ impl<'a> App<'a> {
         let mut config = self.config().clone();
         let w = config.width;
         let h = config.height;
-        if config.requires_square() {
+        let d = config.diagonal_width;
+        if d.is_some_and(|d| d < w) {
+            config.diagonal_width = Some(d.unwrap() + 1);
+        } else if config.requires_square() {
             config.width = w + 1;
             config.height = h + 1;
         } else if h > w {

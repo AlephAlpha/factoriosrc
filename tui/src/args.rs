@@ -25,7 +25,8 @@ pub struct Args {
 
     /// Whether to increase the world size when the search fails.
     ///
-    /// If the height is greater than the width, the width will increased by 1.
+    /// If the diagonal width exists and is smaller than the width, it will be increased by 1.
+    /// Otherwise, if the height is greater than the width, the width will increased by 1.
     /// Otherwise, the height will increased by 1.
     ///
     /// If the configuration requires a square world, both the width and the height will be
