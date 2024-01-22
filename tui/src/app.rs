@@ -1,11 +1,8 @@
 use crate::{args::Args, event::TermEvent};
 use color_eyre::Result;
 use crossterm::event::KeyCode;
-use factoriosrc_lib::{Status, World, WorldAllocator};
-use std::{
-    ops::{Deref, DerefMut},
-    time::{Duration, Instant},
-};
+use factoriosrc_lib::{Status, World};
+use std::time::{Duration, Instant};
 
 const DEFAULT_STEP: usize = 100000;
 
@@ -24,9 +21,9 @@ pub enum Mode {
 
 /// Application state.
 #[derive(Debug)]
-pub struct App<'a> {
+pub struct App {
     /// The main struct of the search algorithm.
-    pub world: World<'a>,
+    pub world: World,
     /// Number of steps between each display of the current partial result.
     pub step: usize,
     /// Current mode of the application.
@@ -49,10 +46,10 @@ pub struct App<'a> {
     pub no_stop: bool,
 }
 
-impl<'a> App<'a> {
+impl App {
     /// Create a new [`App`] from the command line arguments and the world allocator.
-    pub fn new(args: Args, allocator: &'a WorldAllocator) -> Result<Self> {
-        let world = allocator.new_world(args.config)?;
+    pub fn new(args: Args) -> Result<Self> {
+        let world = World::new(args.config)?;
         let step = args.step.unwrap_or(DEFAULT_STEP);
         let mode = Mode::Paused;
         let generation = 0;
@@ -83,7 +80,7 @@ impl<'a> App<'a> {
     ///
     /// If the current generation is the last one, do nothing.
     pub fn next_generation(&mut self) {
-        let period = self.config().period as isize;
+        let period = self.world.config().period as isize;
 
         if self.generation < period - 1 {
             self.generation += 1;
@@ -117,7 +114,7 @@ impl<'a> App<'a> {
 
     /// Increment the world size and restart the search.
     fn increase_world_size(&mut self) {
-        let mut config = self.config().clone();
+        let mut config = self.world.config().clone();
         let w = config.width;
         let h = config.height;
         let d = config.diagonal_width;
@@ -132,14 +129,14 @@ impl<'a> App<'a> {
             config.height = h + 1;
         }
 
-        self.world.reset(config).unwrap();
+        self.world = World::new(config).unwrap();
     }
 
     /// Run the search for the given number of steps.
     pub fn step(&mut self) {
         let mut status = self.world.search(self.step);
         if status == Status::Solved {
-            self.solution = Some(self.rle(self.generation));
+            self.solution = Some(self.world.rle(self.generation));
             self.solution_count += 1;
         }
         if status == Status::NoSolution && self.increase_world_size {
@@ -232,19 +229,5 @@ impl<'a> App<'a> {
                 TermEvent::Resize => {}
             },
         }
-    }
-}
-
-impl<'a> Deref for App<'a> {
-    type Target = World<'a>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.world
-    }
-}
-
-impl<'a> DerefMut for App<'a> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.world
     }
 }

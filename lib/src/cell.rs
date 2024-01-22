@@ -1,11 +1,20 @@
 use crate::rule::{CellState, Descriptor, MAX_NEIGHBORHOOD_SIZE};
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 
 /// A cell in the cellular automaton.
 ///
 /// The name `LifeCell` is used to avoid confusion with the [`Cell`] type in `std::cell`.
+///
+/// # Safety
+///
+/// This struct contains raw pointers. It is safe to use as long as the following invariants are
+/// maintained:
+///
+/// - Raw pointers in the `neighborhood` array are non-null.
+/// - Other raw pointers may be null.
+/// - When a pointer is non-null, it must point to a cell in the same [`World`](crate::World).
 #[derive(Debug, Clone)]
-pub(crate) struct LifeCell<'a> {
+pub(crate) struct LifeCell {
     /// The generation of the cell.
     pub(crate) generation: isize,
 
@@ -18,27 +27,29 @@ pub(crate) struct LifeCell<'a> {
     pub(crate) descriptor: Cell<Descriptor>,
 
     /// The predecessor of the cell.
-    pub(crate) predecessor: Cell<Option<&'a LifeCell<'a>>>,
+    pub(crate) predecessor: *const LifeCell,
 
     /// The successor of the cell.
-    pub(crate) successor: Cell<Option<&'a LifeCell<'a>>>,
+    pub(crate) successor: *const LifeCell,
 
     /// The neighborhood of the cell.
-    pub(crate) neighborhood: [Cell<Option<&'a LifeCell<'a>>>; MAX_NEIGHBORHOOD_SIZE],
+    pub(crate) neighborhood: [*const LifeCell; MAX_NEIGHBORHOOD_SIZE],
 
     /// Cells that are known to be equal to this cell because of the symmetry.
-    pub(crate) symmetry: RefCell<Vec<&'a LifeCell<'a>>>,
+    ///
+    /// The pointers in this vector should be non-null.
+    pub(crate) symmetry: Vec<*const LifeCell>,
 
     /// The next cell to be searched according to the search order.
-    pub(crate) next: Cell<Option<&'a LifeCell<'a>>>,
+    pub(crate) next: *const LifeCell,
 
     /// Whether the cell is on the front, i.e. the first row or column, depending on the search order.
     ///
     /// This is used to ensure that the front is always non-empty.
-    pub(crate) is_front: Cell<bool>,
+    pub(crate) is_front: bool,
 }
 
-impl<'a> LifeCell<'a> {
+impl LifeCell {
     /// Create a new cell in the given generation.
     ///
     /// Other fields are initialized to their default values.
@@ -47,12 +58,12 @@ impl<'a> LifeCell<'a> {
             generation,
             state: Cell::new(None),
             descriptor: Cell::default(),
-            predecessor: Cell::new(None),
-            successor: Cell::new(None),
-            neighborhood: Default::default(),
-            symmetry: RefCell::new(Vec::new()),
-            next: Cell::new(None),
-            is_front: Cell::new(false),
+            predecessor: std::ptr::null(),
+            successor: std::ptr::null(),
+            neighborhood: [std::ptr::null(); MAX_NEIGHBORHOOD_SIZE],
+            symmetry: Vec::new(),
+            next: std::ptr::null(),
+            is_front: false,
         }
     }
 
@@ -64,13 +75,6 @@ impl<'a> LifeCell<'a> {
     /// Get the neighborhood descriptor of the cell.
     pub(crate) fn descriptor(&self) -> Descriptor {
         self.descriptor.get()
-    }
-
-    /// Whether the cell is on the front, i.e. the first row or column, depending on the search order.
-    ///
-    /// This is used to ensure that the front is always non-empty.
-    pub(crate) fn is_front(&self) -> bool {
-        self.is_front.get()
     }
 
     /// Update the neighborhood descriptor to increment the number of dead neighbors.

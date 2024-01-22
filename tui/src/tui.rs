@@ -7,28 +7,27 @@ use color_eyre::Result;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
-use factoriosrc_lib::WorldAllocator;
 use ratatui::{backend::CrosstermBackend, terminal::Terminal};
 use std::io::{stdout, Stdout};
 
 /// The text-based user interface.
 #[derive(Debug)]
-pub struct Tui<'a> {
+pub struct Tui {
     /// The terminal.
     terminal: Terminal<CrosstermBackend<Stdout>>,
     /// The application state.
-    app: App<'a>,
+    app: App,
     /// The event handler.
     event_handler: EventHandler,
 }
 
-impl<'a> Tui<'a> {
+impl Tui {
     /// Create a new [`Tui`] from the command line arguments and the world allocator.
-    pub fn new(args: Args, allocator: &'a WorldAllocator) -> Result<Self> {
+    pub fn new(args: Args) -> Result<Self> {
         let backend = CrosstermBackend::new(stdout());
         let terminal = Terminal::new(backend)?;
 
-        let app = App::new(args, allocator)?;
+        let app = App::new(args)?;
         let event_handler = EventHandler::new();
 
         let mut tui = Self {
@@ -95,7 +94,7 @@ impl<'a> Tui<'a> {
     }
 }
 
-impl Drop for Tui<'_> {
+impl Drop for Tui {
     fn drop(&mut self) {
         self.exit().ok();
     }

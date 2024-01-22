@@ -7,13 +7,13 @@ use crate::{
     world::{Reason, Status, World},
 };
 
-impl<'a> World<'a> {
+impl World {
     /// Check the neighborhood descriptor for a cell to see what it implies.
     ///
     /// It may deduce the state of some related cells, or find a conflict.
     ///
     /// If a conflict is found, return [`None`].
-    fn check_descriptor(&mut self, cell: &'a LifeCell<'a>) -> Option<()> {
+    fn check_descriptor(&mut self, cell: &LifeCell) -> Option<()> {
         let implication = self.rule.implies(cell.descriptor());
 
         // The descriptor does not imply anything.
@@ -31,7 +31,7 @@ impl<'a> World<'a> {
         // In this case, the successor was unknown, so there is no implication about the cell
         // itself or its neighbors. So we can return early.
         if implication.intersects(Implication::SuccessorDead | Implication::SuccessorAlive) {
-            if let Some(successor) = cell.successor.get() {
+            if let Some(successor) = unsafe { cell.successor.as_ref() } {
                 let state = if implication.contains(Implication::SuccessorAlive) {
                     CellState::Alive
                 } else {
@@ -64,7 +64,7 @@ impl<'a> World<'a> {
             };
 
             for i in 0..self.rule.neighborhood_size {
-                if let Some(neighbor) = cell.neighborhood[i].get() {
+                if let Some(neighbor) = unsafe { cell.neighborhood[i].as_ref() } {
                     if neighbor.state().is_none() {
                         self.set_cell(neighbor, state, Reason::Deduced);
                     }
@@ -84,7 +84,7 @@ impl<'a> World<'a> {
     /// and deduces the state of some cells by symmetry.
     ///
     /// If a conflict is found, return [`None`].
-    fn check_affected(&mut self, cell: &'a LifeCell<'a>) -> Option<()> {
+    fn check_affected(&mut self, cell: &LifeCell) -> Option<()> {
         // Check if the front becomes empty.
         if self.front_count == 0 {
             return None;
@@ -100,8 +100,8 @@ impl<'a> World<'a> {
 
         // Deduce the state of some cells by symmetry.
         let state = cell.state().unwrap();
-        for i in 0..cell.symmetry.borrow().len() {
-            let symmetry = cell.symmetry.borrow()[i];
+        for i in 0..cell.symmetry.len() {
+            let symmetry = unsafe { &*cell.symmetry[i] };
             let symmetry_state = symmetry.state();
 
             if symmetry_state.is_none() {
@@ -116,13 +116,13 @@ impl<'a> World<'a> {
 
         // Check the neighborhood descriptors of the neighbors.
         for i in 0..self.rule.neighborhood_size {
-            if let Some(neighbor) = cell.neighborhood[i].get() {
+            if let Some(neighbor) = unsafe { cell.neighborhood[i].as_ref() } {
                 self.check_descriptor(neighbor)?;
             }
         }
 
         // Check the neighborhood descriptor of the predecessor.
-        if let Some(predecessor) = cell.predecessor.get() {
+        if let Some(predecessor) = unsafe { cell.predecessor.as_ref() } {
             self.check_descriptor(predecessor)?;
         }
 
@@ -134,7 +134,7 @@ impl<'a> World<'a> {
     /// If a conflict is found, return [`None`].
     fn check_stack(&mut self) -> Option<()> {
         while self.stack_index < self.stack.len() {
-            let cell = self.stack[self.stack_index].0;
+            let cell = unsafe { &*self.stack[self.stack_index].0 };
             self.check_affected(cell)?;
             self.stack_index += 1;
         }
@@ -150,13 +150,14 @@ impl<'a> World<'a> {
     /// - Otherwise, return [`Running`](Status::Running).
     fn backtrack(&mut self) -> Status {
         while let Some((cell, reason)) = self.stack.pop() {
+            let cell = unsafe { &*cell };
             match reason {
                 Reason::Known => break,
                 Reason::Deduced => self.unset_cell(cell),
                 Reason::Guessed => {
                     let state = cell.state().unwrap();
                     self.stack_index = self.stack.len();
-                    self.start = cell.next.get();
+                    self.start = cell.next;
                     self.unset_cell(cell);
                     self.set_cell(cell, !state, Reason::Deduced);
                     return Status::Running;
@@ -171,7 +172,7 @@ impl<'a> World<'a> {
     ///
     /// If no cell is found, return [`None`].
     fn guess(&mut self) -> Option<()> {
-        while let Some(cell) = self.start {
+        while let Some(cell) = unsafe { self.start.as_ref() } {
             if cell.state().is_none() {
                 let state = match self.config.new_state {
                     NewState::Alive => CellState::Alive,
@@ -179,10 +180,10 @@ impl<'a> World<'a> {
                     NewState::Random => self.rng.gen(),
                 };
                 self.set_cell(cell, state, Reason::Guessed);
-                self.start = cell.next.get();
+                self.start = cell.next;
                 return Some(());
             } else {
-                self.start = cell.next.get();
+                self.start = cell.next;
             }
         }
 

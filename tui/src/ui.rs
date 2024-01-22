@@ -12,7 +12,7 @@ use ratatui::{
     },
 };
 
-impl App<'_> {
+impl App {
     /// Render the TUI interface.
     pub fn render(&self, frame: &mut Frame) {
         let chunks = Layout::new(
@@ -86,7 +86,7 @@ impl App<'_> {
 
         let style = Style::new().black().on_light_blue();
 
-        let status_str = match self.status() {
+        let status_str = match self.world.status() {
             Status::NotStarted => "Not started yet.",
             Status::Running => {
                 if self.mode == Mode::Running {
@@ -175,16 +175,16 @@ impl App<'_> {
 
 /// A widget to show the current generation in the RLE format.
 #[derive(Debug)]
-struct Rle<'a, 'b> {
+struct Rle<'b> {
     /// The current generation.
     t: isize,
     /// A reference to the world.
-    world: &'b World<'a>,
+    world: &'b World,
 }
 
-impl<'a, 'b> Rle<'a, 'b> {
+impl<'b> Rle<'b> {
     /// Create a new RLE widget from the app.
-    fn new(app: &'b App<'a>) -> Self {
+    fn new(app: &'b App) -> Self {
         Self {
             t: app.generation,
             world: &app.world,
@@ -192,7 +192,7 @@ impl<'a, 'b> Rle<'a, 'b> {
     }
 }
 
-impl Widget for Rle<'_, '_> {
+impl Widget for Rle<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let w = self.world.config().width as u16;
         let h = self.world.config().height as u16;
