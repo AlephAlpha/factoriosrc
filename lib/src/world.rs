@@ -64,9 +64,7 @@ pub struct World {
     /// The rule table.
     pub(crate) rule: RuleTable,
 
-    /// The list of cells in the world.
-    ///
-    /// Will MIRI be happy if we use a raw pointer instead?
+    /// A pointer to the list of cells.
     pub(crate) cells_ptr: *mut [LifeCell],
 
     /// The length of the list of cells.

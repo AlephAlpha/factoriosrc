@@ -11,6 +11,9 @@ run *ARGS: build
 # Run the tests
 test:
     cargo test
+
+# Run the tests with Miri
+test-miri:
     cargo +nightly miri test test_miri
 
 # Build and serve the documentation
