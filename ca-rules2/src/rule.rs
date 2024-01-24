@@ -1,3 +1,5 @@
+use crate::NeighborError;
+
 /// The coordinates of a neighbor and its weight.
 ///
 /// See the documentation of [`Rule`] for more information.
@@ -31,12 +33,22 @@ impl Neighbor {
     ///
     /// This is useful for non-totalistic rules.
     ///
-    /// The number of neighbors must be at most 64.
-    pub fn from_coords_non_totalistic(coords: impl IntoIterator<Item = (i32, i32)>) -> Vec<Self> {
+    /// # Errors
+    ///
+    /// The number of neighbors must be at most 64. Otherwise, an error is returned.
+    pub fn from_coords_non_totalistic(
+        coords: impl IntoIterator<Item = (i32, i32)>,
+    ) -> Result<Vec<Self>, NeighborError> {
         coords
             .into_iter()
             .enumerate()
-            .map(|(i, coord)| Neighbor::new(coord, 1 << i))
+            .map(|(i, coord)| {
+                if i < 64 {
+                    Ok(Neighbor::new(coord, 1 << i))
+                } else {
+                    Err(NeighborError::NeighborhoodTooLarge)
+                }
+            })
             .collect()
     }
 
@@ -46,21 +58,22 @@ impl Neighbor {
     ///
     /// If `is_totalistic` is `false`, the weight of the `i`-th neighbor is `2^i`.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `is_totalistic` is `false` and the number of neighbors is greater than 64.
+    /// Returns an error if the radius is too large.
     ///
-    /// The maximum radius allowed is `3` for [`Moore`](NeighborhoodType::Moore),
+    /// If `is_totalistic` is `false`, the number of neighbors must be at most 64.
+    /// This means that the maximum radius allowed is `3` for [`Moore`](NeighborhoodType::Moore),
     /// `5` for [`VonNeumann`](NeighborhoodType::VonNeumann),
     /// `16` for [`Cross`](NeighborhoodType::Cross),
     /// and `4` for [`Hexagonal`](NeighborhoodType::Hexagonal).
     ///
-    /// When `is_totalistic` is `true`, the radius is not limited.
+    /// When `is_totalistic` is `true`, the radius should be at most `i32::MAX`.
     pub fn from_neighborhood_type(
         neighborhood_type: NeighborhoodType,
         radius: u32,
         is_totalistic: bool,
-    ) -> Vec<Self> {
+    ) -> Result<Vec<Self>, NeighborError> {
         neighborhood_type.neighbors(radius, is_totalistic)
     }
 }
@@ -131,18 +144,27 @@ impl NeighborhoodType {
     ///
     /// If `is_totalistic` is `false`, the weight of the `i`-th neighbor is `2^i`.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `is_totalistic` is `false` and the number of neighbors is greater than 64.
+    /// Returns an error if the radius is too large.
     ///
-    /// The maximum radius allowed is `3` for [`Moore`](NeighborhoodType::Moore),
+    /// If `is_totalistic` is `false`, the number of neighbors must be at most 64.
+    /// This means that the maximum radius allowed is `3` for [`Moore`](NeighborhoodType::Moore),
     /// `5` for [`VonNeumann`](NeighborhoodType::VonNeumann),
     /// `16` for [`Cross`](NeighborhoodType::Cross),
     /// and `4` for [`Hexagonal`](NeighborhoodType::Hexagonal).
     ///
-    /// When `is_totalistic` is `true`, the radius is not limited.
-    pub fn neighbors(self, radius: u32, is_totalistic: bool) -> Vec<Neighbor> {
-        let radius: i32 = radius.try_into().unwrap();
+    /// When `is_totalistic` is `true`, the radius should be at most `i32::MAX`.
+    pub fn neighbors(
+        self,
+        radius: u32,
+        is_totalistic: bool,
+    ) -> Result<Vec<Neighbor>, NeighborError> {
+        if radius > i32::MAX as u32 {
+            return Err(NeighborError::RadiusTooLarge);
+        }
+
+        let radius = radius as i32;
 
         let size = match self {
             NeighborhoodType::Moore => 4 * radius * (radius + 1),
@@ -151,8 +173,8 @@ impl NeighborhoodType {
             NeighborhoodType::Hexagonal => 3 * radius * (radius + 1),
         };
 
-        if !is_totalistic {
-            assert!(size <= 64, "The number of neighbors must be at most 64");
+        if !is_totalistic && size > 64 {
+            return Err(NeighborError::RadiusTooLarge);
         }
 
         let mut coords = Vec::with_capacity(size as usize);
@@ -204,7 +226,7 @@ impl NeighborhoodType {
         };
 
         if is_totalistic {
-            Neighbor::from_coords(coords)
+            Ok(Neighbor::from_coords(coords))
         } else {
             Neighbor::from_coords_non_totalistic(coords)
         }
@@ -306,7 +328,7 @@ impl NeighborhoodType {
 /// # use ca_rules2::{NeighborhoodType, Rule};
 /// let rule = Rule {
 ///    states: 2,
-///    neighbors: NeighborhoodType::Moore.neighbors(1, true),
+///    neighbors: NeighborhoodType::Moore.neighbors(1, true).unwrap(),
 ///    birth: vec![3],
 ///    survival: vec![2, 3],
 /// };
@@ -334,7 +356,7 @@ impl Rule {
     }
 
     /// Number of neighbors.
-    pub fn num_neighbors(&self) -> usize {
+    pub fn neighborhood_size(&self) -> usize {
         self.neighbors.len()
     }
 
@@ -350,6 +372,16 @@ impl Rule {
             .max()
             .unwrap_or(0) as u32
     }
+
+    /// Checks whether the birth and survival conditions are valid.
+    ///
+    /// These conditions should not contain any number greater than the sum of weights of neighbors.
+    pub fn check_conditions(&self) -> bool {
+        let sum_of_weights = self.neighbors.iter().map(|neighbor| neighbor.weight).sum();
+
+        self.birth.iter().all(|&n| n <= sum_of_weights)
+            && self.survival.iter().all(|&n| n <= sum_of_weights)
+    }
 }
 
 #[cfg(test)]
@@ -358,7 +390,7 @@ mod tests {
 
     #[test]
     fn test_neighborhood_type() {
-        let moore = NeighborhoodType::Moore.neighbors(1, true);
+        let moore = NeighborhoodType::Moore.neighbors(1, true).unwrap();
         assert_eq!(
             moore,
             vec![
@@ -373,7 +405,7 @@ mod tests {
             ]
         );
 
-        let von_neumann = NeighborhoodType::VonNeumann.neighbors(1, true);
+        let von_neumann = NeighborhoodType::VonNeumann.neighbors(1, true).unwrap();
         assert_eq!(
             von_neumann,
             vec![
@@ -384,7 +416,7 @@ mod tests {
             ]
         );
 
-        let cross = NeighborhoodType::Cross.neighbors(1, true);
+        let cross = NeighborhoodType::Cross.neighbors(1, true).unwrap();
         assert_eq!(
             cross,
             vec![
@@ -395,7 +427,7 @@ mod tests {
             ]
         );
 
-        let hexagonal = NeighborhoodType::Hexagonal.neighbors(1, true);
+        let hexagonal = NeighborhoodType::Hexagonal.neighbors(1, true).unwrap();
         assert_eq!(
             hexagonal,
             vec![
@@ -410,19 +442,31 @@ mod tests {
 
         for r in 1..5 {
             assert_eq!(
-                NeighborhoodType::Moore.neighbors(r as u32, true).len(),
+                NeighborhoodType::Moore
+                    .neighbors(r as u32, true)
+                    .unwrap()
+                    .len(),
                 4 * r * (r + 1)
             );
             assert_eq!(
-                NeighborhoodType::VonNeumann.neighbors(r as u32, true).len(),
+                NeighborhoodType::VonNeumann
+                    .neighbors(r as u32, true)
+                    .unwrap()
+                    .len(),
                 2 * r * (r + 1)
             );
             assert_eq!(
-                NeighborhoodType::Cross.neighbors(r as u32, true).len(),
+                NeighborhoodType::Cross
+                    .neighbors(r as u32, true)
+                    .unwrap()
+                    .len(),
                 4 * r
             );
             assert_eq!(
-                NeighborhoodType::Hexagonal.neighbors(r as u32, true).len(),
+                NeighborhoodType::Hexagonal
+                    .neighbors(r as u32, true)
+                    .unwrap()
+                    .len(),
                 3 * r * (r + 1)
             );
         }
@@ -441,7 +485,7 @@ mod tests {
             for neighborhood_type in neighborhood_types {
                 let rule = Rule {
                     states: 2,
-                    neighbors: neighborhood_type.neighbors(r, true),
+                    neighbors: neighborhood_type.neighbors(r, true).unwrap(),
                     birth: Vec::new(),
                     survival: Vec::new(),
                 };
