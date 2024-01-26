@@ -68,7 +68,7 @@ impl Neighbor {
     /// `16` for [`Cross`](NeighborhoodType::Cross),
     /// and `4` for [`Hexagonal`](NeighborhoodType::Hexagonal).
     ///
-    /// When `is_totalistic` is `true`, the radius should be at most `i32::MAX`.
+    /// When `is_totalistic` is `true`, the radius should be at most [`i32::MAX`].
     pub fn from_neighborhood_type(
         neighborhood_type: NeighborhoodType,
         radius: u32,
@@ -154,7 +154,7 @@ impl NeighborhoodType {
     /// `16` for [`Cross`](NeighborhoodType::Cross),
     /// and `4` for [`Hexagonal`](NeighborhoodType::Hexagonal).
     ///
-    /// When `is_totalistic` is `true`, the radius should be at most `i32::MAX`.
+    /// When `is_totalistic` is `true`, the radius should be at most [`i32::MAX`].
     pub fn neighbors(
         self,
         radius: u32,

@@ -1,4 +1,4 @@
-//! Parsing rule strings of life-like and other cellular automata.
+//! A crate for parsing and working with cellular automata rules.
 //!
 //! More documentation will be added later.
 
@@ -9,6 +9,6 @@ mod error;
 mod parse;
 mod rule;
 
-pub use error::{NeighborError, RuleStringError};
-pub use parse::{parse_generations, parse_life_like};
+pub use error::{NeighborError, ParseRuleError};
+pub use parse::{parse_generations, parse_hrot, parse_life_like};
 pub use rule::{Neighbor, NeighborhoodType, Rule};

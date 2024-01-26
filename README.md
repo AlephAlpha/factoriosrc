@@ -39,10 +39,12 @@ Features that rlifesrc has but factoriosrc doesn't:
 - [x] Count the number of living cells.
   - [x] Max population constraint.
   - [x] Dynamically adjust the max population constraint to find the smallest pattern.
-- [ ] Support more rules. Parse rule strings.
+- [ ] Support more rules.
+  - [ ] Parse rule strings.
   - [ ] Non-totalistic rules.
   - [ ] Generations rules.
   - [ ] Hexagonal rules.
+  - [ ] Check the symmetry of a rule.
   - [ ] Update (or completely rewrite) the [ca-rules](https://crates.io/crates/ca-rules) crate.
 - [x] Support trying a random state for unknown cells.
 - [ ] Set some cells to be known in the configuration.

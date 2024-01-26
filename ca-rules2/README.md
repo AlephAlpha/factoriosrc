@@ -1,6 +1,6 @@
 # ca-rules2
 
-A parser for cellular automata rules. This is a rewrite of [ca-rules](https://crates.io/crates/ca-rules) crate.
+A crate for parsing and working with cellular automata rules. This is a rewrite of [ca-rules](https://crates.io/crates/ca-rules) crate.
 
 Currently it only supports [higher-range outer-totalistic rules](https://conwaylife.com/wiki/Higher-range_outer-totalistic_cellular_automaton). These are the rules that are supported by factoriosrc.
 

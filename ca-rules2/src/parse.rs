@@ -1,5 +1,6 @@
-use crate::{NeighborhoodType, Rule, RuleStringError};
+use crate::{NeighborhoodType, ParseRuleError, Rule};
 use std::{
+    num::ParseIntError,
     ops::{Range, RangeInclusive},
     str,
 };
@@ -22,18 +23,9 @@ impl CharPattern for [u8] {
     }
 }
 
-impl<const N: usize> CharPattern for &[u8; N] {
+impl<const N: usize> CharPattern for [u8; N] {
     fn matches(&self, c: u8) -> bool {
         self.contains(&c)
-    }
-}
-
-impl<F> CharPattern for F
-where
-    F: Fn(&u8) -> bool,
-{
-    fn matches(&self, c: u8) -> bool {
-        self(&c)
     }
 }
 
@@ -46,6 +38,15 @@ impl CharPattern for Range<u8> {
 impl CharPattern for RangeInclusive<u8> {
     fn matches(&self, c: u8) -> bool {
         self.contains(&c)
+    }
+}
+
+impl<T> CharPattern for &T
+where
+    T: CharPattern,
+{
+    fn matches(&self, c: u8) -> bool {
+        (*self).matches(c)
     }
 }
 
@@ -86,6 +87,24 @@ impl<'a> Parser<'a> {
         result
     }
 
+    /// Parse zero or more things separated by a given separator with a given
+    /// parser function.
+    fn parse_many_sep<T>(
+        &mut self,
+        sep: impl CharPattern,
+        parser_fn: impl FnMut(&mut Self) -> Option<T>,
+    ) -> Vec<T> {
+        let mut result = Vec::new();
+        let mut parser_fn = parser_fn;
+        while let Some(item) = self.try_parse(&mut parser_fn) {
+            result.push(item);
+            if self.read_matches(&sep).is_none() {
+                break;
+            }
+        }
+        result
+    }
+
     /// Peek at the next character without consuming it.
     fn peek(&self) -> Option<u8> {
         self.input.first().copied()
@@ -114,14 +133,21 @@ impl<'a> Parser<'a> {
     fn read_matches_many(&mut self, pattern: impl CharPattern) -> &'a [u8] {
         let input = self.input;
         let mut len = 0;
-        while let Some(c) = self.peek() {
-            if !pattern.matches(c) {
-                break;
-            }
-            self.input = &self.input[1..];
+        while self.read_matches(&pattern).is_some() {
             len += 1;
         }
         &input[..len]
+    }
+
+    /// Try to read something that exactly matches the given byte string.
+    fn read_matches_exact(&mut self, bytes: &[u8]) -> Option<()> {
+        let input = self.input;
+        if input.starts_with(bytes) {
+            self.input = &input[bytes.len()..];
+            Some(())
+        } else {
+            None
+        }
     }
 
     /// Parse a single digit as a `u64`.
@@ -130,14 +156,18 @@ impl<'a> Parser<'a> {
         Some((c - b'0') as u64)
     }
 
-    /// Parse a number as a `u64`.
-    fn parse_number(&mut self) -> Option<u64> {
+    /// Try to read zero or more digits and parse them as a `u64`.
+    ///
+    /// Returns `None` if there are no digits to parse.
+    /// Returns `Some(Err(_))` if there are digits to parse but the number is
+    /// too large to be represented by a `u64`.
+    fn parse_number(&mut self) -> Option<Result<u64, ParseIntError>> {
         let digits = self.read_matches_many(b'0'..=b'9');
-        str::from_utf8(digits).unwrap().parse().ok()
+        (!digits.is_empty()).then(|| str::from_utf8(digits).unwrap().parse())
     }
 
-    /// Parse a neighborhood type.
-    fn parse_neighborhood_type(&mut self) -> Option<NeighborhoodType> {
+    /// Parse a neighborhood type for a Life-like rule string.
+    fn parse_neighborhood_type_life_like(&mut self) -> Option<NeighborhoodType> {
         match self.read() {
             Some(b'V' | b'v') => Some(NeighborhoodType::VonNeumann),
             Some(b'H' | b'h') => Some(NeighborhoodType::Hexagonal),
@@ -146,12 +176,43 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Parse a neighborhood type for a HROT rule string.
+    fn parse_neighborhood_type_hrot(&mut self) -> Option<NeighborhoodType> {
+        match self.read()? {
+            b'M' | b'm' => Some(NeighborhoodType::Moore),
+            b'N' | b'n' => Some(NeighborhoodType::VonNeumann),
+            b'+' => Some(NeighborhoodType::Cross),
+            b'H' | b'h' => Some(NeighborhoodType::Hexagonal),
+            _ => None,
+        }
+    }
+
+    /// Parse a single number or a range in the form `{min}-{max}`.
+    ///
+    /// If it is a single number, it is converted to a range with the same
+    /// minimum and maximum.
+    fn parse_range(&mut self) -> Option<Result<RangeInclusive<u64>, ParseIntError>> {
+        let min = self.parse_number()?;
+        let max = self.try_parse(|parser| {
+            parser.read_matches(b'-')?;
+            parser.parse_number()
+        });
+        match min {
+            Err(err) => Some(Err(err)),
+            Ok(min) => match max {
+                Some(Err(err)) => Some(Err(err)),
+                Some(Ok(max)) => Some(Ok(min..=max)),
+                None => Some(Ok(min..=min)),
+            },
+        }
+    }
+
     /// Parse a Life-like rule string with B/S notation or Catagolue notation.
     ///
     /// Returns `None` if this rule string is not using these notations.
     /// Returns `Some(Err(_))` if it is using these notation but there is some
     /// other error.
-    fn parse_life_like_bs(&mut self) -> Option<Result<Rule, RuleStringError>> {
+    fn parse_life_like_bs(&mut self) -> Option<Result<Rule, ParseRuleError>> {
         // Parse the birth sequence.
         self.read_matches(b"Bb")?;
         let birth = self.parse_many(|parser| parser.parse_digit());
@@ -165,7 +226,7 @@ impl<'a> Parser<'a> {
         let survival = self.parse_many(|parser| parser.parse_digit());
 
         // Parse the neighborhood type.
-        let neighborhood_type = self.parse_neighborhood_type()?;
+        let neighborhood_type = self.parse_neighborhood_type_life_like()?;
         let neighbors = neighborhood_type.neighbors(1, true).unwrap();
 
         // Check that there is no more input.
@@ -181,7 +242,7 @@ impl<'a> Parser<'a> {
             survival,
         };
         if !rule.check_conditions() {
-            return Some(Err(RuleStringError::InvalidCondition));
+            return Some(Err(ParseRuleError::InvalidCondition));
         }
 
         Some(Ok(rule))
@@ -192,7 +253,7 @@ impl<'a> Parser<'a> {
     /// Returns `None` if this rule string is not using S/B notation.
     /// Returns `Some(Err(_))` if it is using S/B notation but there is some
     /// other error.
-    fn parse_life_like_sb(&mut self) -> Option<Result<Rule, RuleStringError>> {
+    fn parse_life_like_sb(&mut self) -> Option<Result<Rule, ParseRuleError>> {
         // Parse the survival sequence.
         let survival = self.parse_many(|parser| parser.parse_digit());
 
@@ -203,7 +264,7 @@ impl<'a> Parser<'a> {
         let birth = self.parse_many(|parser| parser.parse_digit());
 
         // Parse the neighborhood type.
-        let neighborhood_type = self.parse_neighborhood_type()?;
+        let neighborhood_type = self.parse_neighborhood_type_life_like()?;
         let neighbors = neighborhood_type.neighbors(1, true).unwrap();
 
         // Check that there is no more input.
@@ -219,7 +280,7 @@ impl<'a> Parser<'a> {
             survival,
         };
         if !rule.check_conditions() {
-            return Some(Err(RuleStringError::InvalidCondition));
+            return Some(Err(ParseRuleError::InvalidCondition));
         }
 
         Some(Ok(rule))
@@ -232,7 +293,7 @@ impl<'a> Parser<'a> {
     /// some other error.
     ///
     /// See [`parse_life_like`] for more details.
-    fn parse_life_like(&mut self) -> Option<Result<Rule, RuleStringError>> {
+    fn parse_life_like(&mut self) -> Option<Result<Rule, ParseRuleError>> {
         self.parse_life_like_bs()
             .or_else(|| self.parse_life_like_sb())
     }
@@ -244,7 +305,7 @@ impl<'a> Parser<'a> {
     /// other error.
     ///
     /// See [`parse_generations`] for more details.
-    fn parse_generations_bsc(&mut self) -> Option<Result<Rule, RuleStringError>> {
+    fn parse_generations_bsc(&mut self) -> Option<Result<Rule, ParseRuleError>> {
         // Parse the birth sequence.
         self.read_matches(b"Bb")?;
         let birth = self.parse_many(|parser| parser.parse_digit());
@@ -263,7 +324,7 @@ impl<'a> Parser<'a> {
         let states = self.parse_number()?;
 
         // Parse the neighborhood type.
-        let neighborhood_type = self.parse_neighborhood_type()?;
+        let neighborhood_type = self.parse_neighborhood_type_life_like()?;
         let neighbors = neighborhood_type.neighbors(1, true).unwrap();
 
         // Check that there is no more input.
@@ -272,8 +333,12 @@ impl<'a> Parser<'a> {
         }
 
         // Check that the number of states is valid.
+        if states.is_err() {
+            return Some(Err(ParseRuleError::IntegerOverflow));
+        }
+        let states = states.unwrap();
         if states < 2 {
-            return Some(Err(RuleStringError::InvalidNumberOfStates));
+            return Some(Err(ParseRuleError::TooFewStates));
         }
 
         // Check that the birth and survival conditions are valid.
@@ -284,7 +349,7 @@ impl<'a> Parser<'a> {
             survival,
         };
         if !rule.check_conditions() {
-            return Some(Err(RuleStringError::InvalidCondition));
+            return Some(Err(ParseRuleError::InvalidCondition));
         }
 
         Some(Ok(rule))
@@ -297,7 +362,7 @@ impl<'a> Parser<'a> {
     /// other error.
     ///
     /// See [`parse_generations`] for more details.
-    fn parse_generations_sbc(&mut self) -> Option<Result<Rule, RuleStringError>> {
+    fn parse_generations_sbc(&mut self) -> Option<Result<Rule, ParseRuleError>> {
         // Parse the survival sequence.
         let survival = self.parse_many(|parser| parser.parse_digit());
 
@@ -314,7 +379,7 @@ impl<'a> Parser<'a> {
         let states = self.parse_number()?;
 
         // Parse the neighborhood type.
-        let neighborhood_type = self.parse_neighborhood_type()?;
+        let neighborhood_type = self.parse_neighborhood_type_life_like()?;
         let neighbors = neighborhood_type.neighbors(1, true).unwrap();
 
         // Check that there is no more input.
@@ -323,8 +388,12 @@ impl<'a> Parser<'a> {
         }
 
         // Check that the number of states is valid.
+        if states.is_err() {
+            return Some(Err(ParseRuleError::IntegerOverflow));
+        }
+        let states = states.unwrap();
         if states < 2 {
-            return Some(Err(RuleStringError::InvalidNumberOfStates));
+            return Some(Err(ParseRuleError::TooFewStates));
         }
 
         // Check that the birth and survival conditions are valid.
@@ -335,7 +404,7 @@ impl<'a> Parser<'a> {
             survival,
         };
         if !rule.check_conditions() {
-            return Some(Err(RuleStringError::InvalidCondition));
+            return Some(Err(ParseRuleError::InvalidCondition));
         }
 
         Some(Ok(rule))
@@ -348,7 +417,7 @@ impl<'a> Parser<'a> {
     /// some other error.
     ///
     /// See [`parse_generations`] for more details.
-    fn parse_generations_catagolue(&mut self) -> Option<Result<Rule, RuleStringError>> {
+    fn parse_generations_catagolue(&mut self) -> Option<Result<Rule, ParseRuleError>> {
         // Parse the number of states.
         self.read_matches(b"gG")?;
         let states = self.parse_number()?;
@@ -362,7 +431,7 @@ impl<'a> Parser<'a> {
         let survival = self.parse_many(|parser| parser.parse_digit());
 
         // Parse the neighborhood type.
-        let neighborhood_type = self.parse_neighborhood_type()?;
+        let neighborhood_type = self.parse_neighborhood_type_life_like()?;
         let neighbors = neighborhood_type.neighbors(1, true).unwrap();
 
         // Check that there is no more input.
@@ -371,8 +440,12 @@ impl<'a> Parser<'a> {
         }
 
         // Check that the number of states is valid.
+        if states.is_err() {
+            return Some(Err(ParseRuleError::IntegerOverflow));
+        }
+        let states = states.unwrap();
         if states < 2 {
-            return Some(Err(RuleStringError::InvalidNumberOfStates));
+            return Some(Err(ParseRuleError::TooFewStates));
         }
 
         // Check that the birth and survival conditions are valid.
@@ -383,7 +456,7 @@ impl<'a> Parser<'a> {
             survival,
         };
         if !rule.check_conditions() {
-            return Some(Err(RuleStringError::InvalidCondition));
+            return Some(Err(ParseRuleError::InvalidCondition));
         }
 
         Some(Ok(rule))
@@ -396,10 +469,295 @@ impl<'a> Parser<'a> {
     /// some other error.
     ///
     /// See [`parse_generations`] for more details.
-    fn parse_generations(&mut self) -> Option<Result<Rule, RuleStringError>> {
+    fn parse_generations(&mut self) -> Option<Result<Rule, ParseRuleError>> {
         self.parse_generations_bsc()
             .or_else(|| self.parse_generations_sbc())
             .or_else(|| self.parse_generations_catagolue())
+    }
+
+    /// Parse a HROT rule string with LtL notation.
+    ///
+    /// Returns `None` if this rule string is not using LtL notation.
+    /// Returns `Some(Err(_))` if it is using LtL notation but there is some
+    /// other error.
+    ///
+    /// See [`parse_hrot`] for more details.
+    fn parse_hrot_ltl(&mut self) -> Option<Result<Rule, ParseRuleError>> {
+        // Parse the radius.
+        self.read_matches(b"Rr")?;
+        let radius = self.parse_number()?;
+
+        // Parse the comma.
+        self.read_matches(b',')?;
+
+        // Parse the number of states.
+        self.read_matches(b"Cc")?;
+        let states = self.parse_number()?;
+
+        // Parse the comma.
+        self.read_matches(b',')?;
+
+        // Parse the center cell.
+        self.read_matches(b"Mm")?;
+        let center = self.read_matches(b"01")? - b'0';
+
+        // Parse the comma.
+        self.read_matches(b',')?;
+
+        // Parse the survival sequence.
+        self.read_matches(b"Ss")?;
+        let smin = self.parse_number()?;
+        self.read_matches_exact(b"..")?;
+        let smax = self.parse_number()?;
+
+        // Parse the comma.
+        self.read_matches(b',')?;
+
+        // Parse the birth sequence.
+        self.read_matches(b"Bb")?;
+        let bmin = self.parse_number()?;
+        self.read_matches_exact(b"..")?;
+        let bmax = self.parse_number()?;
+
+        // Parse the comma.
+        self.read_matches(b',')?;
+
+        // Parse the neighborhood type.
+        self.read_matches(b"Nn")?;
+        let neighborhood_type = self.parse_neighborhood_type_hrot()?;
+
+        // Check that there is no more input.
+        if self.peek().is_some() {
+            return None;
+        }
+
+        // Check that the radius is valid.
+        if radius.is_err() {
+            return Some(Err(ParseRuleError::IntegerOverflow));
+        }
+        let radius = radius.unwrap();
+        if radius > i32::MAX as u64 {
+            return Some(Err(ParseRuleError::IntegerOverflow));
+        }
+
+        let neighbors = neighborhood_type.neighbors(radius as u32, true).unwrap();
+
+        // Check that the number of states is valid.
+        if states.is_err() {
+            return Some(Err(ParseRuleError::IntegerOverflow));
+        }
+        let states = states.unwrap().max(2);
+
+        // Check that the birth and survival conditions are valid.
+        if smin.is_err() || smax.is_err() || bmin.is_err() || bmax.is_err() {
+            return Some(Err(ParseRuleError::IntegerOverflow));
+        }
+        let mut smin = smin.unwrap();
+        let mut smax = smax.unwrap();
+        let bmin = bmin.unwrap();
+        let bmax = bmax.unwrap();
+
+        if center == 1 {
+            if smin == 0 || smax == 0 {
+                return Some(Err(ParseRuleError::InvalidCondition));
+            }
+            smin -= 1;
+            smax -= 1;
+        }
+
+        let survival = (smin..=smax).collect();
+        let birth = (bmin..=bmax).collect();
+        let rule = Rule {
+            states,
+            neighbors,
+            birth,
+            survival,
+        };
+        if !rule.check_conditions() {
+            return Some(Err(ParseRuleError::InvalidCondition));
+        }
+
+        Some(Ok(rule))
+    }
+
+    /// Parse a HROT rule string with Kellie Evans' notation.
+    ///
+    /// Returns `None` if this rule string is not using Kellie Evans' notation.
+    /// Returns `Some(Err(_))` if it is using Kellie Evans' notation but there
+    /// is some other error.
+    ///
+    /// See [`parse_hrot`] for more details.
+    fn parse_hrot_ke(&mut self) -> Option<Result<Rule, ParseRuleError>> {
+        // Parse the radius.
+        let radius = self.parse_number()?;
+
+        // Parse the comma.
+        self.read_matches(b',')?;
+
+        // Parse the birth sequence.
+        let bmin = self.parse_number()?;
+        self.read_matches(b',')?;
+        let bmax = self.parse_number()?;
+
+        // Parse the comma.
+        self.read_matches(b',')?;
+
+        // Parse the survival sequence.
+        let smin = self.parse_number()?;
+        self.read_matches(b',')?;
+        let smax = self.parse_number()?;
+
+        // Check that there is no more input.
+        if self.peek().is_some() {
+            return None;
+        }
+
+        // Check that the radius is valid.
+        if radius.is_err() {
+            return Some(Err(ParseRuleError::IntegerOverflow));
+        }
+        let radius = radius.unwrap();
+        if radius > i32::MAX as u64 {
+            return Some(Err(ParseRuleError::IntegerOverflow));
+        }
+
+        let neighbors = NeighborhoodType::Moore
+            .neighbors(radius as u32, true)
+            .unwrap();
+
+        // Check that the birth and survival conditions are valid.
+        if smin.is_err() || smax.is_err() || bmin.is_err() || bmax.is_err() {
+            return Some(Err(ParseRuleError::IntegerOverflow));
+        }
+        let mut smin = smin.unwrap();
+        let mut smax = smax.unwrap();
+        let bmin = bmin.unwrap();
+        let bmax = bmax.unwrap();
+
+        if smin == 0 || smax == 0 {
+            return Some(Err(ParseRuleError::InvalidCondition));
+        }
+        smin -= 1;
+        smax -= 1;
+
+        let survival = (smin..=smax).collect();
+        let birth = (bmin..=bmax).collect();
+        let rule = Rule {
+            states: 2,
+            neighbors,
+            birth,
+            survival,
+        };
+        if !rule.check_conditions() {
+            return Some(Err(ParseRuleError::InvalidCondition));
+        }
+
+        Some(Ok(rule))
+    }
+
+    /// Parse a HROT rule string with HROT notation.
+    ///
+    /// Returns `None` if this rule string is not using HROT notation.
+    /// Returns `Some(Err(_))` if it is using HROT notation but there is some
+    /// other error.
+    ///
+    /// See [`parse_hrot`] for more details.
+    fn parse_hrot_hrot(&mut self) -> Option<Result<Rule, ParseRuleError>> {
+        // Parse the radius.
+        self.read_matches(b"Rr")?;
+        let radius = self.parse_number()?;
+
+        // Parse the comma.
+        self.read_matches(b',')?;
+
+        // Parse the number of states.
+        self.read_matches(b"Cc")?;
+        let states = self.parse_number()?;
+
+        // Parse the comma.
+        self.read_matches(b',')?;
+
+        // Parse the survival sequence.
+        self.read_matches(b"Ss")?;
+        let survival_list = self.parse_many_sep(b',', |parser| parser.parse_range());
+
+        // Parse the comma.
+        self.read_matches(b',')?;
+
+        // Parse the birth sequence.
+        self.read_matches(b"Bb")?;
+        let birth_list = self.parse_many_sep(b',', |parser| parser.parse_range());
+
+        // Parse the comma.
+        self.read_matches(b',')?;
+
+        // Parse the neighborhood type.
+        self.read_matches(b"Nn")?;
+        let neighborhood_type = self.parse_neighborhood_type_hrot()?;
+
+        // Check that there is no more input.
+        if self.peek().is_some() {
+            return None;
+        }
+
+        // Check that the radius is valid.
+        if radius.is_err() {
+            return Some(Err(ParseRuleError::IntegerOverflow));
+        }
+        let radius = radius.unwrap();
+        if radius > i32::MAX as u64 {
+            return Some(Err(ParseRuleError::IntegerOverflow));
+        }
+
+        let neighbors = neighborhood_type.neighbors(radius as u32, true).unwrap();
+
+        // Check that the number of states is valid.
+        if states.is_err() {
+            return Some(Err(ParseRuleError::IntegerOverflow));
+        }
+        let states = states.unwrap().max(2);
+
+        // Check that the birth and survival conditions are valid.
+        let mut survival = Vec::new();
+        for range in survival_list {
+            match range {
+                Ok(range) => survival.extend(range),
+                Err(_) => return Some(Err(ParseRuleError::IntegerOverflow)),
+            }
+        }
+
+        let mut birth = Vec::new();
+        for range in birth_list {
+            match range {
+                Ok(range) => birth.extend(range),
+                Err(_) => return Some(Err(ParseRuleError::IntegerOverflow)),
+            }
+        }
+
+        let rule = Rule {
+            states,
+            neighbors,
+            birth,
+            survival,
+        };
+        if !rule.check_conditions() {
+            return Some(Err(ParseRuleError::InvalidCondition));
+        }
+
+        Some(Ok(rule))
+    }
+
+    /// Parse a HROT rule string.
+    ///
+    /// Returns `None` if this is not a valid HROT rule string.
+    /// Returns `Some(Err(_))` if it is a HROT rule string but there is some
+    /// other error.
+    ///
+    /// See [`parse_hrot`] for more details.
+    fn parse_hrot(&mut self) -> Option<Result<Rule, ParseRuleError>> {
+        self.parse_hrot_ltl()
+            .or_else(|| self.parse_hrot_ke())
+            .or_else(|| self.parse_hrot_hrot())
     }
 }
 
@@ -412,27 +770,24 @@ impl<'a> Parser<'a> {
 ///
 /// # B/S notation
 ///
-/// The rule string is in the form `B{birth}/S{survival}`, where `{birth}` and
-/// `{survival}` are sequences of digits. The digits in `{birth}` are the
-/// numbers of neighbors that cause a dead cell to become alive, and the digits
-/// in `{survival}` are the numbers of neighbors that cause a live cell to
-/// survive. These sequences may be empty.
+/// The rule string is in the form `B{birth}/S{survival}`, where:
+///
+/// - `{birth}` is a sequence of digits. These are the numbers of neighbors
+///   that cause a dead cell to become alive.
+/// - `{survival}` is a sequence of digits. These are the numbers of neighbors
+///   that cause a live cell to survive.
+///
+/// These sequences may be empty.
 ///
 /// # S/B notation
 ///
 /// The rule string is in the form `{survival}/{birth}`, where `{birth}` and
-/// `{survival}` are sequences of digits. The digits in `{birth}` are the
-/// numbers of neighbors that cause a dead cell to become alive, and the digits
-/// in `{survival}` are the numbers of neighbors that cause a live cell to
-/// survive. These sequences may be empty.
+/// `{survival}` are the same as in the B/S notation.
 ///
 /// # Catagolue notation
 ///
 /// The rule string is in the form `b{birth}s{survival}`, where `{birth}` and
-/// `{survival}` are sequences of digits. The digits in `{birth}` are the
-/// numbers of neighbors that cause a dead cell to become alive, and the digits
-/// in `{survival}` are the numbers of neighbors that cause a live cell to
-/// survive. These sequences may be empty.
+/// `{survival}` are the same as in the B/S notation.
 ///
 /// Since this parser is case-insensitive, the only difference between this
 /// notation and the B/S notation is the lack of a slash.
@@ -447,12 +802,12 @@ impl<'a> Parser<'a> {
 /// assumed. All three neighborhood types have a radius of 1.
 ///
 /// See [`NeighborhoodType`](crate::NeighborhoodType) for more information.
-pub fn parse_life_like(rule_string: &str) -> Result<Rule, RuleStringError> {
+pub fn parse_life_like(rule_string: &str) -> Result<Rule, ParseRuleError> {
     let mut parser = Parser::new(rule_string);
 
     parser
         .parse_life_like()
-        .unwrap_or(Err(RuleStringError::InvalidSyntax))
+        .unwrap_or(Err(ParseRuleError::InvalidSyntax))
 }
 
 /// Parse a [Generations](https://conwaylife.com/wiki/Generations) rule string.
@@ -466,33 +821,26 @@ pub fn parse_life_like(rule_string: &str) -> Result<Rule, RuleStringError> {
 ///
 /// # B/S/C notation
 ///
-/// The rule string is in the form `B{birth}/S{survival}/{states}`, where
-/// `{birth}` and `{survival}` are sequences of digits, and `{states}` is a
-/// integer greater than 1. The digits in `{birth}` are the numbers of
-/// neighbors that cause a dead cell to become alive, and the digits in
-/// `{survival}` are the numbers of neighbors that cause a live cell to
-/// survive. These two sequences may be empty. `{states}` is the number of
-/// states in the cellular automaton.
+/// The rule string is in the form `B{birth}/S{survival}/{states}`, where:
+///
+/// - `{birth}` is a sequence of digits. These are the numbers of neighbors
+///   that cause a dead cell to become alive. The sequence may be empty.
+/// - `{survival}` is a sequence of digits. These are the numbers of neighbors
+///   that cause a live cell to survive. The sequence may be empty.
+/// - `{states}` is the number of states in the cellular automaton. It must be
+///   greater than 1.
 ///
 /// # S/B/C notation
 ///
 /// The rule string is in the form `{survival}/{birth}/{states}`, where
-/// `{birth}` and `{survival}` are sequences of digits, and `{states}` is a
-/// integer greater than 1. The digits in `{birth}` are the numbers of
-/// neighbors that cause a dead cell to become alive, and the digits in
-/// `{survival}` are the numbers of neighbors that cause a live cell to
-/// survive. These two sequences may be empty. `{states}` is the number of
-/// states in the cellular automaton.
+/// `{birth}`, `{survival}`, and `{states}` are the same as in the B/S/C
+/// notation.
 ///
 /// # Catagolue notation
 ///
 /// The rule string is in the form `g{states}b{birth}s{survival}`, where
-/// `{birth}` and `{survival}` are sequences of digits, and `{states}` is a
-/// integer greater than 1. The digits in `{birth}` are the numbers of
-/// neighbors that cause a dead cell to become alive, and the digits in
-/// `{survival}` are the numbers of neighbors that cause a live cell to
-/// survive. These two sequences may be empty. `{states}` is the number of
-/// states in the cellular automaton.
+/// `{birth}`, `{survival}`, and `{states}` are the same as in the B/S/C
+/// notation.
 ///
 /// This notation is used by [Catagolue](https://catagolue.hatsya.com/).
 ///
@@ -504,12 +852,73 @@ pub fn parse_life_like(rule_string: &str) -> Result<Rule, RuleStringError> {
 /// assumed. All three neighborhood types have a radius of 1.
 ///
 /// See [`NeighborhoodType`](crate::NeighborhoodType) for more information.
-pub fn parse_generations(rule_string: &str) -> Result<Rule, RuleStringError> {
+pub fn parse_generations(rule_string: &str) -> Result<Rule, ParseRuleError> {
     let mut parser = Parser::new(rule_string);
 
     parser
         .parse_generations()
-        .unwrap_or(Err(RuleStringError::InvalidSyntax))
+        .unwrap_or(Err(ParseRuleError::InvalidSyntax))
+}
+
+/// Parse a [higher-range outer-totalistic](https://conwaylife.com/wiki/Higher-range_outer-totalistic_cellular_automaton)
+/// (also known as "HROT") rule string.
+///
+/// These rules are similar to Generations, but the radius of the neighborhood
+/// may be greater than 1.
+///
+/// Three notations are supported: LtL (Large than Life) notation, Kellie Evans'
+/// notation, and HROT notation.
+///
+/// The rule string is case-insensitive.
+///
+/// # LtL notation
+///
+/// The rule string is in the form `R{radius},C{states},M{center},S{smin}..{smax},B{bmin}..{bmax},N{neighborhood}`,
+/// where:
+///
+/// - `{radius}` is the radius of the neighborhood. It must be greater than 0.
+/// - `{states}` is the number of states in the cellular automaton. If it is
+///   smaller than 2, it is treated as 2.
+/// - `{center}` is either `0` or `1`. It indicates whether the center cell is
+///   included when counting neighbors.
+/// - `{smin}` and `{smax}` are the minimum and maximum number of neighbors
+///   that cause a live cell to survive, respectively.
+/// - `{bmin}` and `{bmax}` are the minimum and maximum number of neighbors
+///   that cause a dead cell to become alive, respectively.
+/// - `{neighborhood}` is the neighborhood type. Currently the parser only
+///   supports the following neighborhood types:
+///   - `M` for the Moore neighborhood.
+///   - `N` for the von Neumann neighborhood.
+///   - `+` for the cross neighborhood.
+///   - `H` for the hexagonal neighborhood.
+///
+/// # Kellie Evans' notation
+///
+/// The rule string is in the form `{radius},{bmin},{bmax},{smin},{smax}`,
+/// where `{radius}`, `{bmin}`, `{bmax}`, `{smin}`, and `{smax}` are the same as
+/// in the LtL notation.
+///
+/// In this notation, the number of states is always 2, and the center cell is
+/// always included when counting neighbors. The neighborhood type is always
+/// Moore.
+///
+/// # HROT notation
+///
+/// The rule string is in the form `R{radius},C{states},S{slist},B{blist},N{neighborhood}`,
+/// where:
+///
+/// - `{radius}` and `{states}` are the same as in the LtL notation.
+/// - The center cell is always excluded when counting neighbors.
+/// - `{slist}` and `{blist}` are lists of items separated by commas. Each item
+///   is either a single number, or a range in the form `{min}-{max}`.
+/// - `{neighborhood}` is the same as in the LtL notation, except that it may
+///   be omitted. If it is omitted, the Moore neighborhood is assumed.
+pub fn parse_hrot(rule_string: &str) -> Result<Rule, ParseRuleError> {
+    let mut parser = Parser::new(rule_string);
+
+    parser
+        .parse_hrot()
+        .unwrap_or(Err(ParseRuleError::InvalidSyntax))
 }
 
 #[cfg(test)]
@@ -832,5 +1241,61 @@ mod tests {
                 survival: vec![3],
             }
         );
+    }
+
+    #[test]
+    fn test_parse_hrot_ltl() {
+        assert_eq!(
+            parse_hrot("R1,C0,M0,S2..3,B3..3,NM").unwrap(),
+            Rule {
+                states: 2,
+                neighbors: NeighborhoodType::Moore.neighbors(1, true).unwrap(),
+                birth: vec![3],
+                survival: vec![2, 3],
+            }
+        );
+
+        assert_eq!(
+            parse_hrot("R5,C0,M1,S34..58,B34..45,NM").unwrap(),
+            Rule {
+                states: 2,
+                neighbors: NeighborhoodType::Moore.neighbors(5, true).unwrap(),
+                birth: vec![34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45],
+                survival: vec![
+                    33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52,
+                    53, 54, 55, 56, 57
+                ],
+            }
+        );
+
+        assert_eq!(
+            parse_hrot("R1,C0,M1,S1..1,B1..1,NN").unwrap(),
+            Rule {
+                states: 2,
+                neighbors: NeighborhoodType::VonNeumann.neighbors(1, true).unwrap(),
+                birth: vec![1],
+                survival: vec![0],
+            }
+        );
+
+        assert_eq!(
+            parse_hrot("R10,C255,M1,S2..3,B3..3,NM").unwrap(),
+            Rule {
+                states: 255,
+                neighbors: NeighborhoodType::Moore.neighbors(10, true).unwrap(),
+                birth: vec![3],
+                survival: vec![1, 2],
+            }
+        );
+
+        assert_eq!(
+            parse_hrot("R3,C2,M0,S2..2,B3..3,N+").unwrap(),
+            Rule {
+                states: 2,
+                neighbors: NeighborhoodType::Cross.neighbors(3, true).unwrap(),
+                birth: vec![3],
+                survival: vec![2],
+            }
+        )
     }
 }
