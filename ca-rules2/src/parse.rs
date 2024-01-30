@@ -96,10 +96,16 @@ impl<'a> Parser<'a> {
     ) -> Vec<T> {
         let mut result = Vec::new();
         let mut parser_fn = parser_fn;
-        while let Some(item) = self.try_parse(&mut parser_fn) {
+        if let Some(item) = self.try_parse(&mut parser_fn) {
             result.push(item);
-            if self.read_matches(&sep).is_none() {
-                break;
+
+            let mut parser_fn = |parser: &mut Self| {
+                parser.read_matches(&sep)?;
+                parser_fn(parser)
+            };
+
+            while let Some(item) = self.try_parse(&mut parser_fn) {
+                result.push(item);
             }
         }
         result
@@ -294,8 +300,8 @@ impl<'a> Parser<'a> {
     ///
     /// See [`parse_life_like`] for more details.
     fn parse_life_like(&mut self) -> Option<Result<Rule, ParseRuleError>> {
-        self.parse_life_like_bs()
-            .or_else(|| self.parse_life_like_sb())
+        self.try_parse(|parser| parser.parse_life_like_bs())
+            .or_else(|| self.try_parse(|parser| parser.parse_life_like_sb()))
     }
 
     /// Parse a Generations rule string with B/S/C notation.
@@ -470,9 +476,9 @@ impl<'a> Parser<'a> {
     ///
     /// See [`parse_generations`] for more details.
     fn parse_generations(&mut self) -> Option<Result<Rule, ParseRuleError>> {
-        self.parse_generations_bsc()
-            .or_else(|| self.parse_generations_sbc())
-            .or_else(|| self.parse_generations_catagolue())
+        self.try_parse(|parser| parser.parse_generations_bsc())
+            .or_else(|| self.try_parse(|parser| parser.parse_generations_sbc()))
+            .or_else(|| self.try_parse(|parser| parser.parse_generations_catagolue()))
     }
 
     /// Parse a HROT rule string with LtL notation.
@@ -688,12 +694,13 @@ impl<'a> Parser<'a> {
         self.read_matches(b"Bb")?;
         let birth_list = self.parse_many_sep(b',', |parser| parser.parse_range());
 
-        // Parse the comma.
-        self.read_matches(b',')?;
-
-        // Parse the neighborhood type.
-        self.read_matches(b"Nn")?;
-        let neighborhood_type = self.parse_neighborhood_type_hrot()?;
+        // Parse the comma and the neighborhood type. This is optional.
+        let neighborhood_type = if self.read_matches(b",").is_some() {
+            self.read_matches(b"Nn")?;
+            self.parse_neighborhood_type_hrot()?
+        } else {
+            NeighborhoodType::Moore
+        };
 
         // Check that there is no more input.
         if self.peek().is_some() {
@@ -755,9 +762,9 @@ impl<'a> Parser<'a> {
     ///
     /// See [`parse_hrot`] for more details.
     fn parse_hrot(&mut self) -> Option<Result<Rule, ParseRuleError>> {
-        self.parse_hrot_ltl()
-            .or_else(|| self.parse_hrot_ke())
-            .or_else(|| self.parse_hrot_hrot())
+        self.try_parse(|parser| parser.parse_hrot_ltl())
+            .or_else(|| self.try_parse(|parser| parser.parse_hrot_ke()))
+            .or_else(|| self.try_parse(|parser| parser.parse_hrot_hrot()))
     }
 }
 
@@ -1296,6 +1303,108 @@ mod tests {
                 birth: vec![3],
                 survival: vec![2],
             }
-        )
+        );
+    }
+
+    #[test]
+    fn test_parse_hrot_ke() {
+        assert_eq!(
+            parse_hrot("1,3,3,3,4").unwrap(),
+            Rule {
+                states: 2,
+                neighbors: NeighborhoodType::Moore.neighbors(1, true).unwrap(),
+                birth: vec![3],
+                survival: vec![2, 3],
+            }
+        );
+
+        assert_eq!(
+            parse_hrot("5,34,45,34,58").unwrap(),
+            Rule {
+                states: 2,
+                neighbors: NeighborhoodType::Moore.neighbors(5, true).unwrap(),
+                birth: vec![34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45],
+                survival: vec![
+                    33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52,
+                    53, 54, 55, 56, 57
+                ],
+            }
+        );
+
+        assert_eq!(
+            parse_hrot("1,1,1,1,1").unwrap(),
+            Rule {
+                states: 2,
+                neighbors: NeighborhoodType::Moore.neighbors(1, true).unwrap(),
+                birth: vec![1],
+                survival: vec![0],
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_hrot_hrot() {
+        assert_eq!(
+            parse_hrot("R1,C0,S2-3,B3").unwrap(),
+            Rule {
+                states: 2,
+                neighbors: NeighborhoodType::Moore.neighbors(1, true).unwrap(),
+                birth: vec![3],
+                survival: vec![2, 3],
+            }
+        );
+
+        assert_eq!(
+            parse_hrot("R5,C0,S33-57,B34-45").unwrap(),
+            Rule {
+                states: 2,
+                neighbors: NeighborhoodType::Moore.neighbors(5, true).unwrap(),
+                birth: vec![34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45],
+                survival: vec![
+                    33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52,
+                    53, 54, 55, 56, 57
+                ],
+            }
+        );
+
+        assert_eq!(
+            parse_hrot("R1,C0,S0,B1,NN").unwrap(),
+            Rule {
+                states: 2,
+                neighbors: NeighborhoodType::VonNeumann.neighbors(1, true).unwrap(),
+                birth: vec![1],
+                survival: vec![0],
+            }
+        );
+
+        assert_eq!(
+            parse_hrot("R10,C255,S1-2,B3,NM").unwrap(),
+            Rule {
+                states: 255,
+                neighbors: NeighborhoodType::Moore.neighbors(10, true).unwrap(),
+                birth: vec![3],
+                survival: vec![1, 2],
+            }
+        );
+
+        assert_eq!(
+            parse_hrot("R3,C2,S2,B3,N+").unwrap(),
+            Rule {
+                states: 2,
+                neighbors: NeighborhoodType::Cross.neighbors(3, true).unwrap(),
+                birth: vec![3],
+                survival: vec![2],
+            }
+        );
+
+        assert_eq!(
+            parse_hrot("R3,C2,S6-10,12,B3,N+").unwrap(),
+            Rule {
+                states: 2,
+                neighbors: NeighborhoodType::Cross.neighbors(3, true).unwrap(),
+                birth: vec![3],
+                survival: vec![6, 7, 8, 9, 10, 12],
+            }
+        );
     }
 }
