@@ -3,6 +3,7 @@
 //! More documentation will be added later.
 
 #![warn(clippy::missing_const_for_fn)]
+#![warn(clippy::use_self)]
 #![warn(missing_docs)]
 
 mod cell;

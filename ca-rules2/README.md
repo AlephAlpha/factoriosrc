@@ -7,9 +7,7 @@ Currently it only supports [higher-range outer-totalistic rules](https://conwayl
 A rule is defined by the following data:
 
 - The number of states.
-- The list of neighbors. Each neighbor is defined by:
-  - Its coordinates relative to the center cell.
-  - A weight. For totalistic rules, this weight is always 1.
+- The neighborhood.
 - A list of numbers that represent the birth conditions.
 - A list of numbers that represent the survival conditions.
 

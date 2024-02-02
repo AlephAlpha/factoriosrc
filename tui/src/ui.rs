@@ -184,7 +184,7 @@ struct Rle<'b> {
 
 impl<'b> Rle<'b> {
     /// Create a new RLE widget from the app.
-    fn new(app: &'b App) -> Self {
+    const fn new(app: &'b App) -> Self {
         Self {
             t: app.generation,
             world: &app.world,

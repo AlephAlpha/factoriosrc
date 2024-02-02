@@ -1,4 +1,4 @@
-use crate::{NeighborhoodType, ParseRuleError, Rule};
+use crate::{Neighborhood, NeighborhoodType, ParseRuleError, Rule};
 use std::{
     num::ParseIntError,
     ops::{Range, RangeInclusive},
@@ -233,7 +233,7 @@ impl<'a> Parser<'a> {
 
         // Parse the neighborhood type.
         let neighborhood_type = self.parse_neighborhood_type_life_like()?;
-        let neighbors = neighborhood_type.neighbors(1, true).unwrap();
+        let neighborhood = Neighborhood::Totalistic(neighborhood_type, 1);
 
         // Check that there is no more input.
         if self.peek().is_some() {
@@ -243,7 +243,7 @@ impl<'a> Parser<'a> {
         // Check that the birth and survival conditions are valid.
         let rule = Rule {
             states: 2,
-            neighbors,
+            neighborhood,
             birth,
             survival,
         };
@@ -271,7 +271,7 @@ impl<'a> Parser<'a> {
 
         // Parse the neighborhood type.
         let neighborhood_type = self.parse_neighborhood_type_life_like()?;
-        let neighbors = neighborhood_type.neighbors(1, true).unwrap();
+        let neighborhood = Neighborhood::Totalistic(neighborhood_type, 1);
 
         // Check that there is no more input.
         if self.peek().is_some() {
@@ -281,7 +281,7 @@ impl<'a> Parser<'a> {
         // Check that the birth and survival conditions are valid.
         let rule = Rule {
             states: 2,
-            neighbors,
+            neighborhood,
             birth,
             survival,
         };
@@ -331,7 +331,7 @@ impl<'a> Parser<'a> {
 
         // Parse the neighborhood type.
         let neighborhood_type = self.parse_neighborhood_type_life_like()?;
-        let neighbors = neighborhood_type.neighbors(1, true).unwrap();
+        let neighborhood = Neighborhood::Totalistic(neighborhood_type, 1);
 
         // Check that there is no more input.
         if self.peek().is_some() {
@@ -350,7 +350,7 @@ impl<'a> Parser<'a> {
         // Check that the birth and survival conditions are valid.
         let rule = Rule {
             states,
-            neighbors,
+            neighborhood,
             birth,
             survival,
         };
@@ -386,7 +386,7 @@ impl<'a> Parser<'a> {
 
         // Parse the neighborhood type.
         let neighborhood_type = self.parse_neighborhood_type_life_like()?;
-        let neighbors = neighborhood_type.neighbors(1, true).unwrap();
+        let neighborhood = Neighborhood::Totalistic(neighborhood_type, 1);
 
         // Check that there is no more input.
         if self.peek().is_some() {
@@ -405,7 +405,7 @@ impl<'a> Parser<'a> {
         // Check that the birth and survival conditions are valid.
         let rule = Rule {
             states,
-            neighbors,
+            neighborhood,
             birth,
             survival,
         };
@@ -438,7 +438,7 @@ impl<'a> Parser<'a> {
 
         // Parse the neighborhood type.
         let neighborhood_type = self.parse_neighborhood_type_life_like()?;
-        let neighbors = neighborhood_type.neighbors(1, true).unwrap();
+        let neighborhood = Neighborhood::Totalistic(neighborhood_type, 1);
 
         // Check that there is no more input.
         if self.peek().is_some() {
@@ -457,7 +457,7 @@ impl<'a> Parser<'a> {
         // Check that the birth and survival conditions are valid.
         let rule = Rule {
             states,
-            neighbors,
+            neighborhood,
             birth,
             survival,
         };
@@ -546,7 +546,7 @@ impl<'a> Parser<'a> {
             return Some(Err(ParseRuleError::IntegerOverflow));
         }
 
-        let neighbors = neighborhood_type.neighbors(radius as u32, true).unwrap();
+        let neighborhood = Neighborhood::Totalistic(neighborhood_type, radius as u32);
 
         // Check that the number of states is valid.
         if states.is_err() {
@@ -575,7 +575,7 @@ impl<'a> Parser<'a> {
         let birth = (bmin..=bmax).collect();
         let rule = Rule {
             states,
-            neighbors,
+            neighborhood,
             birth,
             survival,
         };
@@ -627,9 +627,7 @@ impl<'a> Parser<'a> {
             return Some(Err(ParseRuleError::IntegerOverflow));
         }
 
-        let neighbors = NeighborhoodType::Moore
-            .neighbors(radius as u32, true)
-            .unwrap();
+        let neighborhood = Neighborhood::Totalistic(NeighborhoodType::Moore, radius as u32);
 
         // Check that the birth and survival conditions are valid.
         if smin.is_err() || smax.is_err() || bmin.is_err() || bmax.is_err() {
@@ -650,7 +648,7 @@ impl<'a> Parser<'a> {
         let birth = (bmin..=bmax).collect();
         let rule = Rule {
             states: 2,
-            neighbors,
+            neighborhood,
             birth,
             survival,
         };
@@ -716,7 +714,7 @@ impl<'a> Parser<'a> {
             return Some(Err(ParseRuleError::IntegerOverflow));
         }
 
-        let neighbors = neighborhood_type.neighbors(radius as u32, true).unwrap();
+        let neighborhood = Neighborhood::Totalistic(neighborhood_type, radius as u32);
 
         // Check that the number of states is valid.
         if states.is_err() {
@@ -743,7 +741,7 @@ impl<'a> Parser<'a> {
 
         let rule = Rule {
             states,
-            neighbors,
+            neighborhood,
             birth,
             survival,
         };
@@ -765,6 +763,18 @@ impl<'a> Parser<'a> {
         self.try_parse(|parser| parser.parse_hrot_ltl())
             .or_else(|| self.try_parse(|parser| parser.parse_hrot_ke()))
             .or_else(|| self.try_parse(|parser| parser.parse_hrot_hrot()))
+    }
+
+    /// Parse a rule string.
+    ///
+    /// This function supports the following kinds of rule strings:
+    /// - Life-like rule, see [`parse_life_like`](Self::parse_life_like).
+    /// - Generations rule, see [`parse_generations`](Self::parse_generations).
+    /// - HROT rule, see [`parse_hrot`](Self::parse_hrot).
+    fn parse_rule(&mut self) -> Option<Result<Rule, ParseRuleError>> {
+        self.parse_life_like()
+            .or_else(|| self.parse_generations())
+            .or_else(|| self.parse_hrot())
     }
 }
 
@@ -928,6 +938,26 @@ pub fn parse_hrot(rule_string: &str) -> Result<Rule, ParseRuleError> {
         .unwrap_or(Err(ParseRuleError::InvalidSyntax))
 }
 
+/// Parse a rule string.
+///
+/// This function supports the following kinds of rule strings:
+///
+/// - Life-like rule, see [`parse_life_like`].
+/// - Generations rule, see [`parse_generations`].
+/// - HROT rule, see [`parse_hrot`].
+///
+/// See the documentation of each function for more details.
+///
+/// This function is also used in the [`FromStr`](std::str::FromStr) implementation
+/// for [`Rule`](crate::Rule).
+pub fn parse_rule(rule_string: &str) -> Result<Rule, ParseRuleError> {
+    let mut parser = Parser::new(rule_string);
+
+    parser
+        .parse_rule()
+        .unwrap_or(Err(ParseRuleError::InvalidSyntax))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -938,7 +968,7 @@ mod tests {
             parse_life_like("B3/S23").unwrap(),
             Rule {
                 states: 2,
-                neighbors: NeighborhoodType::Moore.neighbors(1, true).unwrap(),
+                neighborhood: Neighborhood::Totalistic(NeighborhoodType::Moore, 1),
                 birth: vec![3],
                 survival: vec![2, 3],
             }
@@ -948,7 +978,7 @@ mod tests {
             parse_life_like("B2/S").unwrap(),
             Rule {
                 states: 2,
-                neighbors: NeighborhoodType::Moore.neighbors(1, true).unwrap(),
+                neighborhood: Neighborhood::Totalistic(NeighborhoodType::Moore, 1),
                 birth: vec![2],
                 survival: vec![],
             }
@@ -958,7 +988,7 @@ mod tests {
             parse_life_like("B/S").unwrap(),
             Rule {
                 states: 2,
-                neighbors: NeighborhoodType::Moore.neighbors(1, true).unwrap(),
+                neighborhood: Neighborhood::Totalistic(NeighborhoodType::Moore, 1),
                 birth: vec![],
                 survival: vec![],
             }
@@ -968,7 +998,7 @@ mod tests {
             parse_life_like("B13/S012V").unwrap(),
             Rule {
                 states: 2,
-                neighbors: NeighborhoodType::VonNeumann.neighbors(1, true).unwrap(),
+                neighborhood: Neighborhood::Totalistic(NeighborhoodType::VonNeumann, 1),
                 birth: vec![1, 3],
                 survival: vec![0, 1, 2],
             }
@@ -978,7 +1008,7 @@ mod tests {
             parse_life_like("B245/S3H").unwrap(),
             Rule {
                 states: 2,
-                neighbors: NeighborhoodType::Hexagonal.neighbors(1, true).unwrap(),
+                neighborhood: Neighborhood::Totalistic(NeighborhoodType::Hexagonal, 1),
                 birth: vec![2, 4, 5],
                 survival: vec![3],
             }
@@ -991,7 +1021,7 @@ mod tests {
             parse_life_like("23/3").unwrap(),
             Rule {
                 states: 2,
-                neighbors: NeighborhoodType::Moore.neighbors(1, true).unwrap(),
+                neighborhood: Neighborhood::Totalistic(NeighborhoodType::Moore, 1),
                 birth: vec![3],
                 survival: vec![2, 3],
             }
@@ -1001,7 +1031,7 @@ mod tests {
             parse_life_like("2/").unwrap(),
             Rule {
                 states: 2,
-                neighbors: NeighborhoodType::Moore.neighbors(1, true).unwrap(),
+                neighborhood: Neighborhood::Totalistic(NeighborhoodType::Moore, 1),
                 birth: vec![],
                 survival: vec![2],
             }
@@ -1011,7 +1041,7 @@ mod tests {
             parse_life_like("/").unwrap(),
             Rule {
                 states: 2,
-                neighbors: NeighborhoodType::Moore.neighbors(1, true).unwrap(),
+                neighborhood: Neighborhood::Totalistic(NeighborhoodType::Moore, 1),
                 birth: vec![],
                 survival: vec![],
             }
@@ -1021,7 +1051,7 @@ mod tests {
             parse_life_like("012/13V").unwrap(),
             Rule {
                 states: 2,
-                neighbors: NeighborhoodType::VonNeumann.neighbors(1, true).unwrap(),
+                neighborhood: Neighborhood::Totalistic(NeighborhoodType::VonNeumann, 1),
                 birth: vec![1, 3],
                 survival: vec![0, 1, 2],
             }
@@ -1031,7 +1061,7 @@ mod tests {
             parse_life_like("3/245H").unwrap(),
             Rule {
                 states: 2,
-                neighbors: NeighborhoodType::Hexagonal.neighbors(1, true).unwrap(),
+                neighborhood: Neighborhood::Totalistic(NeighborhoodType::Hexagonal, 1),
                 birth: vec![2, 4, 5],
                 survival: vec![3],
             }
@@ -1044,7 +1074,7 @@ mod tests {
             parse_life_like("b3s23").unwrap(),
             Rule {
                 states: 2,
-                neighbors: NeighborhoodType::Moore.neighbors(1, true).unwrap(),
+                neighborhood: Neighborhood::Totalistic(NeighborhoodType::Moore, 1),
                 birth: vec![3],
                 survival: vec![2, 3],
             }
@@ -1054,7 +1084,7 @@ mod tests {
             parse_life_like("b2s").unwrap(),
             Rule {
                 states: 2,
-                neighbors: NeighborhoodType::Moore.neighbors(1, true).unwrap(),
+                neighborhood: Neighborhood::Totalistic(NeighborhoodType::Moore, 1),
                 birth: vec![2],
                 survival: vec![],
             }
@@ -1064,7 +1094,7 @@ mod tests {
             parse_life_like("bs").unwrap(),
             Rule {
                 states: 2,
-                neighbors: NeighborhoodType::Moore.neighbors(1, true).unwrap(),
+                neighborhood: Neighborhood::Totalistic(NeighborhoodType::Moore, 1),
                 birth: vec![],
                 survival: vec![],
             }
@@ -1074,7 +1104,7 @@ mod tests {
             parse_life_like("b13s012v").unwrap(),
             Rule {
                 states: 2,
-                neighbors: NeighborhoodType::VonNeumann.neighbors(1, true).unwrap(),
+                neighborhood: Neighborhood::Totalistic(NeighborhoodType::VonNeumann, 1),
                 birth: vec![1, 3],
                 survival: vec![0, 1, 2],
             }
@@ -1084,7 +1114,7 @@ mod tests {
             parse_life_like("b245s3h").unwrap(),
             Rule {
                 states: 2,
-                neighbors: NeighborhoodType::Hexagonal.neighbors(1, true).unwrap(),
+                neighborhood: Neighborhood::Totalistic(NeighborhoodType::Hexagonal, 1),
                 birth: vec![2, 4, 5],
                 survival: vec![3],
             }
@@ -1097,7 +1127,7 @@ mod tests {
             parse_generations("B3/S23/2").unwrap(),
             Rule {
                 states: 2,
-                neighbors: NeighborhoodType::Moore.neighbors(1, true).unwrap(),
+                neighborhood: Neighborhood::Totalistic(NeighborhoodType::Moore, 1),
                 birth: vec![3],
                 survival: vec![2, 3],
             }
@@ -1107,7 +1137,7 @@ mod tests {
             parse_generations("B2/S/3").unwrap(),
             Rule {
                 states: 3,
-                neighbors: NeighborhoodType::Moore.neighbors(1, true).unwrap(),
+                neighborhood: Neighborhood::Totalistic(NeighborhoodType::Moore, 1),
                 birth: vec![2],
                 survival: vec![],
             }
@@ -1117,7 +1147,7 @@ mod tests {
             parse_generations("B/S/4").unwrap(),
             Rule {
                 states: 4,
-                neighbors: NeighborhoodType::Moore.neighbors(1, true).unwrap(),
+                neighborhood: Neighborhood::Totalistic(NeighborhoodType::Moore, 1),
                 birth: vec![],
                 survival: vec![],
             }
@@ -1127,7 +1157,7 @@ mod tests {
             parse_generations("B13/S012/5V").unwrap(),
             Rule {
                 states: 5,
-                neighbors: NeighborhoodType::VonNeumann.neighbors(1, true).unwrap(),
+                neighborhood: Neighborhood::Totalistic(NeighborhoodType::VonNeumann, 1),
                 birth: vec![1, 3],
                 survival: vec![0, 1, 2],
             }
@@ -1137,7 +1167,7 @@ mod tests {
             parse_generations("B245/S3/255H").unwrap(),
             Rule {
                 states: 255,
-                neighbors: NeighborhoodType::Hexagonal.neighbors(1, true).unwrap(),
+                neighborhood: Neighborhood::Totalistic(NeighborhoodType::Hexagonal, 1),
                 birth: vec![2, 4, 5],
                 survival: vec![3],
             }
@@ -1150,7 +1180,7 @@ mod tests {
             parse_generations("23/3/2").unwrap(),
             Rule {
                 states: 2,
-                neighbors: NeighborhoodType::Moore.neighbors(1, true).unwrap(),
+                neighborhood: Neighborhood::Totalistic(NeighborhoodType::Moore, 1),
                 birth: vec![3],
                 survival: vec![2, 3],
             }
@@ -1160,7 +1190,7 @@ mod tests {
             parse_generations("/2/3").unwrap(),
             Rule {
                 states: 3,
-                neighbors: NeighborhoodType::Moore.neighbors(1, true).unwrap(),
+                neighborhood: Neighborhood::Totalistic(NeighborhoodType::Moore, 1),
                 birth: vec![2],
                 survival: vec![],
             }
@@ -1170,7 +1200,7 @@ mod tests {
             parse_generations("//4").unwrap(),
             Rule {
                 states: 4,
-                neighbors: NeighborhoodType::Moore.neighbors(1, true).unwrap(),
+                neighborhood: Neighborhood::Totalistic(NeighborhoodType::Moore, 1),
                 birth: vec![],
                 survival: vec![],
             }
@@ -1180,7 +1210,7 @@ mod tests {
             parse_generations("012/13/5V").unwrap(),
             Rule {
                 states: 5,
-                neighbors: NeighborhoodType::VonNeumann.neighbors(1, true).unwrap(),
+                neighborhood: Neighborhood::Totalistic(NeighborhoodType::VonNeumann, 1),
                 birth: vec![1, 3],
                 survival: vec![0, 1, 2],
             }
@@ -1190,7 +1220,7 @@ mod tests {
             parse_generations("3/245/255H").unwrap(),
             Rule {
                 states: 255,
-                neighbors: NeighborhoodType::Hexagonal.neighbors(1, true).unwrap(),
+                neighborhood: Neighborhood::Totalistic(NeighborhoodType::Hexagonal, 1),
                 birth: vec![2, 4, 5],
                 survival: vec![3],
             }
@@ -1203,7 +1233,7 @@ mod tests {
             parse_generations("g2b3s23").unwrap(),
             Rule {
                 states: 2,
-                neighbors: NeighborhoodType::Moore.neighbors(1, true).unwrap(),
+                neighborhood: Neighborhood::Totalistic(NeighborhoodType::Moore, 1),
                 birth: vec![3],
                 survival: vec![2, 3],
             }
@@ -1213,7 +1243,7 @@ mod tests {
             parse_generations("g3b2s").unwrap(),
             Rule {
                 states: 3,
-                neighbors: NeighborhoodType::Moore.neighbors(1, true).unwrap(),
+                neighborhood: Neighborhood::Totalistic(NeighborhoodType::Moore, 1),
                 birth: vec![2],
                 survival: vec![],
             }
@@ -1223,7 +1253,7 @@ mod tests {
             parse_generations("g4bs").unwrap(),
             Rule {
                 states: 4,
-                neighbors: NeighborhoodType::Moore.neighbors(1, true).unwrap(),
+                neighborhood: Neighborhood::Totalistic(NeighborhoodType::Moore, 1),
                 birth: vec![],
                 survival: vec![],
             }
@@ -1233,7 +1263,7 @@ mod tests {
             parse_generations("g5b13s012v").unwrap(),
             Rule {
                 states: 5,
-                neighbors: NeighborhoodType::VonNeumann.neighbors(1, true).unwrap(),
+                neighborhood: Neighborhood::Totalistic(NeighborhoodType::VonNeumann, 1),
                 birth: vec![1, 3],
                 survival: vec![0, 1, 2],
             }
@@ -1243,7 +1273,7 @@ mod tests {
             parse_generations("g255b245s3h").unwrap(),
             Rule {
                 states: 255,
-                neighbors: NeighborhoodType::Hexagonal.neighbors(1, true).unwrap(),
+                neighborhood: Neighborhood::Totalistic(NeighborhoodType::Hexagonal, 1),
                 birth: vec![2, 4, 5],
                 survival: vec![3],
             }
@@ -1256,7 +1286,7 @@ mod tests {
             parse_hrot("R1,C0,M0,S2..3,B3..3,NM").unwrap(),
             Rule {
                 states: 2,
-                neighbors: NeighborhoodType::Moore.neighbors(1, true).unwrap(),
+                neighborhood: Neighborhood::Totalistic(NeighborhoodType::Moore, 1),
                 birth: vec![3],
                 survival: vec![2, 3],
             }
@@ -1266,7 +1296,7 @@ mod tests {
             parse_hrot("R5,C0,M1,S34..58,B34..45,NM").unwrap(),
             Rule {
                 states: 2,
-                neighbors: NeighborhoodType::Moore.neighbors(5, true).unwrap(),
+                neighborhood: Neighborhood::Totalistic(NeighborhoodType::Moore, 5),
                 birth: vec![34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45],
                 survival: vec![
                     33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52,
@@ -1279,7 +1309,7 @@ mod tests {
             parse_hrot("R1,C0,M1,S1..1,B1..1,NN").unwrap(),
             Rule {
                 states: 2,
-                neighbors: NeighborhoodType::VonNeumann.neighbors(1, true).unwrap(),
+                neighborhood: Neighborhood::Totalistic(NeighborhoodType::VonNeumann, 1),
                 birth: vec![1],
                 survival: vec![0],
             }
@@ -1289,7 +1319,7 @@ mod tests {
             parse_hrot("R10,C255,M1,S2..3,B3..3,NM").unwrap(),
             Rule {
                 states: 255,
-                neighbors: NeighborhoodType::Moore.neighbors(10, true).unwrap(),
+                neighborhood: Neighborhood::Totalistic(NeighborhoodType::Moore, 10),
                 birth: vec![3],
                 survival: vec![1, 2],
             }
@@ -1299,7 +1329,7 @@ mod tests {
             parse_hrot("R3,C2,M0,S2..2,B3..3,N+").unwrap(),
             Rule {
                 states: 2,
-                neighbors: NeighborhoodType::Cross.neighbors(3, true).unwrap(),
+                neighborhood: Neighborhood::Totalistic(NeighborhoodType::Cross, 3),
                 birth: vec![3],
                 survival: vec![2],
             }
@@ -1312,7 +1342,7 @@ mod tests {
             parse_hrot("1,3,3,3,4").unwrap(),
             Rule {
                 states: 2,
-                neighbors: NeighborhoodType::Moore.neighbors(1, true).unwrap(),
+                neighborhood: Neighborhood::Totalistic(NeighborhoodType::Moore, 1),
                 birth: vec![3],
                 survival: vec![2, 3],
             }
@@ -1322,7 +1352,7 @@ mod tests {
             parse_hrot("5,34,45,34,58").unwrap(),
             Rule {
                 states: 2,
-                neighbors: NeighborhoodType::Moore.neighbors(5, true).unwrap(),
+                neighborhood: Neighborhood::Totalistic(NeighborhoodType::Moore, 5),
                 birth: vec![34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45],
                 survival: vec![
                     33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52,
@@ -1335,7 +1365,7 @@ mod tests {
             parse_hrot("1,1,1,1,1").unwrap(),
             Rule {
                 states: 2,
-                neighbors: NeighborhoodType::Moore.neighbors(1, true).unwrap(),
+                neighborhood: Neighborhood::Totalistic(NeighborhoodType::Moore, 1),
                 birth: vec![1],
                 survival: vec![0],
             }
@@ -1348,7 +1378,7 @@ mod tests {
             parse_hrot("R1,C0,S2-3,B3").unwrap(),
             Rule {
                 states: 2,
-                neighbors: NeighborhoodType::Moore.neighbors(1, true).unwrap(),
+                neighborhood: Neighborhood::Totalistic(NeighborhoodType::Moore, 1),
                 birth: vec![3],
                 survival: vec![2, 3],
             }
@@ -1358,7 +1388,7 @@ mod tests {
             parse_hrot("R5,C0,S33-57,B34-45").unwrap(),
             Rule {
                 states: 2,
-                neighbors: NeighborhoodType::Moore.neighbors(5, true).unwrap(),
+                neighborhood: Neighborhood::Totalistic(NeighborhoodType::Moore, 5),
                 birth: vec![34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45],
                 survival: vec![
                     33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52,
@@ -1371,7 +1401,7 @@ mod tests {
             parse_hrot("R1,C0,S0,B1,NN").unwrap(),
             Rule {
                 states: 2,
-                neighbors: NeighborhoodType::VonNeumann.neighbors(1, true).unwrap(),
+                neighborhood: Neighborhood::Totalistic(NeighborhoodType::VonNeumann, 1),
                 birth: vec![1],
                 survival: vec![0],
             }
@@ -1381,7 +1411,7 @@ mod tests {
             parse_hrot("R10,C255,S1-2,B3,NM").unwrap(),
             Rule {
                 states: 255,
-                neighbors: NeighborhoodType::Moore.neighbors(10, true).unwrap(),
+                neighborhood: Neighborhood::Totalistic(NeighborhoodType::Moore, 10),
                 birth: vec![3],
                 survival: vec![1, 2],
             }
@@ -1391,7 +1421,7 @@ mod tests {
             parse_hrot("R3,C2,S2,B3,N+").unwrap(),
             Rule {
                 states: 2,
-                neighbors: NeighborhoodType::Cross.neighbors(3, true).unwrap(),
+                neighborhood: Neighborhood::Totalistic(NeighborhoodType::Cross, 3),
                 birth: vec![3],
                 survival: vec![2],
             }
@@ -1401,7 +1431,7 @@ mod tests {
             parse_hrot("R3,C2,S6-10,12,B3,N+").unwrap(),
             Rule {
                 states: 2,
-                neighbors: NeighborhoodType::Cross.neighbors(3, true).unwrap(),
+                neighborhood: Neighborhood::Totalistic(NeighborhoodType::Cross, 3),
                 birth: vec![3],
                 survival: vec![6, 7, 8, 9, 10, 12],
             }

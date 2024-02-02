@@ -1,4 +1,5 @@
-use crate::NeighborError;
+use crate::{parse_rule, NeighborError, ParseRuleError};
+use std::str::FromStr;
 
 /// The coordinates of a neighbor and its weight.
 ///
@@ -24,7 +25,7 @@ impl Neighbor {
     pub fn from_coords(coords: impl IntoIterator<Item = (i32, i32)>) -> Vec<Self> {
         coords
             .into_iter()
-            .map(|coord| Neighbor::new(coord, 1))
+            .map(|coord| Self::new(coord, 1))
             .collect()
     }
 
@@ -44,7 +45,7 @@ impl Neighbor {
             .enumerate()
             .map(|(i, coord)| {
                 if i < 64 {
-                    Ok(Neighbor::new(coord, 1 << i))
+                    Ok(Self::new(coord, 1 << i))
                 } else {
                     Err(NeighborError::NeighborhoodTooLarge)
                 }
@@ -80,7 +81,7 @@ impl Neighbor {
 
 /// Predefined neighborhood types.
 ///
-/// This is used to generate the list of [`neighbors`](Rule::neighbors) of a [`Rule`].
+/// This enum is non-exhaustive. More neighborhood types may be added in the future.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NeighborhoodType {
@@ -138,6 +139,22 @@ pub enum NeighborhoodType {
 }
 
 impl NeighborhoodType {
+    /// Gets the number of neighbors given a radius.
+    ///
+    /// The number of neighbors is:
+    /// - `4 * radius * (radius + 1)` for [`Moore`](NeighborhoodType::Moore),
+    /// - `2 * radius * (radius + 1)` for [`VonNeumann`](NeighborhoodType::VonNeumann),
+    /// - `4 * radius` for [`Cross`](NeighborhoodType::Cross),
+    /// - `3 * radius * (radius + 1)` for [`Hexagonal`](NeighborhoodType::Hexagonal).
+    pub const fn size(self, radius: u32) -> usize {
+        (match self {
+            Self::Moore => 4 * radius * (radius + 1),
+            Self::VonNeumann => 2 * radius * (radius + 1),
+            Self::Cross => 4 * radius,
+            Self::Hexagonal => 3 * radius * (radius + 1),
+        }) as usize
+    }
+
     /// Creates a list of neighbors from a neighborhood type and a radius.
     ///
     /// If `is_totalistic` is `true`, all neighbors have weight 1.
@@ -167,10 +184,10 @@ impl NeighborhoodType {
         let radius = radius as i32;
 
         let size = match self {
-            NeighborhoodType::Moore => 4 * radius * (radius + 1),
-            NeighborhoodType::VonNeumann => 2 * radius * (radius + 1),
-            NeighborhoodType::Cross => 4 * radius,
-            NeighborhoodType::Hexagonal => 3 * radius * (radius + 1),
+            Self::Moore => 4 * radius * (radius + 1),
+            Self::VonNeumann => 2 * radius * (radius + 1),
+            Self::Cross => 4 * radius,
+            Self::Hexagonal => 3 * radius * (radius + 1),
         };
 
         if !is_totalistic && size > 64 {
@@ -180,7 +197,7 @@ impl NeighborhoodType {
         let mut coords = Vec::with_capacity(size as usize);
 
         match self {
-            NeighborhoodType::Moore => {
+            Self::Moore => {
                 for x in -radius..=radius {
                     for y in -radius..=radius {
                         if x != 0 || y != 0 {
@@ -189,7 +206,7 @@ impl NeighborhoodType {
                     }
                 }
             }
-            NeighborhoodType::VonNeumann => {
+            Self::VonNeumann => {
                 for x in -radius..=radius {
                     let max_y = radius - x.abs();
                     for y in -max_y..=max_y {
@@ -199,7 +216,7 @@ impl NeighborhoodType {
                     }
                 }
             }
-            NeighborhoodType::Cross => {
+            Self::Cross => {
                 for x in -radius..0 {
                     coords.push((x, 0));
                 }
@@ -212,7 +229,7 @@ impl NeighborhoodType {
                     coords.push((x, 0));
                 }
             }
-            NeighborhoodType::Hexagonal => {
+            Self::Hexagonal => {
                 for x in -radius..=radius {
                     let min_y = (x - radius).max(-radius);
                     let max_y = (x + radius).min(radius);
@@ -233,9 +250,147 @@ impl NeighborhoodType {
     }
 }
 
+/// The shape of a neighborhood.
+///
+/// In a usual Life-like rule, the neighborhood of a cell is simply the 8 cells surrounding it. This is called
+/// the Moore neighborhood of radius 1. In each generation, the state of a cell is determined by the states of
+/// itself and its neighbors in the previous generation.
+///
+/// This struct generalizes the neighborhood to any shape and any radius. The neighborhood can be specified as a
+/// predefined [`NeighborhoodType`] (e.g. Moore, von Neumann, etc.) and a radius, or as a custom list of coordinates.
+///
+/// This struct also supports three different ways to interpret the [`birth`](Rule::birth) and [`survival`](Rule::survival)
+/// conditions: totalistic, non-totalistic, and weighted.
+///
+/// In a `[Rule]`, the [`birth`](Rule::birth) and [`survival`](Rule::survival) conditions are specified as a list
+/// of integers, representing the sum of weights of neighbors in the "live" state. Interpretation of the conditions
+/// are defined as follows:
+///
+/// - For totalistic neighborhoods, the integers in the conditions list represent the number of live neighbors.
+/// - For non-totalistic neighborhoods, if the neighborhood has `n` neighbors, we can view the state of the
+///   neighborhood as a binary number with `n` bits. The `i`-th bit is 1 if the `i`-th neighbor is in the "live"
+///   state, and 0 otherwise. The integers in the conditions list represent the value of this binary number.
+/// - For weighted neighborhoods, each neighbor is assigned a weight, and the integers in the conditions list
+///   represent the sum of weights of live neighbors.
+///
+/// Please refer to the documentation of the [`Rule`] struct for more information.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum Neighborhood {
+    /// A totalistic neighborhood, specified by a [`NeighborhoodType`] and a radius.
+    Totalistic(NeighborhoodType, u32),
+    /// A non-totalistic neighborhood, specified a [`NeighborhoodType`] and a radius.
+    Nontotalistic(NeighborhoodType, u32),
+    /// A custom totalistic neighborhood, specified by a list of coordinates.
+    CustomTotalistic(Vec<(i32, i32)>),
+    /// A custom non-totalistic neighborhood, specified by a list of coordinates.
+    CustomNontotalistic(Vec<(i32, i32)>),
+    /// A custom weighted neighborhood, specified by a list of [`Neighbor`]s.
+    CustomWeighted(Vec<Neighbor>),
+}
+
+impl Neighborhood {
+    /// Creates a list of [`Neighbor`]s from a neighborhood shape.
+    ///
+    /// If the neighborhood is totalistic, all neighbors have weight 1.
+    ///
+    /// If the neighborhood is non-totalistic, the weight of the `i`-th neighbor is `2^i`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the radius is too large.
+    ///
+    /// If the neighborhood is non-totalistic, the number of neighbors must be at most 64.
+    /// This means that the maximum radius allowed is `3` for [`Moore`](NeighborhoodType::Moore),
+    /// `5` for [`VonNeumann`](NeighborhoodType::VonNeumann),
+    /// `16` for [`Cross`](NeighborhoodType::Cross),
+    /// and `4` for [`Hexagonal`](NeighborhoodType::Hexagonal).
+    ///
+    /// When the neighborhood is totalistic, the radius should be at most [`i32::MAX`].
+    ///
+    /// # Examples
+    ///
+    /// For example, Conway's Game of Life has the Moore neighborhood of radius 1.
+    ///
+    /// ```rust
+    /// # use ca_rules2::{Neighbor, Neighborhood, NeighborhoodType};
+    /// let neighborhood = Neighborhood::Totalistic(NeighborhoodType::Moore, 1);
+    /// let neighbors = vec![
+    ///     Neighbor { coord: (-1, -1), weight: 1 },
+    ///     Neighbor { coord: (-1,  0), weight: 1 },
+    ///     Neighbor { coord: (-1,  1), weight: 1 },
+    ///     Neighbor { coord: ( 0, -1), weight: 1 },
+    ///     Neighbor { coord: ( 0,  1), weight: 1 },
+    ///     Neighbor { coord: ( 1, -1), weight: 1 },
+    ///     Neighbor { coord: ( 1,  0), weight: 1 },
+    ///     Neighbor { coord: ( 1,  1), weight: 1 },
+    /// ];
+    /// assert_eq!(neighborhood.neighbors().unwrap(), neighbors);
+    /// ```
+    pub fn neighbors(&self) -> Result<Vec<Neighbor>, NeighborError> {
+        match self {
+            Self::Totalistic(neighborhood_type, radius) => {
+                neighborhood_type.neighbors(*radius, true)
+            }
+            Self::Nontotalistic(neighborhood_type, radius) => {
+                neighborhood_type.neighbors(*radius, false)
+            }
+            Self::CustomTotalistic(coords) => Ok(Neighbor::from_coords(coords.iter().copied())),
+            Self::CustomNontotalistic(coords) => {
+                Neighbor::from_coords_non_totalistic(coords.iter().copied())
+            }
+            Self::CustomWeighted(neighbors) => Ok(neighbors.clone()),
+        }
+    }
+
+    /// Whether the neighborhood is totalistic.
+    pub const fn is_totalistic(&self) -> bool {
+        matches!(self, Self::Totalistic(_, _) | Self::CustomTotalistic(_))
+    }
+
+    /// Whether the neighborhood is non-totalistic.
+    pub const fn is_nontotalistic(&self) -> bool {
+        matches!(
+            self,
+            Self::Nontotalistic(_, _) | Self::CustomNontotalistic(_)
+        )
+    }
+
+    /// Number of neighbors.
+    pub fn size(&self) -> usize {
+        match self {
+            Self::Totalistic(neighborhood_type, radius)
+            | Self::Nontotalistic(neighborhood_type, radius) => neighborhood_type.size(*radius),
+            Self::CustomTotalistic(coords) | Self::CustomNontotalistic(coords) => coords.len(),
+            Self::CustomWeighted(neighbors) => neighbors.len(),
+        }
+    }
+
+    /// Radius of the neighborhood.
+    ///
+    /// For custom neighborhoods, the radius is the maximum Chebyshev distance between the center cell and its neighbors.
+    ///
+    /// The Chebyshev distance between two points `(x1, y1)` and `(x2, y2)` is `max(|x1 - x2|, |y1 - y2|)`.
+    pub fn radius(&self) -> u32 {
+        match self {
+            Self::Totalistic(_, radius) | Self::Nontotalistic(_, radius) => *radius,
+            Self::CustomTotalistic(coords) | Self::CustomNontotalistic(coords) => coords
+                .iter()
+                .map(|(x, y)| x.abs().max(y.abs()))
+                .max()
+                .unwrap_or(0)
+                as u32,
+            Self::CustomWeighted(neighbors) => neighbors
+                .iter()
+                .map(|neighbor| neighbor.coord.0.abs().max(neighbor.coord.1.abs()))
+                .max()
+                .unwrap_or(0) as u32,
+        }
+    }
+}
+
 /// A cellular automaton rule.
 ///
-/// # Number of states
+/// # Rules
 ///
 /// This struct is intended to represent a [Generations](https://www.conwaylife.com/wiki/Generations) rule.
 /// It is a generalization of the Life-like rules, with possibly more states.
@@ -257,28 +412,42 @@ impl NeighborhoodType {
 /// - A cell in a "dying" state will transition to the next "dying" state, or the "dead" state if it is
 ///  already in the last "dying" state.
 ///
-/// When the number of states is 2, it is a usual Life-like rule.
+/// When the number of states is 2, there are no "dying" states, and the rule is equivalent to a Life-like rule.
 ///
 /// The number of states is specified by the [`states`](Rule::states) field. It must be at least 2.
 ///
-/// # Neighbors and weights
+/// # Neighborhood
 ///
-/// In each generation, the state of a cell is determined by the states of itself and its neighbors in the
-/// previous generation. The [`neighbors`](Rule::neighbors) field specifies the coordinates of the neighbors
-/// relative to the center cell, and their weights.
+/// In a usual Life-like rule, the neighborhood of a cell is simply the 8 cells surrounding it. This is called
+/// the Moore neighborhood of radius 1. In each generation, the state of a cell is determined by the states of
+/// itself and its neighbors in the previous generation.
+///
+/// This struct generalizes the neighborhood to any shape and any radius. The neighborhood can be specified as a
+/// predefined [`NeighborhoodType`] (e.g. Moore, von Neumann, etc.) and a radius, or as a custom list of coordinates.
+///
+/// This struct also supports three different ways to interpret the [`birth`](Rule::birth) and [`survival`](Rule::survival)
+/// conditions: totalistic, non-totalistic, and weighted.
+///
+/// These information is specified by the [`neighborhood`](Rule::neighborhood) field. Please refer to the documentation
+/// of the [`Neighborhood`] enum for more information.
+///
+/// # Birth and Survival Conditions
 ///
 /// The [`birth`](Rule::birth) and [`survival`](Rule::survival) conditions are specified as a list of integers,
 /// representing the sum of weights of neighbors in the "live" state. No distinction is made between "dying"
 /// states and the "dead" state when calculating the sum.
 ///
-/// For totalistic rules, we only need to count the number of neighbors in the "live" state. So the weight
-/// of each neighbor is 1.
+/// Interpretation of the conditions depends on the neighborhood:
 ///
-/// For non-totalistic rules, we need to know the state of each neighbor. We can assign a distinct power of 2
-/// to each neighbor, so that each possible combination of neighbor states corresponds to a unique integer.
+/// - For totalistic neighborhoods, the integers in the conditions list represent the number of live neighbors.
+/// - For non-totalistic neighborhoods, if the neighborhood has `n` neighbors, we can view the state of the
+///   neighborhood as a binary number with `n` bits. The `i`-th bit is 1 if the `i`-th neighbor is in the "live"
+///   state, and 0 otherwise. The integers in the conditions list represent the value of this binary number.
+/// - For weighted neighborhoods, each neighbor is assigned a weight, and the integers in the conditions list
+///   represent the sum of weights of live neighbors.
 ///
-/// There are other possible ways to assign weights to neighbors. For example, you can assign the weights
-/// according to the distance between the center cell and its neighbors.
+/// Totalistic rules and non-totalistic rules can be seen as special cases of weighted rules. In a totalistic rule,
+/// all neighbors have weight 1. In a non-totalistic rule, the weight of the `i`-th neighbor is `2^i`.
 ///
 /// # Examples
 ///
@@ -286,49 +455,10 @@ impl NeighborhoodType {
 /// it can be represented as follows:
 ///
 /// ```rust
-/// # use ca_rules2::{Neighbor, Rule};
-/// let neighbors = vec![
-///     Neighbor { coord: (-1, -1), weight: 1 },
-///     Neighbor { coord: (-1,  0), weight: 1 },
-///     Neighbor { coord: (-1,  1), weight: 1 },
-///     Neighbor { coord: ( 0, -1), weight: 1 },
-///     Neighbor { coord: ( 0,  1), weight: 1 },
-///     Neighbor { coord: ( 1, -1), weight: 1 },
-///     Neighbor { coord: ( 1,  0), weight: 1 },
-///     Neighbor { coord: ( 1,  1), weight: 1 },
-/// ];
-/// let rule = Rule {
-///     states: 2,
-///     neighbors,
-///     birth: vec![3],
-///     survival: vec![2, 3],
-/// };
-/// ```
-///
-/// The list of neighbors can also be generated using the [`Neighbor::from_coords`] method:
-///
-/// ```rust
-/// # use ca_rules2::{Neighbor, Rule};
-/// let neighbors = Neighbor::from_coords([
-///    (-1, -1), (-1,  0), (-1,  1),
-///    ( 0, -1),           ( 0,  1),
-///    ( 1, -1), ( 1,  0), ( 1,  1),
-/// ]);
-/// let rule = Rule {
-///     states: 2,
-///     neighbors,
-///     birth: vec![3],
-///     survival: vec![2, 3],
-/// };
-/// ```
-///
-/// An even simpler way to generate the list of neighbors is to use the [`NeighborhoodType`] enum:
-///
-/// ```rust
-/// # use ca_rules2::{NeighborhoodType, Rule};
+/// # use ca_rules2::{Neighborhood, NeighborhoodType, Rule};
 /// let rule = Rule {
 ///    states: 2,
-///    neighbors: NeighborhoodType::Moore.neighbors(1, true).unwrap(),
+///    neighborhood: Neighborhood::Totalistic(NeighborhoodType::Moore, 1),
 ///    birth: vec![3],
 ///    survival: vec![2, 3],
 /// };
@@ -339,8 +469,8 @@ pub struct Rule {
     ///
     /// It must be at least 2.
     pub states: u64,
-    /// The list of neighbors.
-    pub neighbors: Vec<Neighbor>,
+    /// The neighborhood.
+    pub neighborhood: Neighborhood,
     /// Birth conditions.
     pub birth: Vec<u64>,
     /// Survival conditions.
@@ -349,38 +479,50 @@ pub struct Rule {
 
 impl Rule {
     /// Whether the rule is totalistic.
-    ///
-    /// A rule is totalistic if all neighbors have weight 1.
-    pub fn is_totalistic(&self) -> bool {
-        self.neighbors.iter().all(|neighbor| neighbor.weight == 1)
+    pub const fn is_totalistic(&self) -> bool {
+        self.neighborhood.is_totalistic()
     }
 
     /// Number of neighbors.
     pub fn neighborhood_size(&self) -> usize {
-        self.neighbors.len()
+        self.neighborhood.size()
     }
 
     /// Radius of the neighborhood.
-    ///
-    /// The radius is the maximum Chebyshev distance between the center cell and its neighbors.
-    ///
-    /// The Chebyshev distance between two points `(x1, y1)` and `(x2, y2)` is `max(|x1 - x2|, |y1 - y2|)`.
     pub fn radius(&self) -> u32 {
-        self.neighbors
-            .iter()
-            .map(|neighbor| neighbor.coord.0.abs().max(neighbor.coord.1.abs()))
-            .max()
-            .unwrap_or(0) as u32
+        self.neighborhood.radius()
+    }
+
+    /// Whether the birth conditions contain 0.
+    ///
+    /// In this case, a dead cell can be born even if it has no live neighbors.
+    /// This needs to be handled separately in many use cases.
+    ///
+    /// For example, a cellular automaton simulator that supports infinite grids may assume that
+    /// all "background" cells are dead. However, if the birth conditions contain 0, these dead
+    /// cells may become alive in the next generation, which breaks the assumption.
+    pub fn contains_b0(&self) -> bool {
+        self.birth.contains(&0)
     }
 
     /// Checks whether the birth and survival conditions are valid.
     ///
     /// These conditions should not contain any number greater than the sum of weights of neighbors.
     pub fn check_conditions(&self) -> bool {
-        let sum_of_weights = self.neighbors.iter().map(|neighbor| neighbor.weight).sum();
+        self.neighborhood.neighbors().is_ok_and(|neighbors| {
+            let sum_of_weights = neighbors.iter().map(|neighbor| neighbor.weight).sum();
 
-        self.birth.iter().all(|&n| n <= sum_of_weights)
-            && self.survival.iter().all(|&n| n <= sum_of_weights)
+            self.birth.iter().all(|&n| n <= sum_of_weights)
+                && self.survival.iter().all(|&n| n <= sum_of_weights)
+        })
+    }
+}
+
+impl FromStr for Rule {
+    type Err = ParseRuleError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        parse_rule(s)
     }
 }
 
@@ -485,7 +627,7 @@ mod tests {
             for neighborhood_type in neighborhood_types {
                 let rule = Rule {
                     states: 2,
-                    neighbors: neighborhood_type.neighbors(r, true).unwrap(),
+                    neighborhood: Neighborhood::Totalistic(neighborhood_type, r),
                     birth: Vec::new(),
                     survival: Vec::new(),
                 };
