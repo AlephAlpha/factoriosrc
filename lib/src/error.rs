@@ -5,17 +5,17 @@ use thiserror::Error;
 #[error("Invalid symmetry")]
 pub struct ParseSymmetryError;
 
-/// An error that can occur when initializing a rule.
-#[derive(Clone, Copy, Debug, Error)]
-pub enum RuleError {
-    /// The neighborhood size is too large.
-    #[error("The neighborhood size is too large")]
-    NeighborhoodTooLarge,
-}
-
 /// An error that can occur when initializing the search from a configuration.
 #[derive(Clone, Copy, Debug, Error)]
 pub enum ConfigError {
+    /// The rule string is invalid.
+    #[error("The rule string is invalid")]
+    InvalidRule,
+
+    /// The rule is not supported.
+    #[error("The rule is not supported")]
+    UnsupportedRule,
+
     /// The width, height, period, or diagonal width is zero.
     #[error("The width, height, period, or diagonal width is zero")]
     InvalidSize,

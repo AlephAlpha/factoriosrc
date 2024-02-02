@@ -16,7 +16,7 @@ use std::cell::Cell;
 #[derive(Debug, Clone)]
 pub(crate) struct LifeCell {
     /// The generation of the cell.
-    pub(crate) generation: isize,
+    pub(crate) generation: i32,
 
     /// The state of the cell.
     ///
@@ -53,7 +53,7 @@ impl LifeCell {
     /// Create a new cell in the given generation.
     ///
     /// Other fields are initialized to their default values.
-    pub(crate) fn new(generation: isize) -> Self {
+    pub(crate) fn new(generation: i32) -> Self {
         Self {
             generation,
             state: Cell::new(None),

@@ -23,8 +23,8 @@ doc:
 
 # Run the benchmark
 bench: build
-    hyperfine --warmup 3 '{{bin}} -r life 26 8 4 -y 1 -n a --no-tui'
+    hyperfine --warmup 3 '{{bin}} -r B3/S23 26 8 4 -y 1 -n a --no-tui'
 
 # Run the benchmark, comparing with rlifesrc
 bench-compare: build
-    hyperfine --warmup 3 '{{bin}} -r life 26 8 4 -y 1 -n a --no-tui' 'rlifesrc 26 8 4 0 1 --no-tui'
+    hyperfine --warmup 3 '{{bin}} -r B3/S23 26 8 4 -y 1 -n a --no-tui' 'rlifesrc 26 8 4 0 1 --no-tui'

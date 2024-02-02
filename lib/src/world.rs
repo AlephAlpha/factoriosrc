@@ -11,7 +11,7 @@ use std::fmt::Write;
 ///
 /// The first two coordinates are the x and y coordinates, respectively.
 /// The third coordinate is the generation of the cell.
-pub type Coord = (isize, isize, isize);
+pub type Coord = (i32, i32, i32);
 
 /// The reason why a cell is set to a state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,10 +44,10 @@ pub enum Status {
 /// # Example
 ///
 /// ```
-/// use factoriosrc_lib::{Config, Rule, Status, World};
+/// use factoriosrc_lib::{Config, Status, World};
 ///
 /// // Create a configuration that searches for a 3x3 oscillator with period 2 in Conway's Life.
-/// let config = Config::new(Rule::Life, 3, 3, 2);
+/// let config = Config::new("B3/S23", 3, 3, 2);
 /// // Create a world from the configuration.
 /// let mut world = World::new(config).unwrap();
 /// // Search for a solution.
@@ -125,21 +125,25 @@ impl World {
     pub fn new(config: Config) -> Result<Self, ConfigError> {
         let config = config.check()?;
 
-        let rule = config.rule.table();
+        let rule = config
+            .rule_str
+            .parse()
+            .map_err(|_| ConfigError::InvalidRule)?;
+        let rule = RuleTable::new(rule)?;
         let max_population = config.max_population;
 
         let (w, h, p) = (
-            config.width as isize,
-            config.height as isize,
-            config.period as isize,
+            config.width as i32,
+            config.height as i32,
+            config.period as i32,
         );
-        let r = rule.radius as isize;
+        let r = rule.radius as i32;
 
         // Number of cells in the world.
         let size = ((w + 2 * r) * (h + 2 * r) * p) as usize;
 
         let cells = (0..size)
-            .map(|i| LifeCell::new(i as isize % p))
+            .map(|i| LifeCell::new(i as i32 % p))
             .collect::<Box<[_]>>();
 
         let cells_ptr = Box::into_raw(cells);
@@ -207,13 +211,13 @@ impl World {
 
                     if self.config.dx == 0 && self.config.dy >= 0 {
                         let y = self.config.dy.max(1) - 1;
-                        for x in 0..w as isize {
+                        for x in 0..w as i32 {
                             self.get_cell_by_coord_mut((x, y, 0)).unwrap().is_front = true;
                             self.front_count += 1;
                         }
                     } else {
-                        for x in 0..w as isize {
-                            for t in 0..self.config.period as isize {
+                        for x in 0..w as i32 {
+                            for t in 0..self.config.period as i32 {
                                 self.get_cell_by_coord_mut((x, 0, t)).unwrap().is_front = true;
                                 self.front_count += 1;
                             }
@@ -247,13 +251,13 @@ impl World {
 
                     if self.config.dx >= 0 && self.config.dy == 0 {
                         let x = self.config.dx.max(1) - 1;
-                        for y in 0..h as isize {
+                        for y in 0..h as i32 {
                             self.get_cell_by_coord_mut((x, y, 0)).unwrap().is_front = true;
                             self.front_count += 1;
                         }
                     } else {
-                        for y in 0..h as isize {
-                            for t in 0..self.config.period as isize {
+                        for y in 0..h as i32 {
+                            for t in 0..self.config.period as i32 {
                                 self.get_cell_by_coord_mut((0, y, t)).unwrap().is_front = true;
                                 self.front_count += 1;
                             }
@@ -281,21 +285,21 @@ impl World {
 
                     if self.config.dx == self.config.dy && self.config.dx >= 0 {
                         let y = self.config.dy.max(1) - 1;
-                        for x in 0..d as isize {
+                        for x in 0..d as i32 {
                             self.get_cell_by_coord_mut((x, y, 0)).unwrap().is_front = true;
                             self.front_count += 1;
                         }
                     } else {
-                        for x in 0..d as isize {
-                            for t in 0..self.config.period as isize {
+                        for x in 0..d as i32 {
+                            for t in 0..self.config.period as i32 {
                                 self.get_cell_by_coord_mut((x, 0, t)).unwrap().is_front = true;
                                 self.front_count += 1;
                             }
                         }
 
                         if self.config.dx != self.config.dy {
-                            for y in 1..d as isize {
-                                for t in 0..self.config.period as isize {
+                            for y in 1..d as i32 {
+                                for t in 0..self.config.period as i32 {
                                     self.get_cell_by_coord_mut((0, y, t)).unwrap().is_front = true;
                                     self.front_count += 1;
                                 }
@@ -308,8 +312,8 @@ impl World {
 
         // If `use_front` is false, the front is the whole pattern at the first generation.
         if !use_front {
-            for x in 0..self.config.width as isize {
-                for y in 0..self.config.height as isize {
+            for x in 0..self.config.width as i32 {
+                for y in 0..self.config.height as i32 {
                     self.get_cell_by_coord_mut((x, y, 0)).unwrap().is_front = true;
                     self.front_count += 1;
                 }
@@ -323,11 +327,11 @@ impl World {
     /// In this case, the neighbor is set to [`None`].
     fn init_neighborhood(&mut self) {
         let (w, h, p) = (
-            self.config.width as isize,
-            self.config.height as isize,
-            self.config.period as isize,
+            self.config.width as i32,
+            self.config.height as i32,
+            self.config.period as i32,
         );
-        let r = self.rule.radius as isize;
+        let r = self.rule.radius as i32;
 
         for x in -r..w + r {
             for y in -r..h + r {
@@ -355,11 +359,11 @@ impl World {
     /// Set the predecessor and successor of each cell.
     fn init_predecessor_successor(&mut self) {
         let (w, h, p) = (
-            self.config.width as isize,
-            self.config.height as isize,
-            self.config.period as isize,
+            self.config.width as i32,
+            self.config.height as i32,
+            self.config.period as i32,
         );
-        let r = self.rule.radius as isize;
+        let r = self.rule.radius as i32;
 
         for x in -r..w + r {
             for y in -r..h + r {
@@ -397,11 +401,11 @@ impl World {
     // Set the symmetry cells of each cell.
     fn init_symmetry(&mut self) {
         let (w, h, p) = (
-            self.config.width as isize,
-            self.config.height as isize,
-            self.config.period as isize,
+            self.config.width as i32,
+            self.config.height as i32,
+            self.config.period as i32,
         );
-        let r = self.rule.radius as isize;
+        let r = self.rule.radius as i32;
 
         for x in -r..w + r {
             for y in -r..h + r {
@@ -454,9 +458,9 @@ impl World {
     fn init_next(&mut self) {
         match self.config.search_order.unwrap() {
             SearchOrder::RowFirst => {
-                for y in (0..self.config.height as isize).rev() {
-                    for x in (0..self.config.width as isize).rev() {
-                        for t in (0..self.config.period as isize).rev() {
+                for y in (0..self.config.height as i32).rev() {
+                    for x in (0..self.config.width as i32).rev() {
+                        for t in (0..self.config.period as i32).rev() {
                             let cell = self.get_cell_by_coord_ptr((x, y, t));
 
                             unsafe {
@@ -472,9 +476,9 @@ impl World {
             }
 
             SearchOrder::ColumnFirst => {
-                for x in (0..self.config.width as isize).rev() {
-                    for y in (0..self.config.height as isize).rev() {
-                        for t in (0..self.config.period as isize).rev() {
+                for x in (0..self.config.width as i32).rev() {
+                    for y in (0..self.config.height as i32).rev() {
+                        for t in (0..self.config.period as i32).rev() {
                             let cell = self.get_cell_by_coord_ptr((x, y, t));
 
                             unsafe {
@@ -490,7 +494,7 @@ impl World {
             }
 
             SearchOrder::Diagonal => {
-                let w = self.config.width as isize;
+                let w = self.config.width as i32;
 
                 for a in (0..2 * w - 1).rev() {
                     for x in (0..w).rev() {
@@ -500,9 +504,9 @@ impl World {
                             && !self
                                 .config
                                 .diagonal_width
-                                .is_some_and(|d| (x - y).abs() >= d as isize)
+                                .is_some_and(|d| (x - y).abs() >= d as i32)
                         {
-                            for t in (0..self.config.period as isize).rev() {
+                            for t in (0..self.config.period as i32).rev() {
                                 let cell = self.get_cell_by_coord_ptr((x, y, t));
 
                                 unsafe {
@@ -529,11 +533,11 @@ impl World {
     /// In the future, user may be able to specify some cells to be known.
     fn init_known(&mut self) {
         let (w, h, p) = (
-            self.config.width as isize,
-            self.config.height as isize,
-            self.config.period as isize,
+            self.config.width as i32,
+            self.config.height as i32,
+            self.config.period as i32,
         );
-        let r = self.rule.radius as isize;
+        let r = self.rule.radius as i32;
 
         for x in -r..w + r {
             for y in -r..h + r {
@@ -546,7 +550,7 @@ impl World {
                             || self
                                 .config
                                 .diagonal_width
-                                .is_some_and(|d| (x - y).abs() >= d as isize)
+                                .is_some_and(|d| (x - y).abs() >= d as i32)
                             || (*cell).predecessor.is_null()
                         {
                             self.set_cell(&*cell, CellState::Dead, Reason::Known);
@@ -563,16 +567,16 @@ impl World {
     fn get_cell_by_coord_ptr(&self, coord: Coord) -> *mut LifeCell {
         let (x, y, t) = coord;
         let (w, h, p) = (
-            self.config.width as isize,
-            self.config.height as isize,
-            self.config.period as isize,
+            self.config.width as i32,
+            self.config.height as i32,
+            self.config.period as i32,
         );
-        let r = self.rule.radius as isize;
+        let r = self.rule.radius as i32;
 
         if (-r..w + r).contains(&x) && (-r..h + r).contains(&y) && (0..p).contains(&t) {
             let index = t + (x + r) * p + (y + r) * p * (w + 2 * r);
-            debug_assert!(index >= 0 && index < self.size as isize);
-            unsafe { (self.cells_ptr as *mut LifeCell).offset(index) }
+            debug_assert!(index >= 0 && index < self.size as i32);
+            unsafe { (self.cells_ptr as *mut LifeCell).offset(index as isize) }
         } else {
             std::ptr::null_mut()
         }
@@ -685,8 +689,8 @@ impl World {
 
     /// Get the number of living cells on a generation.
     #[inline]
-    pub fn population(&self, t: isize) -> usize {
-        let t = t.rem_euclid(self.config.period as isize);
+    pub fn population(&self, t: i32) -> usize {
+        let t = t.rem_euclid(self.config.period as i32);
         self.population[t as usize]
     }
 
@@ -699,25 +703,18 @@ impl World {
     /// - The whole pattern is terminated by `!`.
     ///
     /// If the generation is out of the range `0..period`, we will take the modulo.
-    pub fn rle(&self, t: isize) -> String {
+    pub fn rle(&self, t: i32) -> String {
         let mut s = String::new();
 
         let (w, h, p) = (
-            self.config.width as isize,
-            self.config.height as isize,
-            self.config.period as isize,
+            self.config.width as i32,
+            self.config.height as i32,
+            self.config.period as i32,
         );
 
         let t = t.rem_euclid(p);
 
-        writeln!(
-            s,
-            "x = {}, y = {}, rule = {}",
-            w,
-            h,
-            self.config.rule.name()
-        )
-        .unwrap();
+        writeln!(s, "x = {}, y = {}, rule = {}", w, h, self.config.rule_str).unwrap();
 
         for y in 0..h {
             for x in 0..w {
@@ -745,12 +742,11 @@ impl World {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::rule::Rule;
 
     /// Test with Miri to see if there is any undefined behavior.
     #[test]
     fn test_miri() {
-        let config = Config::new(Rule::Life, 3, 3, 2);
+        let config = Config::new("B3/S23", 3, 3, 2);
         let mut world = World::new(config).unwrap();
         world.search(None);
         assert_eq!(world.status(), Status::Solved);

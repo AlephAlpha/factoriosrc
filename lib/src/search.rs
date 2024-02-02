@@ -216,9 +216,9 @@ impl World {
     /// we need to exclude still lifes and period 2 oscillators.
     fn check_period(&self) -> bool {
         let (w, h, p) = (
-            self.config.width as isize,
-            self.config.height as isize,
-            self.config.period as isize,
+            self.config.width as i32,
+            self.config.height as i32,
+            self.config.period as i32,
         );
         let dx = self.config.dx;
         let dy = self.config.dy;

@@ -177,7 +177,7 @@ impl App {
 #[derive(Debug)]
 struct Rle<'b> {
     /// The current generation.
-    t: isize,
+    t: i32,
     /// A reference to the world.
     world: &'b World,
 }
@@ -208,7 +208,7 @@ impl Widget for Rle<'_> {
             Span::raw(", "),
             Span::styled("rule", Style::new().magenta()),
             Span::raw(" = "),
-            Span::styled(self.world.config().rule.name(), Style::new().cyan()),
+            Span::styled(&self.world.config().rule_str, Style::new().cyan()),
         ]);
 
         buf.set_line(area.x, area.y, &header, area.width);
@@ -218,7 +218,7 @@ impl Widget for Rle<'_> {
                 let buf_y = area.y + y + 1;
                 for x in 0..w.min(area.width) {
                     let buf_x = area.x + x;
-                    let state = self.world.get_cell_state((x as isize, y as isize, self.t));
+                    let state = self.world.get_cell_state((x as i32, y as i32, self.t));
                     match state {
                         Some(CellState::Alive) => buf
                             .get_mut(buf_x, buf_y)

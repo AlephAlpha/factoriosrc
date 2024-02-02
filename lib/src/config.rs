@@ -1,7 +1,4 @@
-use crate::{
-    error::{ConfigError, ParseSymmetryError},
-    rule::Rule,
-};
+use crate::error::{ConfigError, ParseSymmetryError};
 #[cfg(feature = "clap")]
 use clap::{Args, ValueEnum};
 use std::{
@@ -169,7 +166,7 @@ impl Symmetry {
     }
 
     /// Whether the translation satisfies the symmetry.
-    pub const fn translation_is_valid(self, dx: isize, dy: isize) -> bool {
+    pub const fn translation_is_valid(self, dx: i32, dy: i32) -> bool {
         match self {
             Self::C1 => true,
             Self::C2 => dx == 0 && dy == 0,
@@ -252,22 +249,19 @@ pub enum NewState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "clap", derive(Args))]
 pub struct Config {
-    /// The cellular automaton rule.
-    #[cfg_attr(
-        feature = "clap",
-        arg(short, long, value_enum, default_value = "factorio")
-    )]
-    pub rule: Rule,
+    /// The rule string of the cellular automaton.
+    #[cfg_attr(feature = "clap", arg(short, long, default_value = "R3,C2,S2,B3,N+"))]
+    pub rule_str: String,
 
     /// Width of the world.
-    pub width: usize,
+    pub width: u32,
 
     /// Height of the world.
-    pub height: usize,
+    pub height: u32,
 
     /// Period of the pattern.
     #[cfg_attr(feature = "clap", arg(default_value = "1"))]
-    pub period: usize,
+    pub period: u32,
 
     /// Horizontal translation of the world.
     ///
@@ -280,7 +274,7 @@ pub struct Config {
         feature = "clap",
         arg(short = 'x', long, allow_negative_numbers = true, default_value = "0")
     )]
-    pub dx: isize,
+    pub dx: i32,
 
     /// Vertical translation of the world.
     ///
@@ -293,7 +287,7 @@ pub struct Config {
         feature = "clap",
         arg(short = 'y', long, allow_negative_numbers = true, default_value = "0")
     )]
-    pub dy: isize,
+    pub dy: i32,
 
     /// Diagonal width of the world.
     ///
@@ -304,7 +298,7 @@ pub struct Config {
     ///
     /// If this is not [`None`], then the world must be square.
     #[cfg_attr(feature = "clap", arg(short, long))]
-    pub diagonal_width: Option<usize>,
+    pub diagonal_width: Option<u32>,
 
     /// Symmetry of the pattern.
     #[cfg_attr(feature = "clap", arg(short, long, value_enum, default_value = "C1"))]
@@ -352,9 +346,9 @@ pub struct Config {
 impl Config {
     /// Create a new configuration.
     #[inline]
-    pub const fn new(rule: Rule, width: usize, height: usize, period: usize) -> Self {
+    pub fn new(rule_str: &str, width: u32, height: u32, period: u32) -> Self {
         Self {
-            rule,
+            rule_str: rule_str.to_string(),
             width,
             height,
             period,
@@ -374,7 +368,7 @@ impl Config {
     ///
     /// See [`dx`](Config::dx) and [`dy`](Config::dy) for more details.
     #[inline]
-    pub const fn with_translations(mut self, dx: isize, dy: isize) -> Self {
+    pub const fn with_translations(mut self, dx: i32, dy: i32) -> Self {
         self.dx = dx;
         self.dy = dy;
         self
@@ -384,7 +378,7 @@ impl Config {
     ///
     /// See [`diagonal_width`](Config::diagonal_width) for more details.
     #[inline]
-    pub const fn with_diagonal_width(mut self, diagonal_width: usize) -> Self {
+    pub const fn with_diagonal_width(mut self, diagonal_width: u32) -> Self {
         self.diagonal_width = Some(diagonal_width);
         self
     }

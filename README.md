@@ -40,7 +40,7 @@ Features that rlifesrc has but factoriosrc doesn't:
   - [x] Max population constraint.
   - [x] Dynamically adjust the max population constraint to find the smallest pattern.
 - [ ] Support more rules.
-  - [ ] Parse rule strings.
+  - [x] Parse rule strings.
   - [ ] Non-totalistic rules.
   - [ ] Generations rules.
   - [ ] Hexagonal rules.

@@ -29,7 +29,7 @@ pub struct App {
     /// Current mode of the application.
     pub mode: Mode,
     /// Generation to display.
-    pub generation: isize,
+    pub generation: i32,
     /// Start time of the current search.
     pub start: Option<Instant>,
     /// Time elapsed since the start of the search.
@@ -80,7 +80,7 @@ impl App {
     ///
     /// If the current generation is the last one, do nothing.
     pub fn next_generation(&mut self) {
-        let period = self.world.config().period as isize;
+        let period = self.world.config().period as i32;
 
         if self.generation < period - 1 {
             self.generation += 1;

@@ -15,5 +15,5 @@ mod world;
 
 pub use config::{Config, NewState, SearchOrder, Symmetry};
 pub use error::{ConfigError, ParseSymmetryError};
-pub use rule::{CellState, NeighborhoodType, Rule, RuleTable};
+pub use rule::{CellState, RuleTable};
 pub use world::{Coord, Status, World};

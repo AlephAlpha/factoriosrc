@@ -1,6 +1,5 @@
-use crate::error::RuleError;
-#[cfg(feature = "clap")]
-use clap::ValueEnum;
+use crate::error::ConfigError;
+use ca_rules2::{Neighborhood, NeighborhoodType, Rule};
 use enumflags2::{bitflags, BitFlags};
 use rand::{
     distributions::{Distribution, Standard},
@@ -95,7 +94,7 @@ impl Debug for Descriptor {
 impl Descriptor {
     /// Create a neighborhood descriptor from the number of dead and alive neighbors,
     /// and the states of the successor and current cells.
-    pub(crate) fn new(
+    fn new(
         dead: usize,
         alive: usize,
         successor: impl Into<Option<CellState>>,
@@ -180,121 +179,6 @@ pub(crate) enum Implication {
     NeighborhoodDead,
 }
 
-/// The neighborhood type of a rule.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum NeighborhoodType {
-    /// The Moore neighborhood.
-    Moore,
-
-    /// The von Neumann neighborhood.
-    VonNeumann,
-
-    /// The cross neighborhood.
-    Cross,
-}
-
-impl NeighborhoodType {
-    /// Gets the offsets of the neighbors.
-    pub fn offsets(self, radius: usize) -> Vec<(isize, isize)> {
-        let radius = radius as isize;
-        match self {
-            Self::Moore => {
-                let mut offsets = Vec::new();
-                for x in -radius..=radius {
-                    for y in -radius..=radius {
-                        if x != 0 || y != 0 {
-                            offsets.push((x, y));
-                        }
-                    }
-                }
-                offsets.sort();
-                offsets
-            }
-            Self::VonNeumann => {
-                let mut offsets = Vec::new();
-                for x in -radius..=radius {
-                    for y in -radius..=radius {
-                        if x.abs() + y.abs() <= radius && (x != 0 || y != 0) {
-                            offsets.push((x, y));
-                        }
-                    }
-                }
-                offsets.sort();
-                offsets
-            }
-            Self::Cross => {
-                let mut offsets = Vec::new();
-                for x in -radius..=radius {
-                    if x != 0 {
-                        offsets.push((x, 0));
-                    }
-                }
-                for y in -radius..=radius {
-                    if y != 0 {
-                        offsets.push((0, y));
-                    }
-                }
-                offsets.sort();
-                offsets
-            }
-        }
-    }
-}
-
-/// A enum of all supported rules.
-///
-/// Currently only two rules are supported: Factorio (`R3,C2,S2,B3,N+`),
-/// and Conway's Game of Life (`B3/S23`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "clap", derive(ValueEnum))]
-pub enum Rule {
-    /// Factorio (`R3,C2,S2,B3,N+`).
-    ///
-    /// In this rule, a cell has 12 neighbors in a cross shape of radius 3.
-    /// - A dead cell comes to life if it has exactly 3 living neighbors.
-    /// - A living cell stays alive if it has exactly 2 living neighbors.
-    Factorio,
-
-    /// Conway's Game of Life (`B3/S23`).
-    ///
-    /// In this rule, a cell has 8 neighbors in a Moore neighborhood of radius 1.
-    /// - A dead cell comes to life if it has exactly 3 living neighbors.
-    /// - A living cell stays alive if it has exactly 2 or 3 living neighbors.
-    Life,
-
-    /// An unnamed rule (`R3,C2,S6-10,12,B3,N+`).
-    ///
-    /// This rule doesn't have a name yet. It is a variant of Factorio rule.
-    /// It's temporarily added until a rule parser is implemented.
-    ///
-    /// In this rule, a cell has 12 neighbors in a cross shape of radius 3.
-    /// - A dead cell comes to life if it has exactly 3 living neighbors.
-    /// - A living cell stays alive if it has exactly 6, 7, 8, 9, 10, or 12 living neighbors.
-    Unnamed,
-}
-
-impl Rule {
-    /// Create a rule table from a rule.
-    pub fn table(self) -> RuleTable {
-        match self {
-            Self::Factorio => RuleTable::new(NeighborhoodType::Cross, 3, &[3], &[2]).unwrap(),
-            Self::Life => RuleTable::new(NeighborhoodType::Moore, 1, &[3], &[2, 3]).unwrap(),
-            Self::Unnamed => {
-                RuleTable::new(NeighborhoodType::Cross, 3, &[3], &[6, 7, 8, 9, 10, 12]).unwrap()
-            }
-        }
-    }
-
-    /// Name of the rule.
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Factorio => "R3,C2,S2,B3,N+",
-            Self::Life => "B3/S23",
-            Self::Unnamed => "R3,C2,S6-10,12,B3,N+",
-        }
-    }
-}
-
 /// The lookup table and other information of a totalistic rule.
 ///
 /// In a totalistic rule, the state of a cell is determined by the state of itself and
@@ -308,10 +192,10 @@ pub struct RuleTable {
     pub(crate) neighborhood_size: usize,
 
     /// The offsets of the neighbors.
-    pub(crate) offsets: Vec<(isize, isize)>,
+    pub(crate) offsets: Vec<(i32, i32)>,
 
     /// The radius of the neighborhood.
-    pub(crate) radius: usize,
+    pub(crate) radius: u32,
 
     /// The lookup table.
     table: [BitFlags<Implication>; 1 << 12],
@@ -328,52 +212,50 @@ impl Debug for RuleTable {
 }
 
 impl RuleTable {
-    /// Create and initialize a rule table.
-    ///
-    /// - `born` is the list of numbers of living neighbors that cause a dead cell to come to life.
-    /// - `survive` is the list of numbers of living neighbors that cause a living cell to stay alive.
-    pub fn new(
-        neighborhood_type: NeighborhoodType,
-        radius: usize,
-        born: &[usize],
-        survive: &[usize],
-    ) -> Result<Self, RuleError> {
-        let offsets = neighborhood_type.offsets(radius);
-
-        let neighborhood_size = offsets.len();
-
-        if neighborhood_size > MAX_NEIGHBORHOOD_SIZE {
-            return Err(RuleError::NeighborhoodTooLarge);
+    /// Create and initialize a rule table from a [`Rule`].
+    pub fn new(rule: Rule) -> Result<Self, ConfigError> {
+        if !matches!(rule.neighborhood, Neighborhood::Totalistic(neighborhood_type, _) if neighborhood_type != NeighborhoodType::Hexagonal)
+        {
+            return Err(ConfigError::UnsupportedRule);
         }
 
-        let table = [BitFlags::empty(); 1 << 12];
-        let mut rule = Self {
+        let neighborhood_size = rule.neighborhood_size();
+
+        if neighborhood_size > MAX_NEIGHBORHOOD_SIZE {
+            return Err(ConfigError::UnsupportedRule);
+        }
+
+        let offsets = rule.neighbor_coords();
+        let radius = rule.radius();
+
+        let table: [BitFlags<Implication, u8>; 4096] = [BitFlags::empty(); 1 << 12];
+        let mut rule_table = Self {
             neighborhood_size,
             offsets,
             radius,
             table,
         };
-        rule.init(born, survive);
-        Ok(rule)
+        rule_table.init(&rule.birth, &rule.survival);
+        Ok(rule_table)
     }
 
     /// Initialize the lookup table.
-    fn init(&mut self, born: &[usize], survive: &[usize]) {
-        self.deduce_successor(born, survive);
+    fn init(&mut self, birth: &[u64], survival: &[u64]) {
+        self.deduce_successor(birth, survival);
         self.deduce_conflict();
         self.deduce_current();
         self.deduce_neighborhood();
     }
 
     /// Deduce the implication of the successor cell.
-    fn deduce_successor(&mut self, born: &[usize], survive: &[usize]) {
+    fn deduce_successor(&mut self, birth: &[u64], survival: &[u64]) {
         // When all neighbors are known, the successor cell can be deduced directly from the rule.
         for dead in 0..=self.neighborhood_size {
             let alive = self.neighborhood_size - dead;
 
             // When the current cell is dead.
             let descriptor_dead = Descriptor::new(dead, alive, None, CellState::Dead);
-            self.table[descriptor_dead.0 as usize] |= if born.contains(&alive) {
+            self.table[descriptor_dead.0 as usize] |= if birth.contains(&(alive as u64)) {
                 Implication::SuccessorAlive
             } else {
                 Implication::SuccessorDead
@@ -381,7 +263,7 @@ impl RuleTable {
 
             // When the current cell is alive.
             let descriptor_alive = Descriptor::new(dead, alive, None, CellState::Alive);
-            self.table[descriptor_alive.0 as usize] |= if survive.contains(&alive) {
+            self.table[descriptor_alive.0 as usize] |= if survival.contains(&(alive as u64)) {
                 Implication::SuccessorAlive
             } else {
                 Implication::SuccessorDead
@@ -389,9 +271,9 @@ impl RuleTable {
 
             // When the current cell is unknown.
             // In this case, the successor cell can still be deduced to be dead, if the number of living
-            // neighbors is neither in `born` nor in `survive`.
+            // neighbors is neither in `birth` nor in `survival`.
             let descriptor_unknown = Descriptor::new(dead, alive, None, None);
-            if !born.contains(&alive) && !survive.contains(&alive) {
+            if !birth.contains(&(alive as u64)) && !survival.contains(&(alive as u64)) {
                 self.table[descriptor_unknown.0 as usize] |= Implication::SuccessorDead;
             }
         }
@@ -498,63 +380,5 @@ impl RuleTable {
     /// Find the implication of a neighborhood descriptor.
     pub(crate) const fn implies(&self, descriptor: Descriptor) -> BitFlags<Implication> {
         self.table[descriptor.0 as usize]
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    #[test]
-    fn test_offsets() {
-        assert_eq!(
-            NeighborhoodType::Moore.offsets(1),
-            [
-                (-1, -1),
-                (-1, 0),
-                (-1, 1),
-                (0, -1),
-                (0, 1),
-                (1, -1),
-                (1, 0),
-                (1, 1)
-            ]
-        );
-
-        assert_eq!(
-            NeighborhoodType::VonNeumann.offsets(2),
-            [
-                (-2, 0),
-                (-1, -1),
-                (-1, 0),
-                (-1, 1),
-                (0, -2),
-                (0, -1),
-                (0, 1),
-                (0, 2),
-                (1, -1),
-                (1, 0),
-                (1, 1),
-                (2, 0)
-            ]
-        );
-
-        assert_eq!(
-            NeighborhoodType::Cross.offsets(3),
-            [
-                (-3, 0),
-                (-2, 0),
-                (-1, 0),
-                (0, -3),
-                (0, -2),
-                (0, -1),
-                (0, 1),
-                (0, 2),
-                (0, 3),
-                (1, 0),
-                (2, 0),
-                (3, 0)
-            ]
-        );
     }
 }

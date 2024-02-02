@@ -155,7 +155,64 @@ impl NeighborhoodType {
         }) as usize
     }
 
-    /// Creates a list of neighbors from a neighborhood type and a radius.
+    /// Gets a list of coordinates from a neighborhood type and a radius.
+    ///
+    /// The coordinates are relative to the center cell.
+    pub fn neighbor_coords(self, radius: u32) -> Vec<(i32, i32)> {
+        let size = self.size(radius);
+        let radius = radius as i32;
+
+        let mut coords = Vec::with_capacity(size);
+
+        match self {
+            Self::Moore => {
+                for x in -radius..=radius {
+                    for y in -radius..=radius {
+                        if x != 0 || y != 0 {
+                            coords.push((x, y));
+                        }
+                    }
+                }
+            }
+            Self::VonNeumann => {
+                for x in -radius..=radius {
+                    let max_y = radius - x.abs();
+                    for y in -max_y..=max_y {
+                        if x != 0 || y != 0 {
+                            coords.push((x, y));
+                        }
+                    }
+                }
+            }
+            Self::Cross => {
+                for x in -radius..0 {
+                    coords.push((x, 0));
+                }
+                for y in -radius..=radius {
+                    if y != 0 {
+                        coords.push((0, y));
+                    }
+                }
+                for x in 1..=radius {
+                    coords.push((x, 0));
+                }
+            }
+            Self::Hexagonal => {
+                for x in -radius..=radius {
+                    let min_y = (x - radius).max(-radius);
+                    let max_y = (x + radius).min(radius);
+                    for y in min_y..=max_y {
+                        if x != 0 || y != 0 {
+                            coords.push((x, y));
+                        }
+                    }
+                }
+            }
+        };
+        coords
+    }
+
+    /// Gets a list of [`Neighbor`]s from a neighborhood type and a radius.
     ///
     /// If `is_totalistic` is `true`, all neighbors have weight 1.
     ///
@@ -181,20 +238,14 @@ impl NeighborhoodType {
             return Err(NeighborError::RadiusTooLarge);
         }
 
+        let size = self.size(radius);
         let radius = radius as i32;
-
-        let size = match self {
-            Self::Moore => 4 * radius * (radius + 1),
-            Self::VonNeumann => 2 * radius * (radius + 1),
-            Self::Cross => 4 * radius,
-            Self::Hexagonal => 3 * radius * (radius + 1),
-        };
 
         if !is_totalistic && size > 64 {
             return Err(NeighborError::RadiusTooLarge);
         }
 
-        let mut coords = Vec::with_capacity(size as usize);
+        let mut coords = Vec::with_capacity(size);
 
         match self {
             Self::Moore => {
@@ -289,7 +340,23 @@ pub enum Neighborhood {
 }
 
 impl Neighborhood {
-    /// Creates a list of [`Neighbor`]s from a neighborhood shape.
+    /// Gets a list of coordinates from the neighborhood.
+    ///
+    /// The coordinates are relative to the center cell.
+    pub fn neighbor_coords(&self) -> Vec<(i32, i32)> {
+        match self {
+            Self::Totalistic(neighborhood_type, radius)
+            | Self::Nontotalistic(neighborhood_type, radius) => {
+                neighborhood_type.neighbor_coords(*radius)
+            }
+            Self::CustomTotalistic(coords) | Self::CustomNontotalistic(coords) => coords.clone(),
+            Self::CustomWeighted(neighbors) => {
+                neighbors.iter().map(|neighbor| neighbor.coord).collect()
+            }
+        }
+    }
+
+    /// Gets a list of [`Neighbor`]s from a neighborhood shape.
     ///
     /// If the neighborhood is totalistic, all neighbors have weight 1.
     ///
@@ -384,6 +451,23 @@ impl Neighborhood {
                 .map(|neighbor| neighbor.coord.0.abs().max(neighbor.coord.1.abs()))
                 .max()
                 .unwrap_or(0) as u32,
+        }
+    }
+
+    /// Maximum possible value for a birth or survival condition.
+    ///
+    /// For totalistic neighborhoods, this is the number of neighbors.
+    ///
+    /// For non-totalistic neighborhoods, this is `2^n`, where `n` is the number of neighbors.
+    ///
+    /// For weighted neighborhoods, this is the sum of weights of neighbors.
+    pub fn max_condition(&self) -> u64 {
+        match self {
+            Self::Totalistic(_, _) | Self::CustomTotalistic(_) => self.size() as u64,
+            Self::Nontotalistic(_, _) | Self::CustomNontotalistic(_) => 1 << self.size(),
+            Self::CustomWeighted(neighbors) => {
+                neighbors.iter().map(|neighbor| neighbor.weight).sum()
+            }
         }
     }
 }
@@ -493,6 +577,13 @@ impl Rule {
         self.neighborhood.radius()
     }
 
+    /// The list of coordinates of the neighbors.
+    ///
+    /// The coordinates are relative to the center cell.
+    pub fn neighbor_coords(&self) -> Vec<(i32, i32)> {
+        self.neighborhood.neighbor_coords()
+    }
+
     /// Whether the birth conditions contain 0.
     ///
     /// In this case, a dead cell can be born even if it has no live neighbors.
@@ -507,14 +598,14 @@ impl Rule {
 
     /// Checks whether the birth and survival conditions are valid.
     ///
-    /// These conditions should not contain any number greater than the sum of weights of neighbors.
+    /// These conditions should not contain any number greater than the maximum possible value.
+    ///
+    /// See the documentation of the [`Neighborhood::max_condition`] for more information.
     pub fn check_conditions(&self) -> bool {
-        self.neighborhood.neighbors().is_ok_and(|neighbors| {
-            let sum_of_weights = neighbors.iter().map(|neighbor| neighbor.weight).sum();
+        let max_condition = self.neighborhood.max_condition();
 
-            self.birth.iter().all(|&n| n <= sum_of_weights)
-                && self.survival.iter().all(|&n| n <= sum_of_weights)
-        })
+        self.birth.iter().all(|&n| n <= max_condition)
+            && self.survival.iter().all(|&n| n <= max_condition)
     }
 }
 
