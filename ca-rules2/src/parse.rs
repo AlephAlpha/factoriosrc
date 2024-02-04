@@ -188,6 +188,7 @@ impl<'a> Parser<'a> {
             b'M' | b'm' => Some(NeighborhoodType::Moore),
             b'N' | b'n' => Some(NeighborhoodType::VonNeumann),
             b'+' => Some(NeighborhoodType::Cross),
+            b'#' => Some(NeighborhoodType::Hash),
             b'H' | b'h' => Some(NeighborhoodType::Hexagonal),
             _ => None,
         }
@@ -907,6 +908,7 @@ pub fn parse_generations(rule_string: &str) -> Result<Rule, ParseRuleError> {
 ///   - `M` for the Moore neighborhood.
 ///   - `N` for the von Neumann neighborhood.
 ///   - `+` for the cross neighborhood.
+///   - `#` for the hash neighborhood.
 ///   - `H` for the hexagonal neighborhood.
 ///
 /// # Kellie Evans' notation

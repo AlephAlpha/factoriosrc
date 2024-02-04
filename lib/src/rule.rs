@@ -43,55 +43,85 @@ impl Distribution<CellState> for Standard {
     }
 }
 
-/// Currently, the numbers of living and dead neighbors are represented by 4-bit integers
-/// in the neighborhood descriptor. So the neighborhood size is limited to 15.
-pub const MAX_NEIGHBORHOOD_SIZE: usize = 15;
+/// Currently the maximum neighborhood size is 24.
+pub const MAX_NEIGHBORHOOD_SIZE: usize = 24;
 
 /// The neighborhood descriptor.
 ///
-/// A 12-bit integer value that represents the state of a cell and its neighbors.
-///
-/// - The first 4 bits represent the number of known dead cells in the neighborhood.
-/// - The next 4 bits represent the number of known alive cells in the neighborhood.
-/// - The next 2 bits represent the state of the successor cell.
-/// - The last 2 bits represent the state of the current cell.
-///
-/// In the last 4 bits, 0b01 means dead, 0b10 means alive, and 0b00 means unknown.
+/// An integer value that represents the state of a cell, its successor, and its neighborhood.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct Descriptor(pub(crate) u16);
 
 impl Debug for Descriptor {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        let dead = (self.0 >> 8) & 0b1111;
-        let alive = (self.0 >> 4) & 0b1111;
-        let successor = (self.0 >> 2) & 0b11;
-        let current = self.0 & 0b11;
-
-        let successor = match successor {
-            0b00 => None,
-            0b01 => Some(CellState::Dead),
-            0b10 => Some(CellState::Alive),
-            _ => unreachable!(),
-        };
-
-        let current = match current {
-            0b00 => None,
-            0b01 => Some(CellState::Dead),
-            0b10 => Some(CellState::Alive),
-            _ => unreachable!(),
-        };
-
         f.debug_struct("Descriptor")
-            .field("dead", &dead)
-            .field("alive", &alive)
-            .field("successor", &successor)
-            .field("current", &current)
+            .field("dead", &self.dead())
+            .field("alive", &self.alive())
+            .field("successor", &self.successor())
+            .field("current", &self.current())
             .field("value", &format_args!("{:#014b}", self.0))
             .finish()
     }
 }
 
 impl Descriptor {
+    /// The number of bits used to represent the number of living or dead neighbors.
+    const NEIGHBOR_COUNT_BITS: usize = 6;
+
+    /// A bit mask for the number of living or dead neighbors.
+    const NEIGHBOR_COUNT_MASK: u16 = (1 << Self::NEIGHBOR_COUNT_BITS) - 1;
+
+    /// The number of bits used to represent the state of the successor cell.
+    const SUCCESSOR_BITS: usize = 2;
+
+    /// A bit mask for the state of the successor or current cell.
+    const STATE_MASK: u16 = (1 << Self::SUCCESSOR_BITS) - 1;
+
+    /// The amount to shift to get the state of the current cell.
+    const CURRENT_SHIFT: usize = 0;
+
+    /// The amount to shift to get the state of the successor cell.
+    const SUCCESSOR_SHIFT: usize = Self::SUCCESSOR_BITS;
+
+    /// The amount to shift to get the number of living neighbors.
+    const ALIVE_SHIFT: usize = Self::SUCCESSOR_BITS + Self::SUCCESSOR_BITS;
+
+    /// The amount to shift to get the number of dead neighbors.
+    const DEAD_SHIFT: usize = Self::NEIGHBOR_COUNT_BITS + Self::ALIVE_SHIFT;
+
+    /// The total number of bits used to represent the neighborhood descriptor.
+    const BITS: usize = Self::DEAD_SHIFT + Self::NEIGHBOR_COUNT_BITS;
+
+    /// Get the number of dead neighbors.
+    const fn dead(&self) -> u16 {
+        (self.0 >> Self::DEAD_SHIFT) & Self::NEIGHBOR_COUNT_MASK
+    }
+
+    /// Get the number of living neighbors.
+    const fn alive(&self) -> u16 {
+        (self.0 >> Self::ALIVE_SHIFT) & Self::NEIGHBOR_COUNT_MASK
+    }
+
+    /// Get the state of the successor cell.
+    const fn successor(&self) -> Option<CellState> {
+        match (self.0 >> Self::SUCCESSOR_SHIFT) & Self::STATE_MASK {
+            0b00 => None,
+            0b01 => Some(CellState::Dead),
+            0b10 => Some(CellState::Alive),
+            _ => unreachable!(),
+        }
+    }
+
+    /// Get the state of the current cell.
+    const fn current(&self) -> Option<CellState> {
+        match (self.0 >> Self::CURRENT_SHIFT) & Self::STATE_MASK {
+            0b00 => None,
+            0b01 => Some(CellState::Dead),
+            0b10 => Some(CellState::Alive),
+            _ => unreachable!(),
+        }
+    }
+
     /// Create a neighborhood descriptor from the number of dead and alive neighbors,
     /// and the states of the successor and current cells.
     fn new(
@@ -106,31 +136,36 @@ impl Descriptor {
         let alive = alive as u16;
         let successor = successor.into().map_or(0, |state| state as u16);
         let current = current.into().map_or(0, |state| state as u16);
-        Self(dead << 8 | alive << 4 | successor << 2 | current)
+        Self(
+            dead << Self::DEAD_SHIFT
+                | alive << Self::ALIVE_SHIFT
+                | successor << Self::SUCCESSOR_SHIFT
+                | current << Self::CURRENT_SHIFT,
+        )
     }
 
     /// Increment the number of dead neighbors.
     pub(crate) fn increment_dead(&mut self) {
-        debug_assert!((self.0 >> 8) & 0b1111 < MAX_NEIGHBORHOOD_SIZE as u16);
-        self.0 += 1 << 8;
+        debug_assert!(self.dead() < MAX_NEIGHBORHOOD_SIZE as u16);
+        self.0 += 1 << Self::DEAD_SHIFT;
     }
 
     /// Increment the number of living neighbors.
     pub(crate) fn increment_alive(&mut self) {
-        debug_assert!((self.0 >> 4) & 0b1111 < MAX_NEIGHBORHOOD_SIZE as u16);
-        self.0 += 1 << 4;
+        debug_assert!(self.alive() < MAX_NEIGHBORHOOD_SIZE as u16);
+        self.0 += 1 << Self::ALIVE_SHIFT;
     }
 
     /// Decrement the number of dead neighbors.
     pub(crate) fn decrement_dead(&mut self) {
-        debug_assert!((self.0 >> 8) & 0b1111 > 0);
-        self.0 -= 1 << 8;
+        debug_assert!(self.dead() > 0);
+        self.0 -= 1 << Self::DEAD_SHIFT;
     }
 
     /// Decrement the number of living neighbors.
     pub(crate) fn decrement_alive(&mut self) {
-        debug_assert!((self.0 >> 4) & 0b1111 > 0);
-        self.0 -= 1 << 4;
+        debug_assert!(self.alive() > 0);
+        self.0 -= 1 << Self::ALIVE_SHIFT;
     }
 
     /// If the successor cell is unknown, set it to some state.
@@ -138,7 +173,7 @@ impl Descriptor {
     /// If the successor cell is known, set it to unknown. In this case,
     /// the `state` argument should be equal to its current state.
     pub(crate) fn update_successor(&mut self, state: CellState) {
-        debug_assert!((self.0 >> 2) & 0b11 == 0b00 || (self.0 >> 2) & 0b11 == state as u16);
+        debug_assert!(self.successor().is_none() || self.successor() == Some(state));
         self.0 ^= (state as u16) << 2;
     }
 
@@ -147,7 +182,7 @@ impl Descriptor {
     /// If the current cell is known, set it to unknown. In this case,
     /// the `state` argument should be equal to its current state.
     pub(crate) fn update_current(&mut self, state: CellState) {
-        debug_assert!(self.0 & 0b11 == 0b00 || self.0 & 0b11 == state as u16);
+        debug_assert!(self.current().is_none() || self.current() == Some(state));
         self.0 ^= state as u16;
     }
 }
@@ -185,7 +220,7 @@ pub(crate) enum Implication {
 /// the number of living neighbors.
 ///
 /// Currently, the numbers of living and dead neighbors are represented by 4-bit integers
-/// in the neighborhood descriptor. So the neighborhood size is limited to 15.
+/// in the neighborhood descriptor. So the neighborhood size is limited to 24.
 #[derive(Clone)]
 pub struct RuleTable {
     /// The size of the neighborhood.
@@ -198,7 +233,7 @@ pub struct RuleTable {
     pub(crate) radius: u32,
 
     /// The lookup table.
-    table: [BitFlags<Implication>; 1 << 12],
+    table: [BitFlags<Implication>; 1 << Descriptor::BITS],
 }
 
 impl Debug for RuleTable {
@@ -214,6 +249,10 @@ impl Debug for RuleTable {
 impl RuleTable {
     /// Create and initialize a rule table from a [`Rule`].
     pub fn new(rule: Rule) -> Result<Self, ConfigError> {
+        if rule.contains_b0() {
+            return Err(ConfigError::UnsupportedRule);
+        }
+
         if !matches!(rule.neighborhood, Neighborhood::Totalistic(neighborhood_type, _) if neighborhood_type != NeighborhoodType::Hexagonal)
         {
             return Err(ConfigError::UnsupportedRule);
@@ -228,7 +267,7 @@ impl RuleTable {
         let offsets = rule.neighbor_coords();
         let radius = rule.radius();
 
-        let table: [BitFlags<Implication, u8>; 4096] = [BitFlags::empty(); 1 << 12];
+        let table = [BitFlags::empty(); 1 << Descriptor::BITS];
         let mut rule_table = Self {
             neighborhood_size,
             offsets,

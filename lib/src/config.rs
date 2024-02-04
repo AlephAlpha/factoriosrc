@@ -256,12 +256,16 @@ pub struct Config {
     /// The rule string of the cellular automaton.
     ///
     /// Currently, the program supports the following rules:
+    ///
     /// - [Outer-totalistic Life-like rules](https://conwaylife.com/wiki/Life-like_cellular_automaton).
     ///   Both Moore and von Neumann neighborhoods are supported.
+    ///
     /// - [Higher-range outer-totalistic Life-like rules](https://conwaylife.com/wiki/Higher-range_outer-totalistic_cellular_automaton).
     ///   Currently, the program only supports Moore, von Neumann, and cross neighborhoods.
-    ///   The size of the neighborhood must be at most 16.
+    ///   The size of the neighborhood must be at most 24.
     ///   Rules with more than 2 states are not supported.
+    ///
+    /// Rules whose birth conditions contain `0` are not supported.
     ///
     /// The default rule is [factorio (R3,C2,S2,B3,N+)](https://conwaylife.com/forums/viewtopic.php?f=11&t=6166).
     #[cfg_attr(feature = "clap", arg(short, long, default_value = "R3,C2,S2,B3,N+"))]
@@ -466,10 +470,16 @@ impl Config {
     ///   Both Moore and von Neumann neighborhoods are supported.
     /// - [Higher-range outer-totalistic Life-like rules](https://conwaylife.com/wiki/Higher-range_outer-totalistic_cellular_automaton).
     ///   Currently, the program only supports Moore, von Neumann, and cross neighborhoods.
-    ///   The size of the neighborhood must be at most 16.
+    ///   The size of the neighborhood must be at most 24.
     ///   Rules with more than 2 states are not supported.
+    ///
+    /// Rules whose birth conditions contain `0` are not supported.
     pub fn parse_rule(&self) -> Result<Rule, ConfigError> {
         let rule = Rule::from_str(&self.rule_str).map_err(|_| ConfigError::InvalidRule)?;
+
+        if rule.contains_b0() {
+            return Err(ConfigError::UnsupportedRule);
+        }
 
         if !matches!(rule.neighborhood, Neighborhood::Totalistic(neighborhood_type, _) if neighborhood_type != NeighborhoodType::Hexagonal)
         {

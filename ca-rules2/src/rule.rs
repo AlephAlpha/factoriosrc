@@ -82,6 +82,9 @@ impl Neighbor {
 /// Predefined neighborhood types.
 ///
 /// This enum is non-exhaustive. More neighborhood types may be added in the future.
+///
+/// Please see [Golly's documentation](https://golly.sourceforge.io/Help/Algorithms/Larger_than_Life.html)
+/// for more information.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NeighborhoodType {
@@ -124,6 +127,19 @@ pub enum NeighborhoodType {
     /// ```
     Cross,
 
+    /// The hash neighborhood.
+    ///
+    /// For example, the hash neighborhood of radius 2 is:
+    ///
+    /// ```text
+    /// . # . # .
+    /// # # # # #
+    /// . # O # .
+    /// # # # # #
+    /// . # . # .
+    /// ```
+    Hash,
+
     /// The hexagonal neighborhood, emulated on a square grid.
     ///
     /// For example, the hexagonal neighborhood of radius 2 is:
@@ -145,12 +161,14 @@ impl NeighborhoodType {
     /// - `4 * radius * (radius + 1)` for [`Moore`](NeighborhoodType::Moore),
     /// - `2 * radius * (radius + 1)` for [`VonNeumann`](NeighborhoodType::VonNeumann),
     /// - `4 * radius` for [`Cross`](NeighborhoodType::Cross),
+    /// - `8 * radius` for [`Hash`](NeighborhoodType::Hash),
     /// - `3 * radius * (radius + 1)` for [`Hexagonal`](NeighborhoodType::Hexagonal).
     pub const fn size(self, radius: u32) -> usize {
         (match self {
             Self::Moore => 4 * radius * (radius + 1),
             Self::VonNeumann => 2 * radius * (radius + 1),
             Self::Cross => 4 * radius,
+            Self::Hash => 8 * radius,
             Self::Hexagonal => 3 * radius * (radius + 1),
         }) as usize
     }
@@ -197,6 +215,15 @@ impl NeighborhoodType {
                     coords.push((x, 0));
                 }
             }
+            Self::Hash => {
+                for x in -radius..=radius {
+                    for y in -radius..=radius {
+                        if x.abs() == 1 || y.abs() == 1 {
+                            coords.push((x, y));
+                        }
+                    }
+                }
+            }
             Self::Hexagonal => {
                 for x in -radius..=radius {
                     let min_y = (x - radius).max(-radius);
@@ -239,59 +266,12 @@ impl NeighborhoodType {
         }
 
         let size = self.size(radius);
-        let radius = radius as i32;
 
         if !is_totalistic && size > 64 {
             return Err(NeighborError::RadiusTooLarge);
         }
 
-        let mut coords = Vec::with_capacity(size);
-
-        match self {
-            Self::Moore => {
-                for x in -radius..=radius {
-                    for y in -radius..=radius {
-                        if x != 0 || y != 0 {
-                            coords.push((x, y));
-                        }
-                    }
-                }
-            }
-            Self::VonNeumann => {
-                for x in -radius..=radius {
-                    let max_y = radius - x.abs();
-                    for y in -max_y..=max_y {
-                        if x != 0 || y != 0 {
-                            coords.push((x, y));
-                        }
-                    }
-                }
-            }
-            Self::Cross => {
-                for x in -radius..0 {
-                    coords.push((x, 0));
-                }
-                for y in -radius..=radius {
-                    if y != 0 {
-                        coords.push((0, y));
-                    }
-                }
-                for x in 1..=radius {
-                    coords.push((x, 0));
-                }
-            }
-            Self::Hexagonal => {
-                for x in -radius..=radius {
-                    let min_y = (x - radius).max(-radius);
-                    let max_y = (x + radius).min(radius);
-                    for y in min_y..=max_y {
-                        if x != 0 || y != 0 {
-                            coords.push((x, y));
-                        }
-                    }
-                }
-            }
-        };
+        let coords = self.neighbor_coords(radius);
 
         if is_totalistic {
             Ok(Neighbor::from_coords(coords))
@@ -621,6 +601,14 @@ impl FromStr for Rule {
 mod tests {
     use super::*;
 
+    const ALL_NEIGHBORHOOD_TYPES: [NeighborhoodType; 5] = [
+        NeighborhoodType::Moore,
+        NeighborhoodType::VonNeumann,
+        NeighborhoodType::Cross,
+        NeighborhoodType::Hexagonal,
+        NeighborhoodType::Hexagonal,
+    ];
+
     #[test]
     fn test_neighborhood_type() {
         let moore = NeighborhoodType::Moore.neighbors(1, true).unwrap();
@@ -660,6 +648,21 @@ mod tests {
             ]
         );
 
+        let hash = NeighborhoodType::Hash.neighbors(1, true).unwrap();
+        assert_eq!(
+            hash,
+            vec![
+                Neighbor::new((-1, -1), 1),
+                Neighbor::new((-1, 0), 1),
+                Neighbor::new((-1, 1), 1),
+                Neighbor::new((0, -1), 1),
+                Neighbor::new((0, 1), 1),
+                Neighbor::new((1, -1), 1),
+                Neighbor::new((1, 0), 1),
+                Neighbor::new((1, 1), 1),
+            ]
+        );
+
         let hexagonal = NeighborhoodType::Hexagonal.neighbors(1, true).unwrap();
         assert_eq!(
             hexagonal,
@@ -674,48 +677,7 @@ mod tests {
         );
 
         for r in 1..5 {
-            assert_eq!(
-                NeighborhoodType::Moore
-                    .neighbors(r as u32, true)
-                    .unwrap()
-                    .len(),
-                4 * r * (r + 1)
-            );
-            assert_eq!(
-                NeighborhoodType::VonNeumann
-                    .neighbors(r as u32, true)
-                    .unwrap()
-                    .len(),
-                2 * r * (r + 1)
-            );
-            assert_eq!(
-                NeighborhoodType::Cross
-                    .neighbors(r as u32, true)
-                    .unwrap()
-                    .len(),
-                4 * r
-            );
-            assert_eq!(
-                NeighborhoodType::Hexagonal
-                    .neighbors(r as u32, true)
-                    .unwrap()
-                    .len(),
-                3 * r * (r + 1)
-            );
-        }
-    }
-
-    #[test]
-    fn test_radius() {
-        let neighborhood_types = [
-            NeighborhoodType::Moore,
-            NeighborhoodType::VonNeumann,
-            NeighborhoodType::Cross,
-            NeighborhoodType::Hexagonal,
-        ];
-
-        for r in 1..5 {
-            for neighborhood_type in neighborhood_types {
+            for neighborhood_type in ALL_NEIGHBORHOOD_TYPES {
                 let rule = Rule {
                     states: 2,
                     neighborhood: Neighborhood::Totalistic(neighborhood_type, r),
@@ -723,7 +685,12 @@ mod tests {
                     survival: Vec::new(),
                 };
 
-                assert_eq!(rule.radius(), r);
+                let neighbors = rule.neighbor_coords();
+
+                assert_eq!(neighbors.len(), rule.neighborhood_size());
+
+                let custom = Neighborhood::CustomTotalistic(neighbors);
+                assert_eq!(custom.radius(), r);
             }
         }
     }
