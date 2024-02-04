@@ -125,11 +125,7 @@ impl World {
     pub fn new(config: Config) -> Result<Self, ConfigError> {
         let config = config.check()?;
 
-        let rule = config
-            .rule_str
-            .parse()
-            .map_err(|_| ConfigError::InvalidRule)?;
-        let rule = RuleTable::new(rule)?;
+        let rule = RuleTable::new(config.parse_rule()?)?;
         let max_population = config.max_population;
 
         let (w, h, p) = (

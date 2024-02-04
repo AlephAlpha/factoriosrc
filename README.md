@@ -2,7 +2,7 @@
 
 Search for patterns in [Factorio (R3,C2,S2,B3,N+)](https://conwaylife.com/forums/viewtopic.php?f=11&t=6166) cellular automata, using an algorithm similar to [rlifesrc](https://github.com/AlephAlpha/rlifesrc).
 
-This program is still work in progress. The only supported rules are Factorio and Conway's Game of Life. Many features are still missing.
+This program is still work in progress. Many features are still missing.
 
 Now it has a simple text-based UI. A web UI will be added in the future.
 

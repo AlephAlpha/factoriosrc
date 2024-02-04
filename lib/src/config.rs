@@ -1,4 +1,8 @@
-use crate::error::{ConfigError, ParseSymmetryError};
+use crate::{
+    error::{ConfigError, ParseSymmetryError},
+    rule::MAX_NEIGHBORHOOD_SIZE,
+};
+use ca_rules2::{Neighborhood, NeighborhoodType, Rule};
 #[cfg(feature = "clap")]
 use clap::{Args, ValueEnum};
 use std::{
@@ -250,6 +254,16 @@ pub enum NewState {
 #[cfg_attr(feature = "clap", derive(Args))]
 pub struct Config {
     /// The rule string of the cellular automaton.
+    ///
+    /// Currently, the program supports the following rules:
+    /// - [Outer-totalistic Life-like rules](https://conwaylife.com/wiki/Life-like_cellular_automaton).
+    ///   Both Moore and von Neumann neighborhoods are supported.
+    /// - [Higher-range outer-totalistic Life-like rules](https://conwaylife.com/wiki/Higher-range_outer-totalistic_cellular_automaton).
+    ///   Currently, the program only supports Moore, von Neumann, and cross neighborhoods.
+    ///   The size of the neighborhood must be at most 16.
+    ///   Rules with more than 2 states are not supported.
+    ///
+    /// The default rule is [factorio (R3,C2,S2,B3,N+)](https://conwaylife.com/forums/viewtopic.php?f=11&t=6166).
     #[cfg_attr(feature = "clap", arg(short, long, default_value = "R3,C2,S2,B3,N+"))]
     pub rule_str: String,
 
@@ -445,9 +459,37 @@ impl Config {
             || matches!(self.search_order, Some(SearchOrder::Diagonal))
     }
 
+    /// Try to parse the rule string, and check whether the rule is supported.
+    ///
+    /// Currently, the program supports the following rules:
+    /// - [Outer-totalistic Life-like rules](https://conwaylife.com/wiki/Life-like_cellular_automaton).
+    ///   Both Moore and von Neumann neighborhoods are supported.
+    /// - [Higher-range outer-totalistic Life-like rules](https://conwaylife.com/wiki/Higher-range_outer-totalistic_cellular_automaton).
+    ///   Currently, the program only supports Moore, von Neumann, and cross neighborhoods.
+    ///   The size of the neighborhood must be at most 16.
+    ///   Rules with more than 2 states are not supported.
+    pub fn parse_rule(&self) -> Result<Rule, ConfigError> {
+        let rule = Rule::from_str(&self.rule_str).map_err(|_| ConfigError::InvalidRule)?;
+
+        if !matches!(rule.neighborhood, Neighborhood::Totalistic(neighborhood_type, _) if neighborhood_type != NeighborhoodType::Hexagonal)
+        {
+            return Err(ConfigError::UnsupportedRule);
+        }
+
+        let neighborhood_size = rule.neighborhood_size();
+
+        if neighborhood_size > MAX_NEIGHBORHOOD_SIZE {
+            return Err(ConfigError::UnsupportedRule);
+        }
+
+        Ok(rule)
+    }
+
     /// Check whether the configuration is valid,
     /// and find a search order if it is not specified.
     pub fn check(mut self) -> Result<Self, ConfigError> {
+        self.parse_rule()?;
+
         if self.width == 0
             || self.height == 0
             || self.period == 0
