@@ -422,15 +422,14 @@ impl Neighborhood {
             Self::Totalistic(_, radius) | Self::Nontotalistic(_, radius) => *radius,
             Self::CustomTotalistic(coords) | Self::CustomNontotalistic(coords) => coords
                 .iter()
-                .map(|(x, y)| x.abs().max(y.abs()))
+                .map(|(x, y)| x.abs().max(y.abs()) as u32)
                 .max()
-                .unwrap_or(0)
-                as u32,
+                .unwrap_or(0),
             Self::CustomWeighted(neighbors) => neighbors
                 .iter()
-                .map(|neighbor| neighbor.coord.0.abs().max(neighbor.coord.1.abs()))
+                .map(|neighbor| neighbor.coord.0.abs().max(neighbor.coord.1.abs()) as u32)
                 .max()
-                .unwrap_or(0) as u32,
+                .unwrap_or(0),
         }
     }
 

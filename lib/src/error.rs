@@ -1,10 +1,5 @@
 use thiserror::Error;
 
-/// An error that can occur when parsing a symmetry.
-#[derive(Clone, Copy, Debug, Error)]
-#[error("Invalid symmetry")]
-pub struct ParseSymmetryError;
-
 /// An error that can occur when initializing the search from a configuration.
 #[derive(Clone, Copy, Debug, Error)]
 pub enum ConfigError {

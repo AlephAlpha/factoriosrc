@@ -153,7 +153,7 @@ impl App {
     /// This function is called when exiting the application.
     pub fn print_solution(&self) {
         if let Some(solution) = &self.solution {
-            println!("{}", solution);
+            println!("{solution}");
         }
     }
 

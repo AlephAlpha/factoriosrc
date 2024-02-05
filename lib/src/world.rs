@@ -1,8 +1,9 @@
 use crate::{
     cell::LifeCell,
-    config::{Config, SearchOrder, Symmetry},
+    config::{Config, SearchOrder},
     error::ConfigError,
     rule::{CellState, RuleTable},
+    symmetry::Symmetry,
 };
 use rand::{rngs::StdRng, SeedableRng};
 use std::fmt::Write;
@@ -435,7 +436,7 @@ impl World {
                         symmetry_coords.push((w - x - 1, h - y - 1, t));
                     }
 
-                    symmetry_coords.sort();
+                    symmetry_coords.sort_unstable();
                     symmetry_coords.dedup();
 
                     let symmetry_cells = symmetry_coords

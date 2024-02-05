@@ -2,18 +2,22 @@
 //!
 //! More documentation will be added later.
 
-#![warn(clippy::missing_const_for_fn)]
-#![warn(clippy::use_self)]
 #![warn(missing_docs)]
+#![warn(clippy::nursery)]
+#![warn(clippy::unnested_or_patterns)]
+#![warn(clippy::uninlined_format_args)]
+#![allow(clippy::redundant_pub_crate)]
 
 mod cell;
 mod config;
 mod error;
 mod rule;
 mod search;
+mod symmetry;
 mod world;
 
-pub use config::{Config, NewState, SearchOrder, Symmetry};
-pub use error::{ConfigError, ParseSymmetryError};
+pub use config::{Config, NewState, SearchOrder};
+pub use error::ConfigError;
 pub use rule::{CellState, RuleTable};
+pub use symmetry::{Symmetry, Transformation};
 pub use world::{Coord, Status, World};

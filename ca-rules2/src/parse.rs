@@ -222,7 +222,7 @@ impl<'a> Parser<'a> {
     fn parse_life_like_bs(&mut self) -> Option<Result<Rule, ParseRuleError>> {
         // Parse the birth sequence.
         self.read_matches(b"Bb")?;
-        let birth = self.parse_many(|parser| parser.parse_digit());
+        let birth = self.parse_many(Parser::parse_digit);
 
         // Parse the slash. This is optional.
         // If there is no slash, this is a Catagolue rule string.
@@ -230,7 +230,7 @@ impl<'a> Parser<'a> {
 
         // Parse the survival sequence.
         self.read_matches(b"Ss")?;
-        let survival = self.parse_many(|parser| parser.parse_digit());
+        let survival = self.parse_many(Parser::parse_digit);
 
         // Parse the neighborhood type.
         let neighborhood_type = self.parse_neighborhood_type_life_like()?;
@@ -262,13 +262,13 @@ impl<'a> Parser<'a> {
     /// other error.
     fn parse_life_like_sb(&mut self) -> Option<Result<Rule, ParseRuleError>> {
         // Parse the survival sequence.
-        let survival = self.parse_many(|parser| parser.parse_digit());
+        let survival = self.parse_many(Parser::parse_digit);
 
         // Parse the slash.
         self.read_matches(b'/')?;
 
         // Parse the birth sequence.
-        let birth = self.parse_many(|parser| parser.parse_digit());
+        let birth = self.parse_many(Parser::parse_digit);
 
         // Parse the neighborhood type.
         let neighborhood_type = self.parse_neighborhood_type_life_like()?;
@@ -301,8 +301,8 @@ impl<'a> Parser<'a> {
     ///
     /// See [`parse_life_like`] for more details.
     fn parse_life_like(&mut self) -> Option<Result<Rule, ParseRuleError>> {
-        self.try_parse(|parser| parser.parse_life_like_bs())
-            .or_else(|| self.try_parse(|parser| parser.parse_life_like_sb()))
+        self.try_parse(Parser::parse_life_like_bs)
+            .or_else(|| self.try_parse(Parser::parse_life_like_sb))
     }
 
     /// Parse a Generations rule string with B/S/C notation.
@@ -315,14 +315,14 @@ impl<'a> Parser<'a> {
     fn parse_generations_bsc(&mut self) -> Option<Result<Rule, ParseRuleError>> {
         // Parse the birth sequence.
         self.read_matches(b"Bb")?;
-        let birth = self.parse_many(|parser| parser.parse_digit());
+        let birth = self.parse_many(Parser::parse_digit);
 
         // Parse the slash.
         self.read_matches(b'/')?;
 
         // Parse the survival sequence.
         self.read_matches(b"Ss")?;
-        let survival = self.parse_many(|parser| parser.parse_digit());
+        let survival = self.parse_many(Parser::parse_digit);
 
         // Parse the slash.
         self.read_matches(b'/')?;
@@ -371,13 +371,13 @@ impl<'a> Parser<'a> {
     /// See [`parse_generations`] for more details.
     fn parse_generations_sbc(&mut self) -> Option<Result<Rule, ParseRuleError>> {
         // Parse the survival sequence.
-        let survival = self.parse_many(|parser| parser.parse_digit());
+        let survival = self.parse_many(Parser::parse_digit);
 
         // Parse the slash.
         self.read_matches(b'/')?;
 
         // Parse the birth sequence.
-        let birth = self.parse_many(|parser| parser.parse_digit());
+        let birth = self.parse_many(Parser::parse_digit);
 
         // Parse the slash.
         self.read_matches(b'/')?;
@@ -431,11 +431,11 @@ impl<'a> Parser<'a> {
 
         // Parse the birth sequence.
         self.read_matches(b"bB")?;
-        let birth = self.parse_many(|parser| parser.parse_digit());
+        let birth = self.parse_many(Parser::parse_digit);
 
         // Parse the survival sequence.
         self.read_matches(b"sS")?;
-        let survival = self.parse_many(|parser| parser.parse_digit());
+        let survival = self.parse_many(Parser::parse_digit);
 
         // Parse the neighborhood type.
         let neighborhood_type = self.parse_neighborhood_type_life_like()?;
@@ -477,9 +477,9 @@ impl<'a> Parser<'a> {
     ///
     /// See [`parse_generations`] for more details.
     fn parse_generations(&mut self) -> Option<Result<Rule, ParseRuleError>> {
-        self.try_parse(|parser| parser.parse_generations_bsc())
-            .or_else(|| self.try_parse(|parser| parser.parse_generations_sbc()))
-            .or_else(|| self.try_parse(|parser| parser.parse_generations_catagolue()))
+        self.try_parse(Parser::parse_generations_bsc)
+            .or_else(|| self.try_parse(Parser::parse_generations_sbc))
+            .or_else(|| self.try_parse(Parser::parse_generations_catagolue))
     }
 
     /// Parse a HROT rule string with LtL notation.
@@ -684,14 +684,14 @@ impl<'a> Parser<'a> {
 
         // Parse the survival sequence.
         self.read_matches(b"Ss")?;
-        let survival_list = self.parse_many_sep(b',', |parser| parser.parse_range());
+        let survival_list = self.parse_many_sep(b',', Parser::parse_range);
 
         // Parse the comma.
         self.read_matches(b',')?;
 
         // Parse the birth sequence.
         self.read_matches(b"Bb")?;
-        let birth_list = self.parse_many_sep(b',', |parser| parser.parse_range());
+        let birth_list = self.parse_many_sep(b',', Parser::parse_range);
 
         // Parse the comma and the neighborhood type. This is optional.
         let neighborhood_type = if self.read_matches(b",").is_some() {
@@ -761,9 +761,9 @@ impl<'a> Parser<'a> {
     ///
     /// See [`parse_hrot`] for more details.
     fn parse_hrot(&mut self) -> Option<Result<Rule, ParseRuleError>> {
-        self.try_parse(|parser| parser.parse_hrot_ltl())
-            .or_else(|| self.try_parse(|parser| parser.parse_hrot_ke()))
-            .or_else(|| self.try_parse(|parser| parser.parse_hrot_hrot()))
+        self.try_parse(Parser::parse_hrot_ltl)
+            .or_else(|| self.try_parse(Parser::parse_hrot_ke))
+            .or_else(|| self.try_parse(Parser::parse_hrot_hrot))
     }
 
     /// Parse a rule string.

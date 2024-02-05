@@ -233,7 +233,7 @@ pub struct RuleTable {
     pub(crate) radius: u32,
 
     /// The lookup table.
-    table: [BitFlags<Implication>; 1 << Descriptor::BITS],
+    table: Vec<BitFlags<Implication>>,
 }
 
 impl Debug for RuleTable {
@@ -267,7 +267,7 @@ impl RuleTable {
         let offsets = rule.neighbor_coords();
         let radius = rule.radius();
 
-        let table = [BitFlags::empty(); 1 << Descriptor::BITS];
+        let table = vec![BitFlags::empty(); 1 << Descriptor::BITS];
         let mut rule_table = Self {
             neighborhood_size,
             offsets,
@@ -417,7 +417,7 @@ impl RuleTable {
     }
 
     /// Find the implication of a neighborhood descriptor.
-    pub(crate) const fn implies(&self, descriptor: Descriptor) -> BitFlags<Implication> {
+    pub(crate) fn implies(&self, descriptor: Descriptor) -> BitFlags<Implication> {
         self.table[descriptor.0 as usize]
     }
 }

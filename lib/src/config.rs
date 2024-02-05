@@ -1,190 +1,8 @@
-use crate::{
-    error::{ConfigError, ParseSymmetryError},
-    rule::MAX_NEIGHBORHOOD_SIZE,
-};
+use crate::{error::ConfigError, rule::MAX_NEIGHBORHOOD_SIZE, symmetry::Symmetry};
 use ca_rules2::{Neighborhood, NeighborhoodType, Rule};
 #[cfg(feature = "clap")]
 use clap::{Args, ValueEnum};
-use std::{
-    fmt::{self, Display, Formatter},
-    str::FromStr,
-};
-
-/// Symmetry of the pattern.
-///
-/// Some symmetries require the world to be square.
-/// Some require the world to have no diagonal width.
-/// Some require the world to have no translation.
-///
-/// The notation is borrowed from the Oscar Cunningham's
-/// [Logic Life Search](https://github.com/OscarCunningham/logic-life-search).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
-#[cfg_attr(feature = "clap", derive(ValueEnum))]
-pub enum Symmetry {
-    /// No symmetry.
-    #[default]
-    #[cfg_attr(feature = "clap", value(name = "C1"))]
-    C1,
-
-    /// Symmetry with respect to 180-degree rotation.
-    ///
-    /// This requires the world to have no translation.
-    #[cfg_attr(feature = "clap", value(name = "C2"))]
-    C2,
-
-    /// Symmetry with respect to 90-degree rotation.
-    ///
-    /// This requires the world to be square, have no diagonal width, and have no translation.
-    #[cfg_attr(feature = "clap", value(name = "C4"))]
-    C4,
-
-    /// Symmetry with respect to horizontal reflection.
-    ///
-    /// Denoted by `D2|`.
-    ///
-    /// This requires the world to have no diagonal width, and have no horizontal translation.
-    #[cfg_attr(feature = "clap", value(name = "D2|"))]
-    D2H,
-
-    /// Symmetry with respect to vertical reflection.
-    ///
-    /// Denoted by `D2-`.
-    ///
-    /// This requires the world to have no diagonal width, and have no vertical translation.
-    #[cfg_attr(feature = "clap", value(name = "D2-"))]
-    D2V,
-
-    /// Symmetry with respect to diagonal reflection.
-    ///
-    /// Denoted by `D2\`.
-    ///
-    /// This requires the world to be square, and the horizontal and vertical translations to be equal.
-    #[cfg_attr(feature = "clap", value(name = "D2\\"))]
-    D2D,
-
-    /// Symmetry with respect to antidiagonal reflection.
-    ///
-    /// Denoted by `D2/`.
-    ///
-    /// This requires the world to be square, and the horizontal and vertical translations to add up to zero.
-    #[cfg_attr(feature = "clap", value(name = "D2/"))]
-    D2A,
-
-    /// Symmetry with respect to both horizontal and vertical reflections.
-    ///
-    /// Denoted by `D4+`.
-    ///
-    /// This requires the world to have no diagonal width, and have no translation.
-    #[cfg_attr(feature = "clap", value(name = "D4+"))]
-    D4O,
-
-    /// Symmetry with respect to both diagonal and antidiagonal reflections.
-    ///
-    /// Denoted by `D4X`.
-    ///
-    /// This requires the world to be square, and have no translation.
-    #[cfg_attr(feature = "clap", value(name = "D4X"))]
-    D4X,
-
-    /// Symmetry with respect to all the above rotations and reflections.
-    ///
-    /// This requires the world to be square and have no diagonal width, and have no translation.
-    #[cfg_attr(feature = "clap", value(name = "D8"))]
-    D8,
-}
-
-impl FromStr for Symmetry {
-    type Err = ParseSymmetryError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "C1" => Ok(Self::C1),
-            "C2" => Ok(Self::C2),
-            "C4" => Ok(Self::C4),
-            "D2|" => Ok(Self::D2H),
-            "D2-" => Ok(Self::D2V),
-            "D2\\" => Ok(Self::D2D),
-            "D2/" => Ok(Self::D2A),
-            "D4+" => Ok(Self::D4O),
-            "D4X" => Ok(Self::D4X),
-            "D8" => Ok(Self::D8),
-            _ => Err(ParseSymmetryError),
-        }
-    }
-}
-
-impl Display for Symmetry {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::C1 => write!(f, "C1"),
-            Self::C2 => write!(f, "C2"),
-            Self::C4 => write!(f, "C4"),
-            Self::D2H => write!(f, "D2|"),
-            Self::D2V => write!(f, "D2-"),
-            Self::D2D => write!(f, "D2\\"),
-            Self::D2A => write!(f, "D2/"),
-            Self::D4O => write!(f, "D4+"),
-            Self::D4X => write!(f, "D4X"),
-            Self::D8 => write!(f, "D8"),
-        }
-    }
-}
-
-impl Symmetry {
-    /// Each symmetry can be represented as a subgroup of the dihedral group D8.
-    /// This function checks whether the symmetry is a subgroup of the other symmetry.
-    ///
-    /// For example, [`D2H`](Symmetry::D2H) is a subgroup of [`D4O`](Symmetry::D4O)
-    /// This means that if a pattern has [`D4O`](Symmetry::D4O) symmetry, it also has
-    /// [`D2H`](Symmetry::D2H) symmetry.
-    pub const fn is_subgroup_of(self, other: Self) -> bool {
-        matches!(
-            (self, other),
-            (Self::C1, _)
-                | (
-                    Self::C2,
-                    Self::C2 | Self::C4 | Self::D4O | Self::D4X | Self::D8
-                )
-                | (Self::C4, Self::C4 | Self::D8)
-                | (Self::D2H, Self::D2H | Self::D4O | Self::D8)
-                | (Self::D2V, Self::D2V | Self::D4O | Self::D8)
-                | (Self::D2D, Self::D2D | Self::D4X | Self::D8)
-                | (Self::D2A, Self::D2A | Self::D4X | Self::D8)
-                | (Self::D4O, Self::D4O | Self::D8)
-                | (Self::D8, Self::D8)
-        )
-    }
-
-    /// Whether the symmetry requires the world to be square.
-    ///
-    /// This is true for `C4`, `D2D`, `D2A`, `D4X`, and `D8`.
-    pub const fn requires_square(self) -> bool {
-        !self.is_subgroup_of(Self::D4O)
-    }
-
-    /// Whether the symmetry requires the world to have no diagonal width.
-    ///
-    /// This is true for `C4`, `D2H`, `D2V`, `D4O`, and `D8`.
-    pub const fn requires_no_diagonal_width(self) -> bool {
-        !self.is_subgroup_of(Self::D4X)
-    }
-
-    /// Whether the translation satisfies the symmetry.
-    pub const fn translation_is_valid(self, dx: i32, dy: i32) -> bool {
-        match self {
-            Self::C1 => true,
-            Self::C2 => dx == 0 && dy == 0,
-            Self::C4 => dx == 0 && dy == 0,
-            Self::D2H => dx == 0,
-            Self::D2V => dy == 0,
-            Self::D2D => dx == dy,
-            Self::D2A => dx == -dy,
-            Self::D4O => dx == 0 && dy == 0,
-            Self::D4X => dx == 0 && dy == 0,
-            Self::D8 => dx == 0 && dy == 0,
-        }
-    }
-}
+use std::str::FromStr;
 
 /// Search order.
 ///
@@ -283,11 +101,11 @@ pub struct Config {
 
     /// Horizontal translation of the world.
     ///
-    /// The pattern is translated by `x` cells to the left in each period.
+    /// The pattern is translated by `dx` cells to the left in each period.
     ///
     /// In other words, if the period is `p`, then a cell at position `(x, y)`
     /// on the `p`-th generation should have the same state as a cell at position
-    /// `(x + dx, y)` on the 0th generation.
+    /// `(x + dx, y + dy)` on the 0-th generation.
     #[cfg_attr(
         feature = "clap",
         arg(short = 'x', long, allow_negative_numbers = true, default_value = "0")
@@ -296,11 +114,11 @@ pub struct Config {
 
     /// Vertical translation of the world.
     ///
-    /// The pattern is translated by `y` cells upwards in each period.
+    /// The pattern is translated by `dy` cells upwards in each period.
     ///
     /// In other words, if the period is `p`, then a cell at position `(x, y)`
     /// on the `p`-th generation should have the same state as a cell at position
-    /// `(x, y + dy)` on the 0th generation.
+    /// `(x + dx, y + dy)` on the 0-th generation.
     #[cfg_attr(
         feature = "clap",
         arg(short = 'y', long, allow_negative_numbers = true, default_value = "0")
@@ -319,6 +137,16 @@ pub struct Config {
     pub diagonal_width: Option<u32>,
 
     /// Symmetry of the pattern.
+    ///
+    /// There are 10 possible symmetries, corresponding to the 10 subgroups of the
+    /// [dihedral group _D_<sub>8</sub>](https://en.wikipedia.org/wiki/Dihedral_group).
+    ///
+    /// Some symmetries require the world to be square.
+    /// Some require the world to have no diagonal width.
+    /// Some require the world to have no translation.
+    ///
+    /// The notation is borrowed from the Oscar Cunningham's
+    /// [Logic Life Search](https://github.com/OscarCunningham/logic-life-search).
     #[cfg_attr(feature = "clap", arg(short, long, value_enum, default_value = "C1"))]
     pub symmetry: Symmetry,
 
