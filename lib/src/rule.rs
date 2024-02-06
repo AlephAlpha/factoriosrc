@@ -5,6 +5,8 @@ use rand::{
     distributions::{Distribution, Standard},
     Rng,
 };
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 use std::{
     fmt::{self, Debug, Formatter},
     ops::Not,
@@ -12,6 +14,7 @@ use std::{
 
 /// The state of a known cell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum CellState {
     /// The cell is dead.
     Dead = 0b01,
@@ -50,6 +53,7 @@ pub const MAX_NEIGHBORHOOD_SIZE: usize = 24;
 ///
 /// An integer value that represents the state of a cell, its successor, and its neighborhood.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Descriptor(pub(crate) u16);
 
 impl Debug for Descriptor {
@@ -124,7 +128,7 @@ impl Descriptor {
 
     /// Create a neighborhood descriptor from the number of dead and alive neighbors,
     /// and the states of the successor and current cells.
-    fn new(
+    pub(crate) fn new(
         dead: usize,
         alive: usize,
         successor: impl Into<Option<CellState>>,

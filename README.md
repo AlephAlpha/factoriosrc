@@ -35,7 +35,7 @@ The program is still work in progress, so the usage may change in the future.
 Features that rlifesrc has but factoriosrc doesn't:
 
 - [x] Improve the performance. Possibly by using some unsafe code.
-- [ ] Support transformations (rotation and reflection).
+- [x] Support transformations (rotation and reflection).
 - [x] Count the number of living cells.
   - [x] Max population constraint.
   - [x] Dynamically adjust the max population constraint to find the smallest pattern.
@@ -60,7 +60,7 @@ Features that rlifesrc doesn't have and factoriosrc may add:
   - [ ] Support custom symmetries and transformations. Maybe describe them using a DSL.
   - [ ] Separate the symmetries and transformations into another crate.
 - [x] A seedable RNG. (https://github.com/AlephAlpha/rlifesrc/issues/183)
-  - [ ] Use a RNG with `serde` support, so that we can save and load the random state.
+  - [x] Use a RNG with `serde` support, so that we can save and load the random state.
 - [ ] More user-friendly TUI and web UI.
   - [ ] Set cells to be known by clicking.
   - [ ] Automatically save the search state in the browser cache. (https://github.com/AlephAlpha/rlifesrc/issues/366)

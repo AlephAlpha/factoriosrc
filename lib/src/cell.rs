@@ -12,8 +12,8 @@ use std::cell::Cell;
 ///
 /// - Raw pointers in the `neighborhood` array are non-null.
 /// - Other raw pointers may be null.
-/// - When a pointer is non-null, it must point to a cell in the same [`World`](crate::World).
-#[derive(Debug, Clone)]
+/// - When a pointer is non-null, it must point to a cell in the same [`World`].
+#[derive(Debug)]
 pub(crate) struct LifeCell {
     /// The generation of the cell.
     pub(crate) generation: i32,

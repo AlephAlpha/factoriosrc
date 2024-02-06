@@ -6,6 +6,8 @@ use crate::{
 use ca_rules2::{Neighborhood, NeighborhoodType, Rule};
 #[cfg(feature = "clap")]
 use clap::{Args, ValueEnum};
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
 /// Search order.
@@ -13,6 +15,7 @@ use std::str::FromStr;
 /// This is used to determine how we find the next unknown cell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "clap", derive(ValueEnum))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum SearchOrder {
     /// Search in row-major order.
     ///
@@ -22,6 +25,7 @@ pub enum SearchOrder {
     /// 7 8 9
     /// ```
     #[cfg_attr(feature = "clap", value(name = "row", alias = "r"))]
+    #[cfg_attr(feature = "serde", serde(rename = "row"))]
     RowFirst,
 
     /// Search in column-major order.
@@ -32,6 +36,7 @@ pub enum SearchOrder {
     /// 3 6 9
     /// ```
     #[cfg_attr(feature = "clap", value(name = "column", alias = "c"))]
+    #[cfg_attr(feature = "serde", serde(rename = "column"))]
     ColumnFirst,
 
     /// Search in diagonal order.
@@ -46,6 +51,7 @@ pub enum SearchOrder {
     ///
     /// This requires the world to be square.
     #[cfg_attr(feature = "clap", value(name = "diagonal", alias = "d"))]
+    #[cfg_attr(feature = "serde", serde(rename = "diagonal"))]
     Diagonal,
 }
 
@@ -54,26 +60,32 @@ pub enum SearchOrder {
 /// The default is [`Dead`](NewState::Dead).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[cfg_attr(feature = "clap", derive(ValueEnum))]
+#[cfg_attr(
+    feature = "serde",
+    derive(Serialize, Deserialize),
+    serde(rename_all = "lowercase")
+)]
 pub enum NewState {
     /// Guess that the cell is alive.
-    #[cfg_attr(feature = "clap", value(name = "alive", alias = "a"))]
+    #[cfg_attr(feature = "clap", value(alias = "a"))]
     Alive,
 
     /// Guess that the cell is dead.
     #[default]
-    #[cfg_attr(feature = "clap", value(name = "dead", alias = "d"))]
+    #[cfg_attr(feature = "clap", value(alias = "d"))]
     Dead,
 
     /// Make a random guess.
     ///
     /// The probability of each state is 50%.
-    #[cfg_attr(feature = "clap", value(name = "random", alias = "r"))]
+    #[cfg_attr(feature = "clap", value(alias = "r"))]
     Random,
 }
 
 /// The configuration of the world.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "clap", derive(Args))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Config {
     /// The rule string of the cellular automaton.
     ///
@@ -114,6 +126,7 @@ pub struct Config {
         feature = "clap",
         arg(short = 'x', long, allow_negative_numbers = true, default_value = "0")
     )]
+    #[cfg_attr(feature = "serde", serde(default))]
     pub dx: i32,
 
     /// Vertical translation of the world.
@@ -127,6 +140,7 @@ pub struct Config {
         feature = "clap",
         arg(short = 'y', long, allow_negative_numbers = true, default_value = "0")
     )]
+    #[cfg_attr(feature = "serde", serde(default))]
     pub dy: i32,
 
     /// Diagonal width of the world.
@@ -138,6 +152,7 @@ pub struct Config {
     ///
     /// If this is not [`None`], then the world must be square.
     #[cfg_attr(feature = "clap", arg(short, long))]
+    #[cfg_attr(feature = "serde", serde(default))]
     pub diagonal_width: Option<u32>,
 
     /// Symmetry of the pattern.
@@ -152,6 +167,7 @@ pub struct Config {
     /// The notation is borrowed from the Oscar Cunningham's
     /// [Logic Life Search](https://github.com/OscarCunningham/logic-life-search).
     #[cfg_attr(feature = "clap", arg(short, long, value_enum, default_value = "C1"))]
+    #[cfg_attr(feature = "serde", serde(default))]
     pub symmetry: Symmetry,
 
     /// Transformation of the pattern.
@@ -173,18 +189,21 @@ pub struct Config {
     ///
     /// The notation is based on the notation used in group theory.
     #[cfg_attr(feature = "clap", arg(short, long, value_enum, default_value = "R0"))]
+    #[cfg_attr(feature = "serde", serde(default))]
     pub transformation: Transformation,
 
     /// Search order.
     ///
     /// [`None`] means that the search order is automatically determined.
     #[cfg_attr(feature = "clap", arg(short = 'o', long, value_enum))]
+    #[cfg_attr(feature = "serde", serde(default))]
     pub search_order: Option<SearchOrder>,
 
     /// How to guess the state of an unknown cell.
     ///
     /// The default is [`Dead`](NewState::Dead).
     #[cfg_attr(feature = "clap", arg(short, long, value_enum, default_value = "dead"))]
+    #[cfg_attr(feature = "serde", serde(default))]
     pub new_state: NewState,
 
     /// Random seed for guessing the state of an unknown cell.
@@ -193,6 +212,7 @@ pub struct Config {
     ///
     /// If this is [`None`], then the seed is randomly generated.
     #[cfg_attr(feature = "clap", arg(long))]
+    #[cfg_attr(feature = "serde", serde(default))]
     pub seed: Option<u64>,
 
     /// Upper bound of the population of the pattern.
@@ -202,6 +222,7 @@ pub struct Config {
     ///
     /// If this is [`None`], then the population is not bounded.
     #[cfg_attr(feature = "clap", arg(short, long))]
+    #[cfg_attr(feature = "serde", serde(default))]
     pub max_population: Option<usize>,
 
     /// Whether to reduce the upper bound of the population when a solution is found.
@@ -211,6 +232,7 @@ pub struct Config {
     ///
     /// This is useful for finding the smallest possible pattern.
     #[cfg_attr(feature = "clap", arg(long))]
+    #[cfg_attr(feature = "serde", serde(default))]
     pub reduce_max_population: bool,
 }
 

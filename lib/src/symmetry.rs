@@ -1,5 +1,7 @@
 #[cfg(feature = "clap")]
 use clap::ValueEnum;
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 use std::{cmp::Ordering, ops::Mul};
 use strum::{Display, EnumString, VariantArray};
 
@@ -22,53 +24,46 @@ use strum::{Display, EnumString, VariantArray};
 ///
 /// The notation is based on the notation used in group theory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Display, EnumString, VariantArray)]
-#[cfg_attr(feature = "clap", derive(ValueEnum))]
+#[cfg_attr(feature = "clap", derive(ValueEnum), value(rename_all = "PascalCase"))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Transformation {
     /// Identity transformation.
     #[default]
-    #[cfg_attr(feature = "clap", value(name = "R0"))]
     R0,
 
     /// 90-degree rotation (clockwise).
     ///
     /// This requires the world to be square, have no diagonal width, and have no translation.
-    #[cfg_attr(feature = "clap", value(name = "R1"))]
     R1,
 
     /// 180-degree rotation.
     ///
     /// This requires the world to have no translation.
-    #[cfg_attr(feature = "clap", value(name = "R2"))]
     R2,
 
     /// 270-degree rotation (clockwise).
     ///
     /// This requires the world to be square, have no diagonal width, and have no translation.
-    #[cfg_attr(feature = "clap", value(name = "R3"))]
     R3,
 
     /// Vertical reflection.
     ///
     /// This requires the world to have no diagonal width, and have no vertical translation.
-    #[cfg_attr(feature = "clap", value(name = "S0"))]
     S0,
 
     /// Diagonal reflection.
     ///
     /// This requires the world to be square, and the horizontal and vertical translations to be equal.
-    #[cfg_attr(feature = "clap", value(name = "S1"))]
     S1,
 
     /// Horizontal reflection.
     ///
     /// This requires the world to have no diagonal width, and have no horizontal translation.
-    #[cfg_attr(feature = "clap", value(name = "S2"))]
     S2,
 
     /// Antidiagonal reflection.
     ///
     /// This requires the world to be square, and the horizontal and vertical translations to add up to zero.
-    #[cfg_attr(feature = "clap", value(name = "S3"))]
     S3,
 }
 
@@ -239,23 +234,21 @@ impl Transformation {
 /// The notation is borrowed from the Oscar Cunningham's
 /// [Logic Life Search](https://github.com/OscarCunningham/logic-life-search).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Display, EnumString, VariantArray)]
-#[cfg_attr(feature = "clap", derive(ValueEnum))]
+#[cfg_attr(feature = "clap", derive(ValueEnum), value(rename_all = "PascalCase"))]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Symmetry {
     /// No symmetry.
     #[default]
-    #[cfg_attr(feature = "clap", value(name = "C1"))]
     C1,
 
     /// Symmetry with respect to 180-degree rotation.
     ///
     /// This requires the world to have no translation.
-    #[cfg_attr(feature = "clap", value(name = "C2"))]
     C2,
 
     /// Symmetry with respect to 90-degree rotation.
     ///
     /// This requires the world to be square, have no diagonal width, and have no translation.
-    #[cfg_attr(feature = "clap", value(name = "C4"))]
     C4,
 
     /// Symmetry with respect to horizontal reflection.
@@ -265,6 +258,7 @@ pub enum Symmetry {
     /// This requires the world to have no diagonal width, and have no horizontal translation.
     #[strum(serialize = "D2|")]
     #[cfg_attr(feature = "clap", value(name = "D2|"))]
+    #[cfg_attr(feature = "serde", serde(rename = "D2|"))]
     D2H,
 
     /// Symmetry with respect to vertical reflection.
@@ -274,6 +268,7 @@ pub enum Symmetry {
     /// This requires the world to have no diagonal width, and have no vertical translation.
     #[strum(serialize = "D2-")]
     #[cfg_attr(feature = "clap", value(name = "D2-"))]
+    #[cfg_attr(feature = "serde", serde(rename = "D2-"))]
     D2V,
 
     /// Symmetry with respect to diagonal reflection.
@@ -283,6 +278,7 @@ pub enum Symmetry {
     /// This requires the world to be square, and the horizontal and vertical translations to be equal.
     #[strum(serialize = "D2\\")]
     #[cfg_attr(feature = "clap", value(name = "D2\\"))]
+    #[cfg_attr(feature = "serde", serde(rename = "D2\\"))]
     D2D,
 
     /// Symmetry with respect to antidiagonal reflection.
@@ -292,6 +288,7 @@ pub enum Symmetry {
     /// This requires the world to be square, and the horizontal and vertical translations to add up to zero.
     #[strum(serialize = "D2/")]
     #[cfg_attr(feature = "clap", value(name = "D2/"))]
+    #[cfg_attr(feature = "serde", serde(rename = "D2/"))]
     D2A,
 
     /// Symmetry with respect to both horizontal and vertical reflections.
@@ -301,21 +298,17 @@ pub enum Symmetry {
     /// This requires the world to have no diagonal width, and have no translation.
     #[strum(serialize = "D4+")]
     #[cfg_attr(feature = "clap", value(name = "D4+"))]
+    #[cfg_attr(feature = "serde", serde(rename = "D4+"))]
     D4O,
 
     /// Symmetry with respect to both diagonal and antidiagonal reflections.
     ///
-    /// Denoted by `D4X`.
-    ///
     /// This requires the world to be square, and have no translation.
-    #[strum(serialize = "D4X")]
-    #[cfg_attr(feature = "clap", value(name = "D4X"))]
     D4X,
 
     /// Symmetry with respect to all the above rotations and reflections.
     ///
     /// This requires the world to be square and have no diagonal width, and have no translation.
-    #[cfg_attr(feature = "clap", value(name = "D8"))]
     D8,
 }
 

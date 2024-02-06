@@ -5,7 +5,10 @@ use crate::{
     rule::{CellState, RuleTable},
     symmetry::Symmetry,
 };
-use rand::{rngs::StdRng, SeedableRng};
+use rand::SeedableRng;
+use rand_xoshiro::Xoshiro256PlusPlus;
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 
 /// Coordinates of a cell in the world.
 ///
@@ -15,6 +18,7 @@ pub type Coord = (i32, i32, i32);
 
 /// The reason why a cell is set to a state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub(crate) enum Reason {
     /// The state is known from the configuration before the search.
     Known,
@@ -28,6 +32,7 @@ pub(crate) enum Reason {
 
 /// Status of the search.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Status {
     /// The search has not started yet.
     NotStarted,
@@ -71,7 +76,7 @@ pub struct World {
     pub(crate) size: usize,
 
     /// A random number generator for guessing the state of an unknown cell.
-    pub(crate) rng: StdRng,
+    pub(crate) rng: Xoshiro256PlusPlus,
 
     /// The number of living cells on each generation.
     pub(crate) population: Vec<usize>,
@@ -144,9 +149,10 @@ impl World {
 
         let cells_ptr = Box::into_raw(cells);
 
-        let rng = config
-            .seed
-            .map_or_else(StdRng::from_entropy, StdRng::seed_from_u64);
+        let rng = config.seed.map_or_else(
+            Xoshiro256PlusPlus::from_entropy,
+            Xoshiro256PlusPlus::seed_from_u64,
+        );
 
         let mut world = Self {
             config,
@@ -569,7 +575,12 @@ impl World {
     }
 
     /// Set the state of a cell. The cell should be unknown.
-    pub(crate) fn set_cell(&mut self, cell: &LifeCell, state: CellState, reason: Reason) {
+    ///
+    /// # Safety
+    ///
+    /// The cell must be in the same world as `self`.
+    /// Otherwise the behavior is undefined.
+    pub(crate) unsafe fn set_cell(&mut self, cell: &LifeCell, state: CellState, reason: Reason) {
         debug_assert!(cell.state().is_none());
         cell.state.set(Some(state));
 
@@ -604,7 +615,12 @@ impl World {
     }
 
     /// Unset the state of a cell. The cell should be known.
-    pub(crate) fn unset_cell(&mut self, cell: &LifeCell) {
+    ///
+    /// # Safety
+    ///
+    /// The cell must be in the same world as `self`.
+    /// Otherwise the behavior is undefined.
+    pub(crate) unsafe fn unset_cell(&mut self, cell: &LifeCell) {
         debug_assert!(cell.state().is_some());
         let state = cell.state().unwrap();
         cell.state.set(None);
