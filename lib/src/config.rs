@@ -1,4 +1,8 @@
-use crate::{error::ConfigError, rule::MAX_NEIGHBORHOOD_SIZE, symmetry::Symmetry};
+use crate::{
+    error::ConfigError,
+    rule::MAX_NEIGHBORHOOD_SIZE,
+    symmetry::{Symmetry, Transformation},
+};
 use ca_rules2::{Neighborhood, NeighborhoodType, Rule};
 #[cfg(feature = "clap")]
 use clap::{Args, ValueEnum};
@@ -150,6 +154,27 @@ pub struct Config {
     #[cfg_attr(feature = "clap", arg(short, long, value_enum, default_value = "C1"))]
     pub symmetry: Symmetry,
 
+    /// Transformation of the pattern.
+    ///
+    /// There are 8 possible transformations, corresponding to the 8 elements of the
+    /// [dihedral group D8](https://en.wikipedia.org/wiki/Dihedral_group).
+    ///
+    /// In each period, the pattern is first transformed according to the transformation,
+    /// then translated according to [`dx`](crate::Config::dx) and [`dy`](crate::Config::dy).
+    ///
+    /// In other words, if the period is `p`, and the transformation maps `(x, y)` to
+    /// `(x', y')`, then the cell at position `(x', y')` on the `p`-th generation should
+    /// have the same state as the cell at position `(x + dx, y + dy)` on the 0-th
+    /// generation.
+    ///
+    /// Some transformations require the world to be square.
+    /// Some require the world to have no diagonal width.
+    /// Some require the world to have no translation.
+    ///
+    /// The notation is based on the notation used in group theory.
+    #[cfg_attr(feature = "clap", arg(short, long, value_enum, default_value = "R0"))]
+    pub transformation: Transformation,
+
     /// Search order.
     ///
     /// [`None`] means that the search order is automatically determined.
@@ -202,6 +227,7 @@ impl Config {
             dy: 0,
             diagonal_width: None,
             symmetry: Symmetry::C1,
+            transformation: Transformation::R0,
             search_order: None,
             new_state: NewState::Dead,
             seed: None,
@@ -235,6 +261,15 @@ impl Config {
     #[inline]
     pub const fn with_symmetry(mut self, symmetry: Symmetry) -> Self {
         self.symmetry = symmetry;
+        self
+    }
+
+    /// Set the transformation.
+    ///
+    /// See [`transformation`](Config::transformation) for more details.
+    #[inline]
+    pub const fn with_transformation(mut self, transformation: Transformation) -> Self {
+        self.transformation = transformation;
         self
     }
 
@@ -287,8 +322,22 @@ impl Config {
     #[inline]
     pub const fn requires_square(&self) -> bool {
         self.symmetry.requires_square()
+            || self.transformation.requires_square()
             || self.diagonal_width.is_some()
             || matches!(self.search_order, Some(SearchOrder::Diagonal))
+    }
+
+    /// Whether the symmetry or the transformation requires the world to have no diagonal width.
+    #[inline]
+    pub const fn requires_no_diagonal_width(&self) -> bool {
+        self.symmetry.requires_no_diagonal_width()
+            || self.transformation.requires_no_diagonal_width()
+    }
+
+    /// Whether the translation is compatible with the symmetry.
+    #[inline]
+    pub const fn translation_is_valid(&self) -> bool {
+        self.symmetry.translation_is_valid(self.dx, self.dy)
     }
 
     /// Try to parse the rule string, and check whether the rule is supported.
@@ -302,6 +351,7 @@ impl Config {
     ///   Rules with more than 2 states are not supported.
     ///
     /// Rules whose birth conditions contain `0` are not supported.
+    #[inline]
     pub fn parse_rule(&self) -> Result<Rule, ConfigError> {
         let rule = Rule::from_str(&self.rule_str).map_err(|_| ConfigError::InvalidRule)?;
 
@@ -344,11 +394,11 @@ impl Config {
             return Err(ConfigError::NotSquare);
         }
 
-        if self.diagonal_width.is_some() && self.symmetry.requires_no_diagonal_width() {
+        if self.diagonal_width.is_some() && self.requires_no_diagonal_width() {
             return Err(ConfigError::HasDiagonalWidth);
         }
 
-        if !self.symmetry.translation_is_valid(self.dx, self.dy) {
+        if !self.translation_is_valid() {
             return Err(ConfigError::InvalidTranslation);
         }
 
@@ -356,27 +406,36 @@ impl Config {
         if self.search_order.is_none() {
             // If the world is symmetric with respect to horizontal reflection,
             // we only need to search the left half of the world.
-            let width = match self.symmetry {
-                Symmetry::D2H | Symmetry::D4O | Symmetry::D8 => (self.width + 1) / 2,
-                _ => self.width,
+            let width = if self.transformation == Transformation::S2
+                || Transformation::S2.is_element_of(self.symmetry)
+            {
+                (self.width + 1) / 2
+            } else {
+                self.width
             };
 
             // If the world is symmetric with respect to vertical reflection,
             // we only need to search the upper half of the world.
-            let height = match self.symmetry {
-                Symmetry::D2V | Symmetry::D4O | Symmetry::D8 => (self.height + 1) / 2,
-                _ => self.height,
+            let height = if self.transformation == Transformation::S0
+                || Transformation::S0.is_element_of(self.symmetry)
+            {
+                (self.height + 1) / 2
+            } else {
+                self.height
             };
 
             // If the world is symmetric with respect to diagonal reflection,
             // we only need to search the lower triangle of the world.
-            let diagonal_width = match self.symmetry {
-                Symmetry::D2D | Symmetry::D4X | Symmetry::D8 => self.diagonal_width,
-                _ => self.diagonal_width.map(|d| 2 * d + 1),
+            let diagonal_width = if self.transformation == Transformation::S1
+                || Transformation::S1.is_element_of(self.symmetry)
+            {
+                self.diagonal_width.or(Some(self.width))
+            } else {
+                self.diagonal_width.map(|d| 2 * d + 1)
             };
 
             // The shortest edge should be searched first.
-            let search_order = if diagonal_width.is_some_and(|d| d < width && d < height) {
+            let search_order = if diagonal_width.is_some_and(|d| d <= width && d <= height) {
                 SearchOrder::Diagonal
             } else if width < height {
                 SearchOrder::RowFirst

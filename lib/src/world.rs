@@ -6,7 +6,6 @@ use crate::{
     symmetry::Symmetry,
 };
 use rand::{rngs::StdRng, SeedableRng};
-use std::fmt::Write;
 
 /// Coordinates of a cell in the world.
 ///
@@ -55,7 +54,7 @@ pub enum Status {
 /// world.search(None);
 /// assert_eq!(world.status(), Status::Solved);
 /// // Print the solution in RLE format.
-/// println!("{}", world.rle(0));
+/// println!("{}", world.rle(0, true));
 /// ```
 #[derive(Debug)]
 pub struct World {
@@ -186,6 +185,7 @@ impl World {
             // If the search order is row-first, the front is the first row.
             SearchOrder::RowFirst => {
                 if self.config.symmetry.is_subgroup_of(Symmetry::D2H)
+                    && self.config.transformation.is_element_of(Symmetry::D2H)
                     && self.config.diagonal_width.is_none()
                 {
                     use_front = true;
@@ -226,6 +226,7 @@ impl World {
             // If the search order is column-first, the front is the first column.
             SearchOrder::ColumnFirst => {
                 if self.config.symmetry.is_subgroup_of(Symmetry::D2V)
+                    && self.config.transformation.is_element_of(Symmetry::D2V)
                     && self.config.diagonal_width.is_none()
                 {
                     use_front = true;
@@ -265,7 +266,9 @@ impl World {
 
             // If the search order is diagonal, the front is both the first row and the first column.
             SearchOrder::Diagonal => {
-                if self.config.symmetry.is_subgroup_of(Symmetry::D2D) {
+                if self.config.symmetry.is_subgroup_of(Symmetry::D2D)
+                    && self.config.transformation.is_element_of(Symmetry::D2D)
+                {
                     use_front = true;
 
                     let d = self.config.diagonal_width.unwrap_or(self.config.width);
@@ -365,17 +368,9 @@ impl World {
         for x in -r..w + r {
             for y in -r..h + r {
                 for t in 0..p {
-                    let predecessor_coord = if t == 0 {
-                        (x - self.config.dx, y - self.config.dy, p - 1)
-                    } else {
-                        (x, y, t - 1)
-                    };
+                    let predecessor_coord = self.canonicalize_coord((x, y, t - 1));
 
-                    let successor_coord = if t == p - 1 {
-                        (x + self.config.dx, y + self.config.dy, 0)
-                    } else {
-                        (x, y, t + 1)
-                    };
+                    let successor_coord = self.canonicalize_coord((x, y, t + 1));
 
                     let predecessor = self.get_cell_by_coord_ptr(predecessor_coord);
                     let successor = self.get_cell_by_coord_ptr(successor_coord);
@@ -411,29 +406,9 @@ impl World {
 
                     let mut symmetry_coords = Vec::with_capacity(7);
 
-                    if Symmetry::D2H.is_subgroup_of(symmetry) {
-                        symmetry_coords.push((w - x - 1, y, t));
-                    }
-
-                    if Symmetry::D2V.is_subgroup_of(symmetry) {
-                        symmetry_coords.push((x, h - y - 1, t));
-                    }
-
-                    if Symmetry::D2D.is_subgroup_of(symmetry) {
-                        symmetry_coords.push((y, x, t));
-                    }
-
-                    if Symmetry::D2A.is_subgroup_of(symmetry) {
-                        symmetry_coords.push((h - y - 1, w - x - 1, t));
-                    }
-
-                    if Symmetry::C4.is_subgroup_of(symmetry) {
-                        symmetry_coords.push((y, w - x - 1, t));
-                        symmetry_coords.push((h - y - 1, x, t));
-                    }
-
-                    if Symmetry::C2.is_subgroup_of(symmetry) {
-                        symmetry_coords.push((w - x - 1, h - y - 1, t));
+                    for transformation in symmetry.transformations() {
+                        let (x1, y1) = transformation.apply_with_size(x, y, w, h);
+                        symmetry_coords.push((x1, y1, t));
                     }
 
                     symmetry_coords.sort_unstable();
@@ -661,14 +636,50 @@ impl World {
         }
     }
 
+    /// Canonicalize the coordinates of a cell.
+    ///
+    /// If its generation is out of the range `0..period`, we will move it to
+    /// the range by taking the modulo of the generation, and apply the translation
+    /// and transformation to the x and y coordinates.
+    #[inline]
+    pub const fn canonicalize_coord(&self, coord: Coord) -> Coord {
+        let (mut x, mut y, mut t) = coord;
+        let (w, h, p) = (
+            self.config.width as i32,
+            self.config.height as i32,
+            self.config.period as i32,
+        );
+        let transformation = self.config.transformation;
+        let dx = self.config.dx;
+        let dy = self.config.dy;
+
+        while t < 0 {
+            t += p;
+            (x, y) = transformation.inverse().apply_with_size(x, y, w, h);
+            x -= dx;
+            y -= dy;
+        }
+
+        while t >= p {
+            t -= p;
+            x += dx;
+            y += dy;
+            (x, y) = transformation.apply_with_size(x, y, w, h);
+        }
+
+        (x, y, t)
+    }
+
     /// Get the state of a cell by its coordinates.
     ///
-    /// If the cell is outside the world, it is considered to be dead.
+    /// The coordinates are [canonicalized](World::canonicalize_coord) before getting the state.
+    ///
+    /// If the cell is outside the world after canonicalization, it is considered to be dead.
     ///
     /// If the cell is unknown, return [`None`].
     #[inline]
     pub fn get_cell_state(&self, coord: Coord) -> Option<CellState> {
-        self.get_cell_by_coord(coord)
+        self.get_cell_by_coord(self.canonicalize_coord(coord))
             .map_or(Some(CellState::Dead), |cell| cell.state())
     }
 
@@ -693,16 +704,33 @@ impl World {
 
     /// Output a generation of the world in RLE format.
     ///
-    /// - Dead cells are represented by `.`.
+    /// - Dead cells are represented by `b` if `compact` is `true`, or `.` if `compact` is `false`.
     /// - Alive cells are represented by `o`.
     /// - Unknown cells are represented by `?`.
     /// - Each row is terminated by `$`.
     /// - The whole pattern is terminated by `!`.
     ///
+    /// If `compact` is `true`, the output will be run-length encoded. In fact, this is
+    /// what RLE stands for. For example, the [glider](https://www.conwaylife.com/wiki/Glider)
+    /// in Conway's Life is represented as:
+    ///
+    /// ```plaintext
+    /// x = 3, y = 3, rule = B3/S23
+    /// bo$2bo$3o!
+    /// ```
+    ///
+    /// If `compact` is `false`, the output will be in a more human-readable format. For example,
+    /// the same glider is represented as:
+    ///
+    /// ```plaintext
+    /// x = 3, y = 3, rule = B3/S23
+    /// .o.$
+    /// ..o$
+    /// ooo!
+    /// ```
+    ///
     /// If the generation is out of the range `0..period`, we will take the modulo.
-    pub fn rle(&self, t: i32) -> String {
-        let mut s = String::new();
-
+    pub fn rle(&self, t: i32, compact: bool) -> String {
         let (w, h, p) = (
             self.config.width as i32,
             self.config.height as i32,
@@ -711,28 +739,77 @@ impl World {
 
         let t = t.rem_euclid(p);
 
-        writeln!(s, "x = {}, y = {}, rule = {}", w, h, self.config.rule_str).unwrap();
+        let header = format!("x = {}, y = {}, rule = {}\n", w, h, self.config.rule_str);
+
+        let mut body = String::new();
+
+        let dead_char = if compact { 'b' } else { '.' };
 
         for y in 0..h {
             for x in 0..w {
                 let c = match self.get_cell_state((x, y, t)) {
-                    Some(CellState::Dead) => '.',
+                    Some(CellState::Dead) => dead_char,
                     Some(CellState::Alive) => 'o',
                     None => '?',
                 };
 
-                s.push(c);
+                body.push(c);
+            }
+
+            // Trim the trailing dead cells if compact is true.
+            if compact {
+                let trim_len = body.trim_end_matches(dead_char).len();
+                body.truncate(trim_len);
             }
 
             if y < h - 1 {
-                s.push('$');
+                body.push('$');
             } else {
-                s.push('!');
+                body.push('!');
             }
-            s.push('\n');
+            if !compact {
+                body.push('\n');
+            }
         }
 
-        s
+        if compact {
+            // Run-length encode the body.
+
+            let mut result = header;
+            let mut line = String::new();
+            let mut count = 0;
+            let mut chars = body.chars().peekable();
+
+            while let Some(c) = chars.next() {
+                count += 1;
+
+                if chars.peek() != Some(&c) {
+                    let mut run = if count > 1 {
+                        count.to_string()
+                    } else {
+                        String::new()
+                    };
+                    run.push(c);
+
+                    // A line in the output should not be longer than 70 characters.
+                    if line.len() + run.len() > 70 {
+                        result.push_str(&line);
+                        result.push('\n');
+                        line = run;
+                    } else {
+                        line.push_str(&run);
+                    }
+
+                    count = 0;
+                }
+            }
+
+            result.push_str(&line);
+
+            result
+        } else {
+            header + &body
+        }
     }
 }
 

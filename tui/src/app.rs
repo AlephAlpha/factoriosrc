@@ -136,7 +136,7 @@ impl App {
     pub fn step(&mut self) {
         let mut status = self.world.search(self.step);
         if status == Status::Solved {
-            self.solution = Some(self.world.rle(self.generation));
+            self.solution = Some(self.world.rle(self.generation, true));
             self.solution_count += 1;
         }
         if status == Status::NoSolution && self.increase_world_size {

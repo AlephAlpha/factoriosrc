@@ -21,6 +21,10 @@ doc:
     cargo doc
     cd target/doc && miniserve --index index.html
 
+# Show the help message
+help: build
+    {{bin}} --help
+
 # Run the benchmark
 bench: build
     hyperfine --warmup 3 '{{bin}} -r B3/S23 26 8 4 -y 1 -n a --no-tui'

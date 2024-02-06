@@ -44,7 +44,7 @@ pub enum Transformation {
     /// 270-degree rotation (clockwise).
     ///
     /// This requires the world to be square, have no diagonal width, and have no translation.
-    #[cfg_attr(feature = "clap", value(name = "R270"))]
+    #[cfg_attr(feature = "clap", value(name = "R3"))]
     R3,
 
     /// Vertical reflection.
@@ -76,6 +76,7 @@ pub enum Transformation {
 impl Mul for Transformation {
     type Output = Self;
 
+    #[inline]
     fn mul(self, rhs: Self) -> Self::Output {
         self.compose(rhs)
     }
@@ -146,6 +147,7 @@ impl Transformation {
     /// For example, [`S0`](Transformation::S0) is a subgroup of [`D2V`](Symmetry::D2V).
     /// This means that if a pattern has [`D2V`](Symmetry::D2V) symmetry, it is invariant
     /// under the [`S0`](Transformation::S0) transformation.
+    #[inline]
     pub const fn is_element_of(self, symmetry: Symmetry) -> bool {
         matches!(
             (self, symmetry),
@@ -165,6 +167,7 @@ impl Transformation {
     /// Whether the transformation requires the world to be square.
     ///
     /// This is true for `R1`, `R3`, `S1`, and `S3`.
+    #[inline]
     pub const fn requires_square(self) -> bool {
         !self.is_element_of(Symmetry::D4O)
     }
@@ -172,33 +175,25 @@ impl Transformation {
     /// Whether the transformation requires the world to have no diagonal width.
     ///
     /// This is true for `R1`, `R3`, `S2`, `S3`, and `S0`.
+    #[inline]
     pub const fn requires_no_diagonal_width(self) -> bool {
         !self.is_element_of(Symmetry::D4X)
     }
 
-    /// Whether the translation is compatible with the transformation.
-    pub const fn translation_is_valid(self, dx: i32, dy: i32) -> bool {
-        match self {
-            Self::R0 => true,
-            Self::R2 | Self::R1 | Self::R3 => dx == 0 && dy == 0,
-            Self::S0 => dy == 0,
-            Self::S1 => dx == dy,
-            Self::S2 => dx == 0,
-            Self::S3 => dx == -dy,
-        }
-    }
-
     /// The inverse of the transformation.
+    #[inline]
     pub const fn inverse(self) -> Self {
         D8::from(self).inverse().into()
     }
 
     /// The composition of two transformations.
+    #[inline]
     pub const fn compose(self, other: Self) -> Self {
         D8::from(self).compose(D8::from(other)).into()
     }
 
     /// Apply the transformation to the given coordinates, using `(0, 0)` as the center.
+    #[inline]
     pub const fn apply(self, x: i32, y: i32) -> (i32, i32) {
         match self {
             Self::R0 => (x, y),
@@ -217,6 +212,7 @@ impl Transformation {
     ///
     /// If the transformation requires the world to be square, but the world is not square,
     /// the result is not guaranteed to be correct.
+    #[inline]
     pub const fn apply_with_size(self, x: i32, y: i32, width: i32, height: i32) -> (i32, i32) {
         match self {
             Self::R0 => (x, y),
@@ -325,6 +321,7 @@ pub enum Symmetry {
 
 /// The partial order of symmetries is defined by the subgroup relation.
 impl PartialOrd for Symmetry {
+    #[inline]
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         if *self == *other {
             Some(Ordering::Equal)
@@ -345,6 +342,7 @@ impl Symmetry {
     /// For example, [`D2H`](Symmetry::D2H) is a subgroup of [`D4O`](Symmetry::D4O).
     /// This means that if a pattern has [`D4O`](Symmetry::D4O) symmetry, it also has
     /// [`D2H`](Symmetry::D2H) symmetry.
+    #[inline]
     pub const fn is_subgroup_of(self, other: Self) -> bool {
         matches!(
             (self, other),
@@ -367,6 +365,7 @@ impl Symmetry {
     /// Whether the symmetry requires the world to be square.
     ///
     /// This is true for `C4`, `D2D`, `D2A`, `D4X`, and `D8`.
+    #[inline]
     pub const fn requires_square(self) -> bool {
         !self.is_subgroup_of(Self::D4O)
     }
@@ -374,11 +373,16 @@ impl Symmetry {
     /// Whether the symmetry requires the world to have no diagonal width.
     ///
     /// This is true for `C4`, `D2H`, `D2V`, `D4O`, and `D8`.
+    #[inline]
     pub const fn requires_no_diagonal_width(self) -> bool {
         !self.is_subgroup_of(Self::D4X)
     }
 
     /// Whether the translation is compatible with the symmetry.
+    ///
+    /// A translation is compatible with the symmetry if it commutes with all the transformations
+    /// that are elements of the symmetry.
+    #[inline]
     pub const fn translation_is_valid(self, dx: i32, dy: i32) -> bool {
         match self {
             Self::C1 => true,
@@ -395,6 +399,7 @@ impl Symmetry {
     }
 
     /// An iterator over the transformations that are elements of the symmetry.
+    #[inline]
     pub fn transformations(self) -> impl Iterator<Item = Transformation> {
         Transformation::value_variants()
             .iter()
@@ -452,7 +457,11 @@ mod tests {
                 for dy in -1..=1 {
                     assert_eq!(
                         s.translation_is_valid(dx, dy),
-                        s.transformations().all(|t| t.translation_is_valid(dx, dy))
+                        s.transformations().all(|t| {
+                            let (x, y) = (10, 20);
+                            let (x1, y1) = t.apply(x, y);
+                            t.apply(x + dx, y + dy) == (x1 + dx, y1 + dy)
+                        })
                     );
                 }
             }

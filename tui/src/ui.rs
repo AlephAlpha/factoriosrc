@@ -2,37 +2,34 @@ use crate::app::{App, Mode};
 use factoriosrc_lib::{CellState, Status, World};
 use ratatui::{
     buffer::Buffer,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Layout, Rect},
     style::{Style, Stylize},
     terminal::Frame,
     text::{Line, Span, Text},
     widgets::{
         block::{Block, Title},
-        Borders, Clear, Paragraph, Widget,
+        Clear, Paragraph, Widget,
     },
 };
 
 impl App {
     /// Render the TUI interface.
     pub fn render(&self, frame: &mut Frame) {
-        let chunks = Layout::new(
-            Direction::Vertical,
-            [
-                Constraint::Length(1),
-                Constraint::Min(0),
-                Constraint::Length(1),
-            ],
-        )
-        .split(frame.size());
+        let [top, main, bottom] = Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
+        .areas(frame.size());
 
-        self.render_top_bar(frame, chunks[0]);
-        self.render_main(frame, chunks[1]);
-        self.render_bottom_bar(frame, chunks[2]);
+        self.render_top_bar(frame, top);
+        self.render_main(frame, main);
+        self.render_bottom_bar(frame, bottom);
 
         // Show the popup window if needed.
         match self.mode {
-            Mode::Usage => self.render_help(frame, chunks[1]),
-            Mode::Quit => self.render_quit(frame, chunks[1]),
+            Mode::Usage => self.render_help(frame, main),
+            Mode::Quit => self.render_quit(frame, main),
             _ => {}
         }
     }
@@ -42,11 +39,8 @@ impl App {
     /// This includes the current generation, the population, the number of solutions found, and the
     /// elapsed time.
     fn render_top_bar(&self, frame: &mut Frame, area: Rect) {
-        let chunks = Layout::new(
-            Direction::Horizontal,
-            Constraint::from_ratios([(1, 4), (1, 4), (1, 4), (1, 4)]),
-        )
-        .split(area);
+        let chunks = Layout::horizontal(Constraint::from_ratios([(1, 4), (1, 4), (1, 4), (1, 4)]))
+            .split(area);
 
         let style = Style::new().black().on_light_blue();
 
@@ -78,11 +72,7 @@ impl App {
     ///
     /// This includes the current status, mode, and a short help message.
     fn render_bottom_bar(&self, frame: &mut Frame, area: Rect) {
-        let chunks = Layout::new(
-            Direction::Horizontal,
-            Constraint::from_percentages([50, 50]),
-        )
-        .split(area);
+        let chunks = Layout::horizontal(Constraint::from_percentages([50, 50])).split(area);
 
         let style = Style::new().black().on_light_blue();
 
@@ -140,7 +130,7 @@ impl App {
         frame.render_widget(Clear, rect);
 
         let paragraph = Paragraph::new(text)
-            .block(Block::default().borders(Borders::ALL).title(title))
+            .block(Block::bordered().title(title))
             .style(style);
 
         frame.render_widget(paragraph, rect);

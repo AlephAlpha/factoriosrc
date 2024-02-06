@@ -16,7 +16,7 @@ fn run_no_tui(args: Args) -> Result<()> {
 
     while matches!(world.status(), Status::NotStarted | Status::Running) {
         world.search(args.step);
-        println!("{}", world.rle(0));
+        println!("{}", world.rle(0, true));
     }
 
     Ok(())
