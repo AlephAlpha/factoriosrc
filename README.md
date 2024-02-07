@@ -63,6 +63,7 @@ Features that rlifesrc has but factoriosrc doesn't:
 - [ ] Custom search order.
 - [x] Save and load the search state.
 - [ ] Web UI.
+  - [ ] What library or framework to use? I don't want to write JavaScript or CSS. Is it possible to combine [Yew](https://yew.rs/) and [egui](https://www.egui.rs)?
 
 Features that rlifesrc doesn't have and factoriosrc may add:
 
