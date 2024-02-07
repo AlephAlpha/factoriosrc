@@ -1,3 +1,5 @@
+#[cfg(feature = "serde")]
+use crate::error::SerdeError;
 use crate::{
     cell::LifeCell,
     config::{Config, SearchOrder},
@@ -8,7 +10,7 @@ use crate::{
 use rand::SeedableRng;
 use rand_xoshiro::Xoshiro256PlusPlus;
 #[cfg(feature = "serde")]
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, Serializer};
 
 /// Coordinates of a cell in the world.
 ///
@@ -21,12 +23,15 @@ pub type Coord = (i32, i32, i32);
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub(crate) enum Reason {
     /// The state is known from the configuration before the search.
+    #[cfg_attr(feature = "serde", serde(rename = "k"))]
     Known,
 
     /// The state is deduced from some other cells.
+    #[cfg_attr(feature = "serde", serde(rename = "d"))]
     Deduced,
 
     /// The state is chosen as a guess.
+    #[cfg_attr(feature = "serde", serde(rename = "g"))]
     Guessed,
 }
 
@@ -62,6 +67,7 @@ pub enum Status {
 /// println!("{}", world.rle(0, true));
 /// ```
 #[derive(Debug)]
+#[cfg_attr(feature = "serde", derive(Deserialize), serde(try_from = "WorldSerde"))]
 pub struct World {
     /// The configuration of the world.
     pub(crate) config: Config,
@@ -113,7 +119,7 @@ pub struct World {
     /// The starting point to look for an unknown cell according to the search order.
     pub(crate) start: *const LifeCell,
 
-    /// Search status.
+    /// The search status.
     pub(crate) status: Status,
 }
 
@@ -122,6 +128,16 @@ impl Drop for World {
         unsafe {
             let _ = Box::from_raw(self.cells_ptr);
         }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl Serialize for World {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        self.to_serde().serialize(serializer)
     }
 }
 
@@ -829,6 +845,182 @@ impl World {
     }
 }
 
+/// A serializable and deserializable version of a [`World`].
+#[cfg(feature = "serde")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct WorldSerde {
+    /// The configuration of the world.
+    config: Config,
+
+    /// A random number generator for guessing the state of an unknown cell.
+    rng: Xoshiro256PlusPlus,
+
+    /// The number of living cells on each generation.
+    population: Vec<usize>,
+
+    /// The upper bound of the population.
+    max_population: Option<usize>,
+
+    /// The number of unknown or living cells on the front, i.e. the first row or column,
+    /// depending on the search order.
+    ///
+    /// This is used to ensure that the front is always non-empty.
+    ///
+    /// If we find a pattern where the front is always empty, we can move the whole pattern
+    /// one cell towards the front, and the pattern will still be valid.
+    /// So we can assume in the first place that the front is always non-empty.
+    /// This will reduce the search space.
+    ///
+    /// However, some symmetries may disallow such a move.
+    /// In that case, we will view the whole pattern at the first generation as the front,
+    /// so that we won't find an empty pattern.
+    front_count: usize,
+
+    /// A stack for backtracking.
+    ///
+    /// It records the cells that have been set to a state, the state,
+    /// and the reason why they are set to that state.
+    ///
+    /// The cells are represented by their indices in the world.
+    stack: Vec<(usize, CellState, Reason)>,
+
+    /// The index of the next cell to be checked in the stack.
+    ///
+    /// The part of the stack starting from this index can be seen as a queue.
+    stack_index: usize,
+
+    /// The starting point to look for an unknown cell according to the search order.
+    start: Option<usize>,
+
+    /// The search status.
+    status: Status,
+}
+
+#[cfg(feature = "serde")]
+impl From<World> for WorldSerde {
+    fn from(world: World) -> Self {
+        world.to_serde()
+    }
+}
+
+#[cfg(feature = "serde")]
+impl TryFrom<WorldSerde> for World {
+    type Error = SerdeError;
+
+    fn try_from(serde: WorldSerde) -> Result<Self, Self::Error> {
+        Self::try_from_serde(serde)
+    }
+}
+
+#[cfg(feature = "serde")]
+impl World {
+    /// Convert a raw pointer to a [`LifeCell`] to an index in the world.
+    ///
+    /// # Safety
+    ///
+    /// The raw pointer must be valid and point to a cell in the world.
+    /// Otherwise the behavior is undefined.
+    const unsafe fn cell_to_index(&self, cell: *const LifeCell) -> usize {
+        let offset = cell.offset_from(self.cells_ptr as *const LifeCell);
+        offset as usize
+    }
+
+    /// Convert an index in the world to a raw pointer to a [`LifeCell`].
+    ///
+    /// # Safety
+    ///
+    /// The index must be in the range `0..size`.
+    /// Otherwise the behavior is undefined.
+    const unsafe fn index_to_cell(&self, index: usize) -> *const LifeCell {
+        (self.cells_ptr as *const LifeCell).add(index)
+    }
+
+    /// Convert a [`World`] to a [`WorldSerde`].
+    fn to_serde(&self) -> WorldSerde {
+        let stack = self
+            .stack
+            .iter()
+            .map(|&(cell, reason)| unsafe {
+                let index = self.cell_to_index(cell);
+                let state = (*cell).state().unwrap();
+                (index, state, reason)
+            })
+            .collect();
+
+        let start = if self.start.is_null() {
+            None
+        } else {
+            unsafe { Some(self.cell_to_index(self.start)) }
+        };
+
+        WorldSerde {
+            config: self.config.clone(),
+            rng: self.rng.clone(),
+            population: self.population.clone(),
+            max_population: self.max_population,
+            front_count: self.front_count,
+            stack,
+            stack_index: self.stack_index,
+            start,
+            status: self.status,
+        }
+    }
+
+    /// Convert a [`WorldSerde`] to a [`World`].
+    ///
+    /// Some basic checks are performed, but it is still possible that the world is invalid.
+    fn try_from_serde(serde: WorldSerde) -> Result<Self, SerdeError> {
+        let mut world = Self::new(serde.config)?;
+
+        // Set the state of the cells according to the stack.
+        unsafe {
+            let mut all_known = true;
+
+            for (index, state, reason) in serde.stack {
+                if index >= world.size {
+                    return Err(SerdeError::OutOfBounds);
+                }
+
+                // All `Known` reasons should be at the beginning of the stack.
+                if reason == Reason::Known {
+                    if !all_known {
+                        return Err(SerdeError::InvalidStack);
+                    }
+                } else {
+                    all_known = false;
+                }
+
+                let cell = world.index_to_cell(index);
+
+                // Skip the cell if it already has a state.
+                if (*cell).state().is_none() {
+                    world.set_cell(&*cell, state, reason);
+                }
+            }
+        }
+
+        if let Some(start) = serde.start {
+            if start >= world.size {
+                return Err(SerdeError::OutOfBounds);
+            }
+            unsafe {
+                world.start = world.index_to_cell(start);
+            }
+        } else {
+            world.start = std::ptr::null();
+        }
+
+        world.rng = serde.rng;
+        world.population = serde.population;
+        world.max_population = serde.max_population;
+        world.front_count = serde.front_count;
+        world.stack_index = serde.stack_index;
+        world.status = serde.status;
+
+        Ok(world)
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -840,5 +1032,20 @@ mod test {
         let mut world = World::new(config).unwrap();
         world.search(None);
         assert_eq!(world.status(), Status::Solved);
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn test_miri_serde() {
+        let config = Config::new("B3/S23", 3, 3, 2);
+        let mut world = World::new(config).unwrap();
+
+        let serde = world.to_serde();
+        let mut world2 = World::try_from(serde).unwrap();
+
+        world.search(None);
+        world2.search(None);
+        assert_eq!(world.status(), world2.status());
+        assert_eq!(world.rle(0, true), world2.rle(0, true));
     }
 }

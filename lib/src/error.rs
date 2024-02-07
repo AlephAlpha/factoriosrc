@@ -31,3 +31,20 @@ pub enum ConfigError {
     #[error("The translations do not satisfy the symmetry")]
     InvalidTranslation,
 }
+
+/// An error that can occur when deserializing a [`World`].
+#[cfg(feature = "serde")]
+#[derive(Clone, Copy, Debug, Error)]
+pub enum SerdeError {
+    /// The configuration is invalid.
+    #[error("The configuration is invalid: {0}")]
+    InvalidConfig(#[from] ConfigError),
+
+    /// The index of a cell is out of bounds.
+    #[error("The index of a cell is out of bounds")]
+    OutOfBounds,
+
+    /// The stack is invalid.
+    #[error("The stack is invalid")]
+    InvalidStack,
+}

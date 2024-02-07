@@ -1,6 +1,6 @@
 use crate::{
     app::{App, Mode},
-    args::Args,
+    args::{Cli, Command},
     event::EventHandler,
 };
 use color_eyre::Result;
@@ -22,12 +22,16 @@ pub struct Tui {
 }
 
 impl Tui {
-    /// Create a new [`Tui`] from the command line arguments and the world allocator.
-    pub fn new(args: Args) -> Result<Self> {
+    /// Create a new [`Tui`] from the command line arguments.
+    pub fn new(args: Cli) -> Result<Self> {
         let backend = CrosstermBackend::new(stdout());
         let terminal = Terminal::new(backend)?;
 
-        let app = App::new(args)?;
+        let app = match args.command {
+            Command::New(args) => App::new(args)?,
+            Command::Load(args) => App::load(args)?,
+        };
+
         let event_handler = EventHandler::new();
 
         let mut tui = Self {
@@ -70,6 +74,7 @@ impl Tui {
     fn exit(&mut self) -> Result<()> {
         self.cleanup()?;
         self.app.print_solution();
+        self.app.save()?;
         Ok(())
     }
 

@@ -1,17 +1,25 @@
-use crate::{args::Args, event::TermEvent};
+use crate::{
+    args::{LoadArgs, NewArgs},
+    event::TermEvent,
+};
 use color_eyre::Result;
 use crossterm::event::KeyCode;
 use factoriosrc_lib::{Status, World};
-use std::time::{Duration, Instant};
+use serde::{Deserialize, Serialize};
+use std::{
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 const DEFAULT_STEP: usize = 100000;
 
 /// Application modes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Mode {
     /// The search is running.
     Running,
     /// The search is not started yet, finished, or paused by the user.
+    #[default]
     Paused,
     /// Ask the user to confirm the quit.
     Quit,
@@ -20,17 +28,19 @@ pub enum Mode {
 }
 
 /// Application state.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct App {
     /// The main struct of the search algorithm.
     pub world: World,
     /// Number of steps between each display of the current partial result.
     pub step: usize,
     /// Current mode of the application.
+    #[serde(skip)]
     pub mode: Mode,
     /// Generation to display.
     pub generation: i32,
     /// Start time of the current search.
+    #[serde(skip)]
     pub start: Option<Instant>,
     /// Time elapsed since the start of the search.
     pub elapsed: Duration,
@@ -39,16 +49,20 @@ pub struct App {
     /// Number of solutions found.
     pub solution_count: usize,
     /// Whether the application should quit.
+    #[serde(skip)]
     pub should_quit: bool,
     /// Whether to increase the world size when the search fails.
     pub increase_world_size: bool,
     /// Whether not to stop the search when a solution is found.
     pub no_stop: bool,
+    /// A path to save the application state.
+    #[serde(skip)]
+    pub save: Option<PathBuf>,
 }
 
 impl App {
-    /// Create a new [`App`] from the command line arguments and the world allocator.
-    pub fn new(args: Args) -> Result<Self> {
+    /// Create a new [`App`] from the command line arguments.
+    pub fn new(args: NewArgs) -> Result<Self> {
         let world = World::new(args.config)?;
         let step = args.step.unwrap_or(DEFAULT_STEP);
         let mode = Mode::Paused;
@@ -60,6 +74,7 @@ impl App {
         let should_quit = false;
         let increase_world_size = args.increase_world_size;
         let no_stop = args.no_stop;
+        let save = args.save;
 
         Ok(Self {
             world,
@@ -73,7 +88,26 @@ impl App {
             should_quit,
             increase_world_size,
             no_stop,
+            save,
         })
+    }
+
+    /// Load the [`App`] from the path given in the command line arguments.
+    pub fn load(args: LoadArgs) -> Result<Self> {
+        let path = args.load;
+        let json = std::fs::read_to_string(path)?;
+        let mut app: App = serde_json::from_str(&json)?;
+        app.save = args.save;
+        Ok(app)
+    }
+
+    /// Save the application state.
+    pub fn save(&self) -> Result<()> {
+        if let Some(save) = &self.save {
+            let json = serde_json::to_string(self)?;
+            std::fs::write(save, json)?;
+        }
+        Ok(())
     }
 
     /// Display the next generation.

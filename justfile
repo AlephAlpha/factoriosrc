@@ -11,10 +11,11 @@ run *ARGS: build
 # Run the tests
 test:
     cargo test
+    cargo test --features serde
 
 # Run the tests with Miri
 test-miri:
-    cargo +nightly miri test test_miri
+    cargo +nightly miri test --features serde test_miri
 
 # Build and serve the documentation
 doc:

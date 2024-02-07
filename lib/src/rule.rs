@@ -17,9 +17,11 @@ use std::{
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum CellState {
     /// The cell is dead.
+    #[cfg_attr(feature = "serde", serde(rename = "0"))]
     Dead = 0b01,
 
     /// The cell is alive.
+    #[cfg_attr(feature = "serde", serde(rename = "1"))]
     Alive = 0b10,
 }
 
