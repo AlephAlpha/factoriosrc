@@ -80,7 +80,7 @@ pub struct LoadArgs {
 
     /// A path to save the state of the search.
     ///
-    /// If not specified, the state will not be saved.
+    /// If not specified, it will default to the path of the loaded state.
     ///
     /// The state will be saved when quitting the application.
     #[arg(long)]
@@ -90,27 +90,25 @@ pub struct LoadArgs {
 impl Cli {
     /// Parse and validate the command line arguments.
     pub fn parse_and_validate() -> Self {
-        let args = Self::parse();
-        let no_tui = args.no_tui;
+        let mut args = Self::parse();
 
-        if let Command::New(args) = args.command {
-            if args.step == Some(0) {
-                Self::command()
-                    .error(ErrorKind::ValueValidation, "step must be > 0")
-                    .exit();
+        match &mut args.command {
+            Command::New(args) => {
+                if args.step == Some(0) {
+                    Self::command()
+                        .error(ErrorKind::ValueValidation, "step must be > 0")
+                        .exit();
+                }
+
+                if let Err(e) = args.config.check() {
+                    Self::command().error(ErrorKind::ValueValidation, e).exit();
+                }
             }
-
-            let args = match args.config.check() {
-                Ok(config) => NewArgs { config, ..args },
-                Err(e) => Self::command().error(ErrorKind::ValueValidation, e).exit(),
-            };
-
-            Self {
-                command: Command::New(args),
-                no_tui,
+            Command::Load(args) => {
+                args.save.get_or_insert(args.load.clone());
             }
-        } else {
-            args
         }
+
+        args
     }
 }

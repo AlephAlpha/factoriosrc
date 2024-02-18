@@ -397,7 +397,7 @@ impl Config {
 
     /// Check whether the configuration is valid,
     /// and find a search order if it is not specified.
-    pub fn check(mut self) -> Result<Self, ConfigError> {
+    pub fn check(&mut self) -> Result<(), ConfigError> {
         self.parse_rule()?;
 
         if self.width == 0
@@ -475,6 +475,6 @@ impl Config {
             self.search_order = Some(search_order);
         }
 
-        Ok(self)
+        Ok(())
     }
 }

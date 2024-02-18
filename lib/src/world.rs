@@ -144,7 +144,8 @@ impl Serialize for World {
 impl World {
     /// Create a new world from a configuration.
     pub fn new(config: Config) -> Result<Self, ConfigError> {
-        let config = config.check()?;
+        let mut config = config;
+        config.check()?;
 
         let rule = RuleTable::new(config.parse_rule()?)?;
         let max_population = config.max_population;
@@ -788,15 +789,24 @@ impl World {
                 body.push(c);
             }
 
-            // Trim the trailing dead cells if compact is true.
+            // Trim the trailing dead cells if `compact` is true.
             if compact {
                 let trim_len = body.trim_end_matches(dead_char).len();
                 body.truncate(trim_len);
             }
 
             if y < h - 1 {
-                body.push('$');
+                // Ignore the leading `$` if `compact` is true.
+                if !compact || !body.is_empty() {
+                    body.push('$');
+                }
             } else {
+                // Trim the trailing `$` if `compact` is true.
+                if compact {
+                    let trim_len = body.trim_end_matches('$').len();
+                    body.truncate(trim_len);
+                }
+
                 body.push('!');
             }
             if !compact {
