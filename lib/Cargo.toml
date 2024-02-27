@@ -6,12 +6,12 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-ca-rules2 = { path = "../ca-rules2", version = "0.1.0" }
-clap = { version = "4.5.1", features = ["derive"], optional = true }
+ca-rules2 = { workspace = true }
+clap = { workspace = true, optional = true }
 enumflags2 = "0.7.9"
 rand = "0.8.5"
 rand_xoshiro = "0.6.0"
-serde = { version = "1.0.196", features = ["derive"], optional = true }
+serde = { workspace = true, optional = true }
 strum = { version = "0.26.1", features = ["derive"] }
 thiserror = "1.0.57"
 

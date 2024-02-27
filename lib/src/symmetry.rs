@@ -3,7 +3,7 @@ use clap::ValueEnum;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 use std::{cmp::Ordering, ops::Mul};
-use strum::{Display, EnumString, VariantArray};
+use strum::{Display, EnumIter, EnumString, IntoEnumIterator};
 
 /// Geometric transformation that can be applied to a pattern.
 ///
@@ -23,7 +23,7 @@ use strum::{Display, EnumString, VariantArray};
 /// Some require the world to have no translation.
 ///
 /// The notation is based on the notation used in group theory.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Display, EnumString, VariantArray)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Display, EnumIter, EnumString)]
 #[cfg_attr(feature = "clap", derive(ValueEnum), value(rename_all = "PascalCase"))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Transformation {
@@ -233,7 +233,7 @@ impl Transformation {
 ///
 /// The notation is borrowed from the Oscar Cunningham's
 /// [Logic Life Search](https://github.com/OscarCunningham/logic-life-search).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Display, EnumString, VariantArray)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Display, EnumIter, EnumString)]
 #[cfg_attr(feature = "clap", derive(ValueEnum), value(rename_all = "PascalCase"))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Symmetry {
@@ -394,10 +394,7 @@ impl Symmetry {
     /// An iterator over the transformations that are elements of the symmetry.
     #[inline]
     pub fn transformations(self) -> impl Iterator<Item = Transformation> {
-        Transformation::value_variants()
-            .iter()
-            .copied()
-            .filter(move |&t| t.is_element_of(self))
+        Transformation::iter().filter(move |&t| t.is_element_of(self))
     }
 }
 
@@ -409,12 +406,12 @@ mod tests {
     fn test_transformation_compose() {
         let (x, y) = (1, 2);
 
-        for &t in Transformation::value_variants() {
+        for t in Transformation::iter() {
             assert_eq!(t.inverse().compose(t), Transformation::R0);
         }
 
-        for &t1 in Transformation::value_variants() {
-            for &t2 in Transformation::value_variants() {
+        for t1 in Transformation::iter() {
+            for t2 in Transformation::iter() {
                 let (x1, y1) = t2.apply(x, y);
                 assert_eq!(t1.compose(t2).apply(x, y), t1.apply(x1, y1));
             }
@@ -423,8 +420,8 @@ mod tests {
 
     #[test]
     fn test_symmetry_subgroup() {
-        for &s1 in Symmetry::value_variants() {
-            for &s2 in Symmetry::value_variants() {
+        for s1 in Symmetry::iter() {
+            for s2 in Symmetry::iter() {
                 assert_eq!(
                     s1.is_subgroup_of(s2),
                     s1.transformations().all(|t| t.is_element_of(s2))
@@ -435,7 +432,7 @@ mod tests {
 
     #[test]
     fn test_symmetry_conditions() {
-        for &s in Symmetry::value_variants() {
+        for s in Symmetry::iter() {
             assert_eq!(
                 s.requires_square(),
                 s.transformations().any(|t| t.requires_square())
