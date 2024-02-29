@@ -1,5 +1,13 @@
 bin := "./target/release/factoriosrc-tui"
 
+# Install the dependencies
+init:
+    cargo install miniserve
+    cargo install hyperfine
+    rustup toolchain install nightly
+    rustup +nightly component add miri
+    cargo +nightly miri setup
+
 # Build the release binary
 build:
     cargo build --release
@@ -10,8 +18,8 @@ run *ARGS: build
 
 # Run the tests
 test:
+    cargo test --package factoriosrc-lib
     cargo test
-    cargo test --features serde
 
 # Run the tests with Miri
 test-miri:

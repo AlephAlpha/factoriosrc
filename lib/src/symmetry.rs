@@ -220,6 +220,12 @@ impl Transformation {
             Self::S3 => (height - y - 1, width - x - 1),
         }
     }
+
+    /// An iterator over all possible transformations.
+    #[inline]
+    pub fn iter() -> impl Iterator<Item = Self> {
+        <Self as IntoEnumIterator>::iter()
+    }
 }
 
 /// Symmetry of a pattern.
@@ -371,24 +377,43 @@ impl Symmetry {
         !self.is_subgroup_of(Self::D4X)
     }
 
+    /// The condition that a translation must satisfy to be compatible with the symmetry.
+    #[inline]
+    pub const fn translation_condition(self) -> TranslationCondition {
+        match self {
+            Self::C1 => TranslationCondition::Any,
+            Self::C2 => TranslationCondition::NoTranslation,
+            Self::C4 => TranslationCondition::NoTranslation,
+            Self::D2H => TranslationCondition::NoHorizontal,
+            Self::D2V => TranslationCondition::NoVertical,
+            Self::D2D => TranslationCondition::Diagonal,
+            Self::D2A => TranslationCondition::Antidiagonal,
+            Self::D4O => TranslationCondition::NoTranslation,
+            Self::D4X => TranslationCondition::NoTranslation,
+            Self::D8 => TranslationCondition::NoTranslation,
+        }
+    }
+
     /// Whether the translation is compatible with the symmetry.
     ///
     /// A translation is compatible with the symmetry if it commutes with all the transformations
     /// that are elements of the symmetry.
     #[inline]
     pub const fn translation_is_valid(self, dx: i32, dy: i32) -> bool {
-        match self {
-            Self::C1 => true,
-            Self::C2 => dx == 0 && dy == 0,
-            Self::C4 => dx == 0 && dy == 0,
-            Self::D2H => dx == 0,
-            Self::D2V => dy == 0,
-            Self::D2D => dx == dy,
-            Self::D2A => dx == -dy,
-            Self::D4O => dx == 0 && dy == 0,
-            Self::D4X => dx == 0 && dy == 0,
-            Self::D8 => dx == 0 && dy == 0,
+        match self.translation_condition() {
+            TranslationCondition::Any => true,
+            TranslationCondition::NoHorizontal => dx == 0,
+            TranslationCondition::NoVertical => dy == 0,
+            TranslationCondition::NoTranslation => dx == 0 && dy == 0,
+            TranslationCondition::Diagonal => dx == dy,
+            TranslationCondition::Antidiagonal => dx == -dy,
         }
+    }
+
+    /// An iterator over all possible symmetries.
+    #[inline]
+    pub fn iter() -> impl Iterator<Item = Self> {
+        <Self as IntoEnumIterator>::iter()
     }
 
     /// An iterator over the transformations that are elements of the symmetry.
@@ -396,6 +421,23 @@ impl Symmetry {
     pub fn transformations(self) -> impl Iterator<Item = Transformation> {
         Transformation::iter().filter(move |&t| t.is_element_of(self))
     }
+}
+
+/// Conditions that a translation must satisfy to be compatible with a symmetry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TranslationCondition {
+    /// All translations are compatible with the symmetry.
+    Any,
+    /// `dx` must be zero.
+    NoHorizontal,
+    /// `dy` must be zero.
+    NoVertical,
+    /// Both `dx` and `dy` must be zero.
+    NoTranslation,
+    /// `dx` must be equal to `dy`.
+    Diagonal,
+    /// `dx` must be equal to `-dy`.
+    Antidiagonal,
 }
 
 #[cfg(test)]

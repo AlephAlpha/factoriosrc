@@ -9,11 +9,12 @@ use clap::{Args, ValueEnum};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
+use strum::{Display, EnumIter, EnumString, IntoEnumIterator};
 
 /// Search order.
 ///
 /// This is used to determine how we find the next unknown cell.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Display, EnumIter, EnumString)]
 #[cfg_attr(feature = "clap", derive(ValueEnum))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum SearchOrder {
@@ -26,6 +27,7 @@ pub enum SearchOrder {
     /// ```
     #[cfg_attr(feature = "clap", value(name = "row", alias = "r"))]
     #[cfg_attr(feature = "serde", serde(rename = "row"))]
+    #[strum(serialize = "row")]
     RowFirst,
 
     /// Search in column-major order.
@@ -37,6 +39,7 @@ pub enum SearchOrder {
     /// ```
     #[cfg_attr(feature = "clap", value(name = "column", alias = "c"))]
     #[cfg_attr(feature = "serde", serde(rename = "column"))]
+    #[strum(serialize = "column")]
     ColumnFirst,
 
     /// Search in diagonal order.
@@ -52,13 +55,22 @@ pub enum SearchOrder {
     /// This requires the world to be square.
     #[cfg_attr(feature = "clap", value(name = "diagonal", alias = "d"))]
     #[cfg_attr(feature = "serde", serde(rename = "diagonal"))]
+    #[strum(serialize = "diagonal")]
     Diagonal,
+}
+
+impl SearchOrder {
+    /// An iterator over all possible search orders.
+    #[inline]
+    pub fn iter() -> impl Iterator<Item = Self> {
+        <Self as IntoEnumIterator>::iter()
+    }
 }
 
 /// How to guess the state of an unknown cell.
 ///
 /// The default is [`Dead`](NewState::Dead).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Display, EnumIter, EnumString)]
 #[cfg_attr(feature = "clap", derive(ValueEnum))]
 #[cfg_attr(
     feature = "serde",
@@ -80,6 +92,14 @@ pub enum NewState {
     /// The probability of each state is 50%.
     #[cfg_attr(feature = "clap", value(alias = "r"))]
     Random,
+}
+
+impl NewState {
+    /// An iterator over all possible [`NewState`]s.
+    #[inline]
+    pub fn iter() -> impl Iterator<Item = Self> {
+        <Self as IntoEnumIterator>::iter()
+    }
 }
 
 /// The configuration of the world.
