@@ -1,5 +1,7 @@
 #[cfg(feature = "clap")]
 use clap::ValueEnum;
+#[cfg(feature = "documented")]
+use documented::{Documented, DocumentedFields};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 use std::{cmp::Ordering, ops::Mul};
@@ -25,6 +27,7 @@ use strum::{Display, EnumIter, EnumString, IntoEnumIterator};
 /// The notation is based on the notation used in group theory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Display, EnumIter, EnumString)]
 #[cfg_attr(feature = "clap", derive(ValueEnum), value(rename_all = "PascalCase"))]
+#[cfg_attr(feature = "documented", derive(Documented, DocumentedFields))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Transformation {
     /// Identity transformation.
@@ -241,6 +244,7 @@ impl Transformation {
 /// [Logic Life Search](https://github.com/OscarCunningham/logic-life-search).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Display, EnumIter, EnumString)]
 #[cfg_attr(feature = "clap", derive(ValueEnum), value(rename_all = "PascalCase"))]
+#[cfg_attr(feature = "documented", derive(Documented, DocumentedFields))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Symmetry {
     /// No symmetry.

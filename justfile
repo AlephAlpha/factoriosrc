@@ -1,4 +1,5 @@
 bin := "./target/release/factoriosrc-tui"
+gui := "./target/release/factoriosrc-egui"
 
 # Install the dependencies
 init:
@@ -15,6 +16,10 @@ build:
 # Run the release binary
 run *ARGS: build
     {{bin}} {{ARGS}}
+
+# Run the GUI (WIP)
+gui: build
+    RUST_LOG=INFO {{gui}}
 
 # Run the tests
 test:

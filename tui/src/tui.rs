@@ -83,10 +83,10 @@ impl Tui {
         while !self.app.should_quit {
             // If the application is running, do not block on the event handler.
             if self.app.mode == Mode::Running {
+                self.app.step();
                 if let Some(event) = self.event_handler.try_recv()? {
                     self.app.update(event);
                 }
-                self.app.step();
             } else {
                 let event = self.event_handler.recv()?;
                 self.app.update(event);

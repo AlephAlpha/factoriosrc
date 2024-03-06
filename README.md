@@ -19,25 +19,25 @@ cargo build --release
 Print the help message:
 
 ```bash
-cargo run --release -- --help
+cargo run --bin factoriosrc-tui --release -- --help
 ```
 
 Search for a c/2 spaceship with [D2-](https://conwaylife.com/wiki/Static_symmetry#D2) symmetry in a bounding box of size 30x10:
 
 ```bash
-cargo run --release -- new 30 10 2 -x 1 -s D2-
+cargo run --bin factoriosrc-tui --release -- new 30 10 2 -x 1 -s D2-
 ```
 
 Search for a c/3 spaceship in [Hash (R2,C0,S4-6,B5-6,N#)](https://conwaylife.com/forums/viewtopic.php?f=11&t=6166&start=25#p104000) in a bounding box of size 30x8, and save the search state to a file when exiting:
 
 ```bash
-cargo run --release -- new 30 8 3 -x 1 -r R2,C0,S4-6,B5-6,N# --save save.json
+cargo run --bin factoriosrc-tui --release -- new 30 8 3 -x 1 -r R2,C0,S4-6,B5-6,N# --save save.json
 ```
 
 Resume the search from the saved state, and save it again when exiting:
 
 ```bash
-cargo run --release -- load save.json --save save.json
+cargo run --bin factoriosrc-tui --release -- load save.json
 ```
 
 The program is still work in progress, so the usage may change in the future.

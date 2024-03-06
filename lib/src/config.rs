@@ -6,6 +6,8 @@ use crate::{
 use ca_rules2::{Neighborhood, NeighborhoodType, Rule};
 #[cfg(feature = "clap")]
 use clap::{Args, ValueEnum};
+#[cfg(feature = "documented")]
+use documented::{Documented, DocumentedFields};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
@@ -16,6 +18,7 @@ use strum::{Display, EnumIter, EnumString, IntoEnumIterator};
 /// This is used to determine how we find the next unknown cell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Display, EnumIter, EnumString)]
 #[cfg_attr(feature = "clap", derive(ValueEnum))]
+#[cfg_attr(feature = "documented", derive(Documented, DocumentedFields))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum SearchOrder {
     /// Search in row-major order.
@@ -72,6 +75,7 @@ impl SearchOrder {
 /// The default is [`Dead`](NewState::Dead).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Display, EnumIter, EnumString)]
 #[cfg_attr(feature = "clap", derive(ValueEnum))]
+#[cfg_attr(feature = "documented", derive(Documented, DocumentedFields))]
 #[cfg_attr(
     feature = "serde",
     derive(Serialize, Deserialize),
@@ -105,6 +109,7 @@ impl NewState {
 /// The configuration of the world.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "clap", derive(Args))]
+#[cfg_attr(feature = "documented", derive(Documented, DocumentedFields))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct Config {
     /// The rule string of the cellular automaton.
@@ -397,7 +402,7 @@ impl Config {
     pub fn parse_rule(&self) -> Result<Rule, ConfigError> {
         let rule = Rule::from_str(&self.rule_str).map_err(|_| ConfigError::InvalidRule)?;
 
-        if rule.contains_b0() {
+        if rule.contains_b0() || rule.states != 2 {
             return Err(ConfigError::UnsupportedRule);
         }
 

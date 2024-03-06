@@ -7,10 +7,13 @@ use crate::{
     rule::{CellState, RuleTable},
     symmetry::Symmetry,
 };
+#[cfg(feature = "documented")]
+use documented::{Documented, DocumentedFields};
 use rand::SeedableRng;
 use rand_xoshiro::Xoshiro256PlusPlus;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize, Serializer};
+use strum::Display;
 
 /// Coordinates of a cell in the world.
 ///
@@ -36,8 +39,9 @@ pub(crate) enum Reason {
 }
 
 /// Status of the search.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Display)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "documented", derive(Documented, DocumentedFields))]
 pub enum Status {
     /// The search has not started yet.
     NotStarted,

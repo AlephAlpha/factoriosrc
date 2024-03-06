@@ -1,39 +1,42 @@
-use egui::{ComboBox, DragValue, Grid, Ui};
+use crate::app::{App, Mode};
+use documented::{Documented, DocumentedFields};
+use egui::{Color32, ComboBox, DragValue, Grid, Label, RichText, ScrollArea, Slider, Ui};
 use factoriosrc_lib::{
-    Config, NewState, SearchOrder, Symmetry, Transformation, TranslationCondition,
+    Config, NewState, SearchOrder, Status, Symmetry, Transformation, TranslationCondition,
 };
 
-/// A panel for factoriosrc configuration.
-pub struct ConfigPanel {
-    /// The configuration.
-    pub config: Config,
-    /// Whether the configuration panel is enabled.
-    ///
-    /// When disabled, the configuration panel will be read-only.
-    pub enabled: bool,
-}
+impl App {
+    /// The configuration panel.
+    pub fn config_panel(&mut self, ui: &mut Ui) {
+        ui.heading("Configuration").on_hover_text(Config::DOCS);
 
-impl ConfigPanel {
-    pub fn ui(&mut self, ui: &mut Ui) {
-        ui.heading("Configuration");
-
-        ui.checkbox(&mut self.enabled, "Enabled")
-            .on_hover_text("Whether the configuration panel is enabled.");
-
-        ui.add_enabled_ui(self.enabled, |ui| {
+        ui.add_enabled_ui(self.mode == Mode::Configuring, |ui| {
             Grid::new("config_panel")
                 .striped(true)
                 .num_columns(2)
                 .show(ui, |ui| {
                     ui.label("rule")
-                        .on_hover_text("The rule string of the cellular automaton.");
-                    ui.text_edit_singleline(&mut self.config.rule_str);
+                        .on_hover_text(Config::get_field_docs("rule_str").unwrap());
+                    ui.horizontal(|ui| {
+                        match self.config.parse_rule() {
+                            Ok(_) => {
+                                ui.label(RichText::new("✔").color(Color32::GREEN))
+                                    .on_hover_text("The rule is valid.");
+                            }
+                            Err(err) => {
+                                ui.label(RichText::new("🗙").color(Color32::RED))
+                                    .on_hover_text(err.to_string());
+                            }
+                        }
+                        ui.text_edit_singleline(&mut self.config.rule_str);
+                    });
                     ui.end_row();
 
                     if self.config.requires_square() {
                         let mut size = self.config.width;
 
-                        ui.label("width").on_hover_text("Width of the world.");
+                        ui.label("width")
+                            .on_hover_text(Config::get_field_docs("width").unwrap());
                         ui.add(
                             DragValue::new(&mut size)
                                 .speed(0.1)
@@ -41,7 +44,8 @@ impl ConfigPanel {
                         );
                         ui.end_row();
 
-                        ui.label("height").on_hover_text("Height of the world.");
+                        ui.label("height")
+                            .on_hover_text(Config::get_field_docs("height").unwrap());
                         ui.add(
                             DragValue::new(&mut size)
                                 .speed(0.1)
@@ -52,7 +56,8 @@ impl ConfigPanel {
                         self.config.width = size;
                         self.config.height = size;
                     } else {
-                        ui.label("width").on_hover_text("Width of the world.");
+                        ui.label("width")
+                            .on_hover_text(Config::get_field_docs("width").unwrap());
                         ui.add(
                             DragValue::new(&mut self.config.width)
                                 .speed(0.1)
@@ -60,7 +65,8 @@ impl ConfigPanel {
                         );
                         ui.end_row();
 
-                        ui.label("height").on_hover_text("Height of the world.");
+                        ui.label("height")
+                            .on_hover_text(Config::get_field_docs("height").unwrap());
                         ui.add(
                             DragValue::new(&mut self.config.height)
                                 .speed(0.1)
@@ -69,7 +75,8 @@ impl ConfigPanel {
                         ui.end_row();
                     }
 
-                    ui.label("period").on_hover_text("Period of the pattern.");
+                    ui.label("period")
+                        .on_hover_text(Config::get_field_docs("period").unwrap());
                     ui.add(
                         DragValue::new(&mut self.config.period)
                             .speed(0.1)
@@ -84,7 +91,7 @@ impl ConfigPanel {
                         | TranslationCondition::NoVertical
                         | TranslationCondition::NoTranslation => {
                             ui.label("dx")
-                                .on_hover_text("Horizontal translation of the world.");
+                                .on_hover_text(Config::get_field_docs("dx").unwrap());
                             ui.add_enabled(
                                 matches!(
                                     translation_condition,
@@ -97,7 +104,7 @@ impl ConfigPanel {
                             ui.end_row();
 
                             ui.label("dy")
-                                .on_hover_text("Vertical translation of the world.");
+                                .on_hover_text(Config::get_field_docs("dy").unwrap());
                             ui.add_enabled(
                                 matches!(
                                     translation_condition,
@@ -113,12 +120,12 @@ impl ConfigPanel {
                             let mut translation = self.config.dx;
 
                             ui.label("dx")
-                                .on_hover_text("Horizontal translation of the world.");
+                                .on_hover_text(Config::get_field_docs("dx").unwrap());
                             ui.add(DragValue::new(&mut translation).speed(0.1));
                             ui.end_row();
 
                             ui.label("dy")
-                                .on_hover_text("Vertical translation of the world.");
+                                .on_hover_text(Config::get_field_docs("dy").unwrap());
                             ui.add(DragValue::new(&mut translation).speed(0.1));
                             ui.end_row();
 
@@ -130,12 +137,12 @@ impl ConfigPanel {
                             let mut dy: i32 = self.config.dy;
 
                             ui.label("dx")
-                                .on_hover_text("Horizontal translation of the world.");
+                                .on_hover_text(Config::get_field_docs("dx").unwrap());
                             ui.add(DragValue::new(&mut dx).speed(0.1));
                             ui.end_row();
 
                             ui.label("dy")
-                                .on_hover_text("Vertical translation of the world.");
+                                .on_hover_text(Config::get_field_docs("dy").unwrap());
                             ui.add(DragValue::new(&mut dy).speed(0.1));
                             ui.end_row();
 
@@ -150,8 +157,7 @@ impl ConfigPanel {
                     }
 
                     ui.label("diagonal width")
-                        .on_hover_text("Zoom of the world.");
-
+                        .on_hover_text(Config::get_field_docs("diagonal_width").unwrap());
                     ui.add_enabled_ui(!self.config.requires_no_diagonal_width(), |ui| {
                         ui.horizontal(|ui| {
                             let mut checked = self.config.diagonal_width.is_some();
@@ -174,41 +180,42 @@ impl ConfigPanel {
                             });
                         })
                     });
-
                     ui.end_row();
 
                     ui.label("symmetry")
-                        .on_hover_text("Symmetry of the pattern.");
+                        .on_hover_text(Config::get_field_docs("symmetry").unwrap());
                     ComboBox::from_id_source("symmetry")
                         .selected_text(self.config.symmetry.to_string())
                         .show_ui(ui, |ui| {
-                            for symmetry in Symmetry::iter() {
+                            for (i, symmetry) in Symmetry::iter().enumerate() {
                                 ui.selectable_value(
                                     &mut self.config.symmetry,
                                     symmetry,
                                     symmetry.to_string(),
-                                );
+                                )
+                                .on_hover_text(Symmetry::FIELD_DOCS[i].unwrap());
                             }
                         });
                     ui.end_row();
 
                     ui.label("transformation")
-                        .on_hover_text("Transformation of the pattern.");
+                        .on_hover_text(Config::get_field_docs("transformation").unwrap());
                     ComboBox::from_id_source("transformation")
                         .selected_text(self.config.transformation.to_string())
                         .show_ui(ui, |ui| {
-                            for transformation in Transformation::iter() {
+                            for (i, transformation) in Transformation::iter().enumerate() {
                                 ui.selectable_value(
                                     &mut self.config.transformation,
                                     transformation,
                                     transformation.to_string(),
-                                );
+                                )
+                                .on_hover_text(Transformation::FIELD_DOCS[i].unwrap());
                             }
                         });
-
                     ui.end_row();
 
-                    ui.label("search order").on_hover_text("Search order.");
+                    ui.label("search order")
+                        .on_hover_text(Config::get_field_docs("search_order").unwrap());
                     ComboBox::from_id_source("search_order")
                         .selected_text(
                             self.config
@@ -216,34 +223,37 @@ impl ConfigPanel {
                                 .map_or_else(|| "auto".to_owned(), |s| s.to_string()),
                         )
                         .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.config.search_order, None, "auto");
-                            for search_order_ in SearchOrder::iter() {
+                            ui.selectable_value(&mut self.config.search_order, None, "auto")
+                                .on_hover_text("The search order is automatically determined.");
+                            for (i, search_order) in SearchOrder::iter().enumerate() {
                                 ui.selectable_value(
                                     &mut self.config.search_order,
-                                    Some(search_order_),
-                                    search_order_.to_string(),
-                                );
+                                    Some(search_order),
+                                    search_order.to_string(),
+                                )
+                                .on_hover_text(SearchOrder::FIELD_DOCS[i].unwrap());
                             }
                         });
                     ui.end_row();
 
                     ui.label("new state")
-                        .on_hover_text("How to guess the state of an unknown cell.");
+                        .on_hover_text(Config::get_field_docs("new_state").unwrap());
                     ComboBox::from_id_source("new_state")
                         .selected_text(self.config.new_state.to_string())
                         .show_ui(ui, |ui| {
-                            for new_state in NewState::iter() {
+                            for (i, new_state) in NewState::iter().enumerate() {
                                 ui.selectable_value(
                                     &mut self.config.new_state,
                                     new_state,
                                     new_state.to_string(),
-                                );
+                                )
+                                .on_hover_text(NewState::FIELD_DOCS[i].unwrap());
                             }
                         });
                     ui.end_row();
 
                     ui.label("seed")
-                        .on_hover_text("Random seed for guessing the state of an unknown cell.");
+                        .on_hover_text(Config::get_field_docs("seed").unwrap());
                     ui.horizontal(|ui| {
                         let mut checked = self.config.seed.is_some();
                         ui.checkbox(&mut checked, "");
@@ -261,13 +271,15 @@ impl ConfigPanel {
                     ui.end_row();
 
                     ui.label("max population")
-                        .on_hover_text("Upper bound of the population of the pattern.");
+                        .on_hover_text(Config::get_field_docs("max_population").unwrap());
                     ui.horizontal(|ui| {
                         let mut checked = self.config.max_population.is_some();
                         ui.checkbox(&mut checked, "");
                         let mut dummy = 0;
                         let max_population = if checked {
-                            self.config.max_population.get_or_insert(0)
+                            self.config
+                                .max_population
+                                .get_or_insert((self.config.width * self.config.height) as usize)
                         } else {
                             self.config.max_population = None;
                             &mut dummy
@@ -278,11 +290,83 @@ impl ConfigPanel {
                     });
                     ui.end_row();
 
-                    ui.label("reduce max population").on_hover_text(
-                    "Whether to reduce the upper bound of the population when a solution is found.",
-                );
+                    ui.label("reduce max")
+                        .on_hover_text(Config::get_field_docs("reduce_max_population").unwrap());
                     ui.checkbox(&mut self.config.reduce_max_population, "");
                 });
         });
+    }
+
+    /// The control panel.
+    pub fn control_panel(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            if self.mode == Mode::Configuring {
+                if ui.button("New").clicked() {
+                    self.new_search();
+                }
+            } else {
+                ui.add_enabled_ui(self.mode == Mode::Paused, |ui| {
+                    let text = match self.status {
+                        Status::NotStarted => "Start",
+                        Status::Running => "Resume",
+                        _ => "Next",
+                    };
+
+                    if ui.button(text).clicked() {
+                        self.start();
+                    }
+                });
+                ui.add_enabled_ui(self.mode == Mode::Running, |ui| {
+                    if ui.button("Pause").clicked() {
+                        self.pause();
+                    }
+                });
+                if ui.button("Stop").clicked() {
+                    self.stop();
+                }
+
+                ui.separator();
+
+                ui.label("generation")
+                    .on_hover_text(Self::get_field_docs("generation").unwrap());
+                ui.add(Slider::new(
+                    &mut self.generation,
+                    0..=self.config.period as i32 - 1,
+                ));
+            }
+        });
+    }
+
+    /// The status panel.
+    pub fn status_panel(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            if let Some(err) = &self.error {
+                ui.label(RichText::new(err.to_string()).color(Color32::RED));
+            } else {
+                ui.label(Status::get_field_docs(self.status.to_string()).unwrap())
+                    .on_hover_text(Self::get_field_docs("status").unwrap());
+            }
+
+            if self.mode == Mode::Running || self.mode == Mode::Paused {
+                ui.separator();
+
+                ui.label("elapsed")
+                    .on_hover_text(Self::get_field_docs("elapsed").unwrap());
+                ui.label(format!("{:?}", self.elapsed));
+            }
+        });
+    }
+
+    /// The main panel.
+    pub fn main_panel(&mut self, ui: &mut Ui) {
+        if let Some(view) = &self.view {
+            ScrollArea::both().show(ui, |ui| {
+                ui.add(Label::new(view.clone()).wrap(false));
+            });
+
+            if self.mode == Mode::Running {
+                ui.ctx().request_repaint();
+            }
+        }
     }
 }
