@@ -1,9 +1,37 @@
 use crate::search::{Event, SearchThread};
-use documented::DocumentedFields;
+use documented::{Documented, DocumentedFields};
 use eframe::{App as EframeApp, Frame};
 use egui::{text::LayoutJob, CentralPanel, Context, SidePanel, TopBottomPanel};
 use factoriosrc_lib::{Config, ConfigError, Status};
 use std::time::Duration;
+
+/// Configuration of the application.
+#[derive(Debug, Clone, PartialEq, Eq, Documented, DocumentedFields)]
+pub struct AppConfig {
+    /// The configuration of the search.
+    pub config: Config,
+
+    /// Number of steps between each display of the current partial result.
+    pub step: usize,
+
+    /// Whether to increase the world size when the search fails.
+    ///
+    /// If the diagonal width exists and is smaller than the width, it will be increased by 1.
+    /// Otherwise, if the height is greater than the width, the width will increased by 1.
+    /// Otherwise, the height will increased by 1.
+    ///
+    /// If the configuration requires a square world, both the width and the height will be
+    /// increased by 1.
+    ///
+    /// When the world size is increased, the search will be restarted, and the current search
+    /// status will be lost.
+    pub increase_world_size: bool,
+
+    /// Do not stop the search when a solution is found.
+    ///
+    /// The search will continue until no more solutions exist, or paused by the user.
+    pub no_stop: bool,
+}
 
 /// Application modes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -21,7 +49,7 @@ pub enum Mode {
 #[derive(Debug, DocumentedFields)]
 pub struct App {
     /// The configuration.
-    pub config: Config,
+    pub config: AppConfig,
     /// Current mode of the application.
     pub mode: Mode,
     /// A thread to run the search algorithm.
@@ -30,6 +58,8 @@ pub struct App {
     pub generation: i32,
     /// An egui [`LayoutJob`] to display the current partial result.
     pub view: Option<LayoutJob>,
+    /// A list of egui [`LayoutJob`]s to display the last found solution.
+    pub solutions: Vec<LayoutJob>,
     /// An error message to display.
     pub error: Option<ConfigError>,
     /// Search status.
@@ -40,13 +70,19 @@ pub struct App {
 
 impl Default for App {
     fn default() -> Self {
-        let config = Config::new("R3,C2,S2,B3,N+", 16, 16, 1);
+        let config = AppConfig {
+            config: Config::new("R3,C2,S2,B3,N+", 16, 16, 1),
+            step: 100_000,
+            increase_world_size: false,
+            no_stop: false,
+        };
         Self {
             config,
             mode: Mode::Configuring,
             search: None,
             generation: 0,
             view: None,
+            solutions: Vec::new(),
             error: None,
             status: Status::NotStarted,
             elapsed: Duration::default(),
@@ -89,11 +125,12 @@ impl App {
     pub fn new_search(&mut self) {
         assert!(self.mode == Mode::Configuring);
         let mut config = self.config.clone();
-        if let Err(e) = config.check() {
+        if let Err(e) = config.config.check() {
             self.error = Some(e);
         } else {
             self.error = None;
             self.view = None;
+            self.solutions.clear();
             self.search = Some(SearchThread::new(config));
             self.mode = Mode::Paused;
         }
@@ -136,6 +173,9 @@ impl App {
                 self.status = message.status;
                 self.view = Some(message.view[self.generation as usize].clone());
                 self.elapsed = message.elapsed;
+                if message.status == Status::Solved {
+                    self.solutions.push(self.view.clone().unwrap());
+                }
 
                 if message.running {
                     self.mode = Mode::Running;

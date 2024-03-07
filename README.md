@@ -4,7 +4,7 @@ Search for patterns in [Factorio (R3,C2,S2,B3,N+)](https://conwaylife.com/forums
 
 This program is still work in progress. Many features are still missing.
 
-Now it has a simple text-based UI. A web UI will be added in the future.
+Now it has a simple text-based UI. A simple GUI is work in progress. A web UI will be added in the future.
 
 ## Usage
 
@@ -15,6 +15,8 @@ Build:
 ```bash
 cargo build --release
 ```
+
+### Text-based UI
 
 Print the help message:
 
@@ -42,6 +44,18 @@ cargo run --bin factoriosrc-tui --release -- load save.json
 
 The program is still work in progress, so the usage may change in the future.
 
+### GUI
+
+The GUI is still work in progress. I have only tested it on Linux. It may not work on other platforms.
+
+```bash
+cargo run --bin factoriosrc-egui --release
+```
+
+Hover the mouse over the labels in the configuration panel to see the help messages.
+
+On X11, for HiDPI displays, you may need to set the `WINIT_X11_SCALE_FACTOR` environment variable to 2.
+
 ## Todo
 
 Features that rlifesrc has but factoriosrc doesn't:
@@ -62,8 +76,11 @@ Features that rlifesrc has but factoriosrc doesn't:
 - [ ] Set some cells to be known in the configuration.
 - [ ] Custom search order.
 - [x] Save and load the search state.
+- [x] GUI.
+  - [ ] Save and load the search state in the GUI.
 - [ ] Web UI.
-  - [ ] What library or framework to use? I don't want to write JavaScript or CSS. Is it possible to combine [Yew](https://yew.rs/) and [egui](https://www.egui.rs)?
+  - [ ] Port the GUI to the web. I'm using the [egui](https://github.com/emilk/egui) library, which has a web backend. I still need to figure out how to port the multi-threaded part, maybe using WebWorkers.
+  - [ ] Better support for mobile devices.
 
 Features that rlifesrc doesn't have and factoriosrc may add:
 

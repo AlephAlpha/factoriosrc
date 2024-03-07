@@ -43,13 +43,13 @@ pub(crate) enum Reason {
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "documented", derive(Documented, DocumentedFields))]
 pub enum Status {
-    /// The search has not started yet.
+    /// Not started yet.
     NotStarted,
-    /// The search is still running.
+    /// Searching...
     Running,
-    /// The search has found a solution.
+    /// A solution was found.
     Solved,
-    /// The search has shown that there is no solution.
+    /// No more solutions.
     NoSolution,
 }
 

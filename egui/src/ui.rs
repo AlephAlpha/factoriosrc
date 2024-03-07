@@ -1,4 +1,4 @@
-use crate::app::{App, Mode};
+use crate::app::{App, AppConfig, Mode};
 use documented::{Documented, DocumentedFields};
 use egui::{Color32, ComboBox, DragValue, Grid, Label, RichText, ScrollArea, Slider, Ui};
 use factoriosrc_lib::{
@@ -15,10 +15,12 @@ impl App {
                 .striped(true)
                 .num_columns(2)
                 .show(ui, |ui| {
+                    let config = &mut self.config.config;
+
                     ui.label("rule")
                         .on_hover_text(Config::get_field_docs("rule_str").unwrap());
                     ui.horizontal(|ui| {
-                        match self.config.parse_rule() {
+                        match config.parse_rule() {
                             Ok(_) => {
                                 ui.label(RichText::new("✔").color(Color32::GREEN))
                                     .on_hover_text("The rule is valid.");
@@ -28,12 +30,12 @@ impl App {
                                     .on_hover_text(err.to_string());
                             }
                         }
-                        ui.text_edit_singleline(&mut self.config.rule_str);
+                        ui.text_edit_singleline(&mut config.rule_str);
                     });
                     ui.end_row();
 
-                    if self.config.requires_square() {
-                        let mut size = self.config.width;
+                    if config.requires_square() {
+                        let mut size = config.width;
 
                         ui.label("width")
                             .on_hover_text(Config::get_field_docs("width").unwrap());
@@ -53,13 +55,13 @@ impl App {
                         );
                         ui.end_row();
 
-                        self.config.width = size;
-                        self.config.height = size;
+                        config.width = size;
+                        config.height = size;
                     } else {
                         ui.label("width")
                             .on_hover_text(Config::get_field_docs("width").unwrap());
                         ui.add(
-                            DragValue::new(&mut self.config.width)
+                            DragValue::new(&mut config.width)
                                 .speed(0.1)
                                 .clamp_range(1..=u16::MAX),
                         );
@@ -68,7 +70,7 @@ impl App {
                         ui.label("height")
                             .on_hover_text(Config::get_field_docs("height").unwrap());
                         ui.add(
-                            DragValue::new(&mut self.config.height)
+                            DragValue::new(&mut config.height)
                                 .speed(0.1)
                                 .clamp_range(1..=u16::MAX),
                         );
@@ -78,13 +80,13 @@ impl App {
                     ui.label("period")
                         .on_hover_text(Config::get_field_docs("period").unwrap());
                     ui.add(
-                        DragValue::new(&mut self.config.period)
+                        DragValue::new(&mut config.period)
                             .speed(0.1)
                             .clamp_range(1..=u16::MAX),
                     );
                     ui.end_row();
 
-                    let translation_condition = self.config.symmetry.translation_condition();
+                    let translation_condition = config.symmetry.translation_condition();
                     match translation_condition {
                         TranslationCondition::Any
                         | TranslationCondition::NoHorizontal
@@ -97,7 +99,7 @@ impl App {
                                     translation_condition,
                                     TranslationCondition::Any | TranslationCondition::NoVertical
                                 ),
-                                DragValue::new(&mut self.config.dx)
+                                DragValue::new(&mut config.dx)
                                     .speed(0.1)
                                     .clamp_range(i16::MIN..=i16::MAX),
                             );
@@ -110,14 +112,14 @@ impl App {
                                     translation_condition,
                                     TranslationCondition::Any | TranslationCondition::NoHorizontal
                                 ),
-                                DragValue::new(&mut self.config.dy)
+                                DragValue::new(&mut config.dy)
                                     .speed(0.1)
                                     .clamp_range(i16::MIN..=i16::MAX),
                             );
                             ui.end_row();
                         }
                         TranslationCondition::Diagonal => {
-                            let mut translation = self.config.dx;
+                            let mut translation = config.dx;
 
                             ui.label("dx")
                                 .on_hover_text(Config::get_field_docs("dx").unwrap());
@@ -129,12 +131,12 @@ impl App {
                             ui.add(DragValue::new(&mut translation).speed(0.1));
                             ui.end_row();
 
-                            self.config.dx = translation;
-                            self.config.dy = translation;
+                            config.dx = translation;
+                            config.dy = translation;
                         }
                         TranslationCondition::Antidiagonal => {
-                            let mut dx: i32 = self.config.dx;
-                            let mut dy: i32 = self.config.dy;
+                            let mut dx: i32 = config.dx;
+                            let mut dy: i32 = config.dy;
 
                             ui.label("dx")
                                 .on_hover_text(Config::get_field_docs("dx").unwrap());
@@ -146,29 +148,29 @@ impl App {
                             ui.add(DragValue::new(&mut dy).speed(0.1));
                             ui.end_row();
 
-                            if self.config.dx != dx {
-                                self.config.dx = dx;
-                                self.config.dy = -dx;
+                            if config.dx != dx {
+                                config.dx = dx;
+                                config.dy = -dx;
                             } else {
-                                self.config.dx = -dy;
-                                self.config.dy = dy;
+                                config.dx = -dy;
+                                config.dy = dy;
                             }
                         }
                     }
 
                     ui.label("diagonal width")
                         .on_hover_text(Config::get_field_docs("diagonal_width").unwrap());
-                    ui.add_enabled_ui(!self.config.requires_no_diagonal_width(), |ui| {
+                    ui.add_enabled_ui(!config.requires_no_diagonal_width(), |ui| {
                         ui.horizontal(|ui| {
-                            let mut checked = self.config.diagonal_width.is_some();
+                            let mut checked = config.diagonal_width.is_some();
                             ui.checkbox(&mut checked, "");
                             let mut dummy = 0;
                             let diagonal_width = if checked {
-                                self.config
+                                config
                                     .diagonal_width
-                                    .get_or_insert(self.config.width.min(self.config.height))
+                                    .get_or_insert(config.width.min(config.height))
                             } else {
-                                self.config.diagonal_width = None;
+                                config.diagonal_width = None;
                                 &mut dummy
                             };
                             ui.add_enabled_ui(checked, |ui| {
@@ -185,11 +187,11 @@ impl App {
                     ui.label("symmetry")
                         .on_hover_text(Config::get_field_docs("symmetry").unwrap());
                     ComboBox::from_id_source("symmetry")
-                        .selected_text(self.config.symmetry.to_string())
+                        .selected_text(config.symmetry.to_string())
                         .show_ui(ui, |ui| {
                             for (i, symmetry) in Symmetry::iter().enumerate() {
                                 ui.selectable_value(
-                                    &mut self.config.symmetry,
+                                    &mut config.symmetry,
                                     symmetry,
                                     symmetry.to_string(),
                                 )
@@ -201,11 +203,11 @@ impl App {
                     ui.label("transformation")
                         .on_hover_text(Config::get_field_docs("transformation").unwrap());
                     ComboBox::from_id_source("transformation")
-                        .selected_text(self.config.transformation.to_string())
+                        .selected_text(config.transformation.to_string())
                         .show_ui(ui, |ui| {
                             for (i, transformation) in Transformation::iter().enumerate() {
                                 ui.selectable_value(
-                                    &mut self.config.transformation,
+                                    &mut config.transformation,
                                     transformation,
                                     transformation.to_string(),
                                 )
@@ -218,16 +220,16 @@ impl App {
                         .on_hover_text(Config::get_field_docs("search_order").unwrap());
                     ComboBox::from_id_source("search_order")
                         .selected_text(
-                            self.config
+                            config
                                 .search_order
                                 .map_or_else(|| "auto".to_owned(), |s| s.to_string()),
                         )
                         .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.config.search_order, None, "auto")
+                            ui.selectable_value(&mut config.search_order, None, "auto")
                                 .on_hover_text("The search order is automatically determined.");
                             for (i, search_order) in SearchOrder::iter().enumerate() {
                                 ui.selectable_value(
-                                    &mut self.config.search_order,
+                                    &mut config.search_order,
                                     Some(search_order),
                                     search_order.to_string(),
                                 )
@@ -239,11 +241,11 @@ impl App {
                     ui.label("new state")
                         .on_hover_text(Config::get_field_docs("new_state").unwrap());
                     ComboBox::from_id_source("new_state")
-                        .selected_text(self.config.new_state.to_string())
+                        .selected_text(config.new_state.to_string())
                         .show_ui(ui, |ui| {
                             for (i, new_state) in NewState::iter().enumerate() {
                                 ui.selectable_value(
-                                    &mut self.config.new_state,
+                                    &mut config.new_state,
                                     new_state,
                                     new_state.to_string(),
                                 )
@@ -255,13 +257,13 @@ impl App {
                     ui.label("seed")
                         .on_hover_text(Config::get_field_docs("seed").unwrap());
                     ui.horizontal(|ui| {
-                        let mut checked = self.config.seed.is_some();
+                        let mut checked = config.seed.is_some();
                         ui.checkbox(&mut checked, "");
                         let mut dummy = 0;
                         let seed = if checked {
-                            self.config.seed.get_or_insert(0)
+                            config.seed.get_or_insert(0)
                         } else {
-                            self.config.seed = None;
+                            config.seed = None;
                             &mut dummy
                         };
                         ui.add_enabled_ui(checked, |ui| {
@@ -273,26 +275,42 @@ impl App {
                     ui.label("max population")
                         .on_hover_text(Config::get_field_docs("max_population").unwrap());
                     ui.horizontal(|ui| {
-                        let mut checked = self.config.max_population.is_some();
+                        let mut checked = config.max_population.is_some();
                         ui.checkbox(&mut checked, "");
                         let mut dummy = 0;
                         let max_population = if checked {
-                            self.config
+                            config
                                 .max_population
-                                .get_or_insert((self.config.width * self.config.height) as usize)
+                                .get_or_insert((config.width * config.height) as usize)
                         } else {
-                            self.config.max_population = None;
+                            config.max_population = None;
                             &mut dummy
                         };
                         ui.add_enabled_ui(checked, |ui| {
-                            ui.add(DragValue::new(max_population).speed(1.0));
+                            ui.add(DragValue::new(max_population).speed(0.1));
                         });
                     });
                     ui.end_row();
 
                     ui.label("reduce max")
                         .on_hover_text(Config::get_field_docs("reduce_max_population").unwrap());
-                    ui.checkbox(&mut self.config.reduce_max_population, "");
+                    ui.checkbox(&mut config.reduce_max_population, "");
+                    ui.end_row();
+
+                    ui.label("increase size")
+                        .on_hover_text(AppConfig::get_field_docs("increase_world_size").unwrap());
+                    ui.checkbox(&mut self.config.increase_world_size, "");
+                    ui.end_row();
+
+                    ui.label("no stop")
+                        .on_hover_text(AppConfig::get_field_docs("no_stop").unwrap());
+                    ui.checkbox(&mut self.config.no_stop, "");
+                    ui.end_row();
+
+                    ui.label("step")
+                        .on_hover_text(AppConfig::get_field_docs("step").unwrap());
+                    ui.add(DragValue::new(&mut self.config.step).speed(1.0));
+                    ui.end_row();
                 });
         });
     }
@@ -331,7 +349,7 @@ impl App {
                     .on_hover_text(Self::get_field_docs("generation").unwrap());
                 ui.add(Slider::new(
                     &mut self.generation,
-                    0..=self.config.period as i32 - 1,
+                    0..=self.config.config.period as i32 - 1,
                 ));
             }
         });
@@ -343,14 +361,26 @@ impl App {
             if let Some(err) = &self.error {
                 ui.label(RichText::new(err.to_string()).color(Color32::RED));
             } else {
-                ui.label(Status::get_field_docs(self.status.to_string()).unwrap())
+                let status = if self.status == Status::Running && self.mode == Mode::Paused {
+                    "Paused."
+                } else {
+                    Status::get_field_docs(self.status.to_string()).unwrap()
+                };
+
+                ui.label(status)
                     .on_hover_text(Self::get_field_docs("status").unwrap());
             }
 
-            if self.mode == Mode::Running || self.mode == Mode::Paused {
+            ui.separator();
+
+            ui.label("Solution count:")
+                .on_hover_text("The number of solutions found so far.");
+            ui.label(self.solutions.len().to_string());
+
+            if self.mode == Mode::Paused {
                 ui.separator();
 
-                ui.label("elapsed")
+                ui.label("Search time:")
                     .on_hover_text(Self::get_field_docs("elapsed").unwrap());
                 ui.label(format!("{:?}", self.elapsed));
             }
@@ -359,8 +389,13 @@ impl App {
 
     /// The main panel.
     pub fn main_panel(&mut self, ui: &mut Ui) {
-        if let Some(view) = &self.view {
-            ScrollArea::both().show(ui, |ui| {
+        let view = match self.mode {
+            Mode::Configuring => self.solutions.last(),
+            _ => self.view.as_ref(),
+        };
+
+        if let Some(view) = view {
+            ScrollArea::both().auto_shrink(false).show(ui, |ui| {
                 ui.add(Label::new(view.clone()).wrap(false));
             });
 

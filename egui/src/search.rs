@@ -1,15 +1,14 @@
+use crate::app::AppConfig;
 use egui::{
     text::{LayoutJob, TextFormat},
     Color32, FontId,
 };
-use factoriosrc_lib::{Config, Status, World};
+use factoriosrc_lib::{Status, World};
 use std::{
     sync::mpsc::{self, Receiver, Sender, TryRecvError},
     thread::JoinHandle,
     time::{Duration, Instant},
 };
-
-const DEFAULT_STEP: usize = 100000;
 
 /// Events that the main thread can send to the search thread.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,6 +41,10 @@ struct Search {
     world: World,
     /// Number of steps between each display of the current partial result.
     step: usize,
+    /// Whether to increase the world size when the search fails.
+    increase_world_size: bool,
+    /// Whether not to stop the search when a solution is found.
+    no_stop: bool,
     /// Whether the search is running.
     running: bool,
     /// Whether the search should quit.
@@ -59,11 +62,13 @@ struct Search {
 }
 
 impl Search {
-    /// Create a new [`Search`] from a [`Config`].
-    fn new(config: Config, rx: Receiver<Event>, tx: Sender<Message>) -> Self {
+    /// Create a new [`Search`] from a [`AppConfig`].
+    fn new(config: AppConfig, rx: Receiver<Event>, tx: Sender<Message>) -> Self {
         Self {
-            world: World::new(config).unwrap(),
-            step: DEFAULT_STEP,
+            world: World::new(config.config).unwrap(),
+            step: config.step,
+            increase_world_size: config.increase_world_size,
+            no_stop: config.no_stop,
             running: false,
             should_quit: false,
             start: None,
@@ -88,6 +93,42 @@ impl Search {
         if self.running {
             self.elapsed += self.start.unwrap().elapsed();
             self.running = false;
+        }
+    }
+
+    /// Increment the world size and restart the search.
+    fn increase_world_size(&mut self) {
+        let mut config = self.world.config().clone();
+        let w = config.width;
+        let h = config.height;
+        let d = config.diagonal_width;
+        if d.is_some_and(|d| d < w) {
+            config.diagonal_width = Some(d.unwrap() + 1);
+        } else if config.requires_square() {
+            config.width = w + 1;
+            config.height = h + 1;
+        } else if h > w {
+            config.width = w + 1;
+        } else {
+            config.height = h + 1;
+        }
+
+        self.world = World::new(config).unwrap();
+    }
+
+    /// Run the search for the given number of steps.
+    fn step(&mut self) {
+        self.status = self.world.search(self.step);
+
+        if self.status == Status::NoSolution && self.increase_world_size {
+            log::debug!("Increasing world size.");
+            self.increase_world_size();
+            self.status = Status::Running;
+        }
+
+        if self.status != Status::Running && !self.no_stop || self.status == Status::NoSolution {
+            log::debug!("Search status: {:?}", self.status);
+            self.pause();
         }
     }
 
@@ -171,16 +212,6 @@ impl Search {
         jobs
     }
 
-    /// Run the search for the given number of steps.
-    fn step(&mut self) {
-        self.status = self.world.search(self.step);
-
-        if self.status != Status::Running {
-            log::debug!("Search status: {:?}", self.status);
-            self.pause();
-        }
-    }
-
     /// Send a [`Message`] to the main thread.
     fn send_message(&self) {
         let view = self.render();
@@ -248,8 +279,8 @@ pub struct SearchThread {
 }
 
 impl SearchThread {
-    /// Create a new [`SearchThread`] from a [`Config`].
-    pub fn new(config: Config) -> Self {
+    /// Create a new [`SearchThread`] from a [`AppConfig`].
+    pub fn new(config: AppConfig) -> Self {
         let (tx, rx) = mpsc::channel();
         let (tx2, rx2) = mpsc::channel();
         let thread = std::thread::spawn(move || {
