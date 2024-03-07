@@ -1,6 +1,6 @@
 use crate::search::{Event, SearchThread};
 use documented::{Documented, DocumentedFields};
-use eframe::{App as EframeApp, Frame};
+use eframe::{glow::Context as GlowContext, App as EframeApp, Frame};
 use egui::{text::LayoutJob, CentralPanel, Context, SidePanel, TopBottomPanel};
 use factoriosrc_lib::{Config, ConfigError, Status};
 use std::time::Duration;
@@ -56,9 +56,11 @@ pub struct App {
     pub search: Option<SearchThread>,
     /// The current generation to display.
     pub generation: i32,
-    /// An egui [`LayoutJob`] to display the current partial result.
-    pub view: Option<LayoutJob>,
-    /// A list of egui [`LayoutJob`]s to display the last found solution.
+    /// The current partial result.
+    pub view: Vec<LayoutJob>,
+    /// Populations of each generation of the current partial result.
+    pub populations: Vec<usize>,
+    /// Found solutions.
     pub solutions: Vec<LayoutJob>,
     /// An error message to display.
     pub error: Option<ConfigError>,
@@ -81,7 +83,8 @@ impl Default for App {
             mode: Mode::Configuring,
             search: None,
             generation: 0,
-            view: None,
+            view: Vec::new(),
+            populations: Vec::new(),
             solutions: Vec::new(),
             error: None,
             status: Status::NotStarted,
@@ -110,10 +113,8 @@ impl EframeApp for App {
 
         self.receive();
     }
-}
 
-impl Drop for App {
-    fn drop(&mut self) {
+    fn on_exit(&mut self, _gl: Option<&GlowContext>) {
         if self.mode == Mode::Running || self.mode == Mode::Paused {
             self.stop();
         }
@@ -129,7 +130,8 @@ impl App {
             self.error = Some(e);
         } else {
             self.error = None;
-            self.view = None;
+            self.view.clear();
+            self.populations.clear();
             self.solutions.clear();
             self.search = Some(SearchThread::new(config));
             self.mode = Mode::Paused;
@@ -164,6 +166,8 @@ impl App {
         }
 
         self.mode = Mode::Configuring;
+        self.status = Status::NotStarted;
+        self.generation = 0;
     }
 
     /// Receive a message from the search thread and update the application state.
@@ -171,15 +175,27 @@ impl App {
         if let Some(search) = &mut self.search {
             if let Some(message) = search.try_recv() {
                 self.status = message.status;
-                self.view = Some(message.view[self.generation as usize].clone());
+                self.view = message.view;
+                self.populations = message.populations;
                 self.elapsed = message.elapsed;
                 if message.status == Status::Solved {
-                    self.solutions.push(self.view.clone().unwrap());
+                    // Choose the generation with the smallest population.
+                    let solution = self
+                        .view
+                        .iter()
+                        .zip(&self.populations)
+                        .min_by_key(|(_, &p)| p)
+                        .unwrap()
+                        .0
+                        .clone();
+
+                    self.solutions.push(solution);
                 }
 
                 if message.running {
                     self.mode = Mode::Running;
                 } else {
+                    log::debug!("Search paused.");
                     self.mode = Mode::Paused;
                 }
             }

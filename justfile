@@ -19,7 +19,7 @@ run *ARGS: build
 
 # Run the GUI (WIP)
 gui: build
-    RUST_LOG=INFO {{gui}}
+    RUST_LOG=factoriosrc_egui=DEBUG {{gui}}
 
 # Run the tests
 test:

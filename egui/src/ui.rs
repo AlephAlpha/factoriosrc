@@ -377,6 +377,14 @@ impl App {
                 .on_hover_text("The number of solutions found so far.");
             ui.label(self.solutions.len().to_string());
 
+            if !self.populations.is_empty() {
+                ui.separator();
+
+                ui.label("Population:")
+                    .on_hover_text("Populations of the current partial result.");
+                ui.label(self.populations[self.generation as usize].to_string());
+            }
+
             if self.mode == Mode::Paused {
                 ui.separator();
 
@@ -389,19 +397,29 @@ impl App {
 
     /// The main panel.
     pub fn main_panel(&mut self, ui: &mut Ui) {
-        let view = match self.mode {
-            Mode::Configuring => self.solutions.last(),
-            _ => self.view.as_ref(),
-        };
+        match self.mode {
+            Mode::Configuring => {
+                for view in self.solutions.iter().rev() {
+                    ScrollArea::both().auto_shrink(false).show(ui, |ui| {
+                        ui.add(Label::new(view.clone()).wrap(false));
+                    });
 
-        if let Some(view) = view {
-            ScrollArea::both().auto_shrink(false).show(ui, |ui| {
-                ui.add(Label::new(view.clone()).wrap(false));
-            });
-
-            if self.mode == Mode::Running {
-                ui.ctx().request_repaint();
+                    if self.mode == Mode::Running {
+                        ui.ctx().request_repaint();
+                    }
+                }
             }
-        }
+            _ => {
+                if !self.view.is_empty() {
+                    ScrollArea::both().auto_shrink(false).show(ui, |ui| {
+                        ui.add(Label::new(self.view[self.generation as usize].clone()).wrap(false));
+                    });
+
+                    if self.mode == Mode::Running {
+                        ui.ctx().request_repaint();
+                    }
+                }
+            }
+        };
     }
 }

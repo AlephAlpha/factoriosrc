@@ -30,8 +30,10 @@ pub struct Message {
     pub running: bool,
     /// Time elapsed since the start of the search.
     pub elapsed: Duration,
-    /// A list of egui [`LayoutJob`]s to display each generation of the world.
+    /// The current partial result.
     pub view: Vec<LayoutJob>,
+    /// Populations of each generation of the current partial result.
+    pub populations: Vec<usize>,
 }
 
 /// The main struct of the search algorithm.
@@ -121,13 +123,13 @@ impl Search {
         self.status = self.world.search(self.step);
 
         if self.status == Status::NoSolution && self.increase_world_size {
-            log::debug!("Increasing world size.");
+            log::info!("Increasing world size.");
             self.increase_world_size();
             self.status = Status::Running;
         }
 
         if self.status != Status::Running && !self.no_stop || self.status == Status::NoSolution {
-            log::debug!("Search status: {:?}", self.status);
+            log::info!("Search status: {:?}", self.status);
             self.pause();
         }
     }
@@ -215,11 +217,15 @@ impl Search {
     /// Send a [`Message`] to the main thread.
     fn send_message(&self) {
         let view = self.render();
+        let populations = (0..self.world.config().period)
+            .map(|t| self.world.population(t as i32))
+            .collect();
         let message = Message {
             status: self.status,
             running: self.running,
             elapsed: self.elapsed,
             view,
+            populations,
         };
         self.tx.send(message).unwrap();
     }
@@ -303,8 +309,11 @@ impl SearchThread {
     }
 
     /// Try to receive a [`Message`] from the search thread without blocking.
+    ///
+    /// If there are more than one messages in the channel, only the last one
+    /// will be returned.
     pub fn try_recv(&self) -> Option<Message> {
-        self.rx.try_recv().ok()
+        self.rx.try_iter().last()
     }
 
     /// Wait for the search thread to finish.
