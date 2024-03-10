@@ -4,6 +4,8 @@ use egui::{
     Color32, FontId,
 };
 use factoriosrc_lib::{Status, World};
+use serde::{Deserialize, Serialize};
+use serde_json::Error as SerdeError;
 use std::{
     sync::mpsc::{self, Receiver, Sender, TryRecvError},
     thread::JoinHandle,
@@ -19,11 +21,23 @@ pub enum Event {
     Pause,
     /// Stop the search and quit the search thread.
     Stop,
+    /// Save the search state to a JSON string.
+    Save,
 }
 
 /// Messages that the search thread can send to the main thread.
 #[derive(Debug, Clone)]
-pub struct Message {
+pub enum Message {
+    /// A frame to display the current partial result.
+    Frame(Frame),
+
+    /// A JSON string to save the search state.
+    Save(String),
+}
+
+/// A frame to display the current partial result.
+#[derive(Debug, Clone)]
+pub struct Frame {
     /// Search status.
     pub status: Status,
     /// Whether the search is running.
@@ -36,8 +50,21 @@ pub struct Message {
     pub populations: Vec<usize>,
 }
 
+impl From<Frame> for Message {
+    fn from(frame: Frame) -> Self {
+        Self::Frame(frame)
+    }
+}
+
+impl Message {
+    /// Whether the message is a frame.
+    pub const fn is_frame(&self) -> bool {
+        matches!(self, Self::Frame(_))
+    }
+}
+
 /// The main struct of the search algorithm.
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 struct Search {
     /// The main struct of the search algorithm.
     world: World,
@@ -48,24 +75,23 @@ struct Search {
     /// Whether not to stop the search when a solution is found.
     no_stop: bool,
     /// Whether the search is running.
+    #[serde(skip)]
     running: bool,
     /// Whether the search should quit.
+    #[serde(skip)]
     should_quit: bool,
     /// Start time of the current search.
+    #[serde(skip)]
     start: Option<Instant>,
     /// Search status.
     status: Status,
     /// Time elapsed since the start of the search.
     elapsed: Duration,
-    /// A channel to receive events from the main thread.
-    rx: Receiver<Event>,
-    /// A channel to send messages to the main thread.
-    tx: Sender<Message>,
 }
 
 impl Search {
     /// Create a new [`Search`] from a [`AppConfig`].
-    fn new(config: AppConfig, rx: Receiver<Event>, tx: Sender<Message>) -> Self {
+    fn new(config: AppConfig) -> Self {
         Self {
             world: World::new(config.config).unwrap(),
             step: config.step,
@@ -76,9 +102,17 @@ impl Search {
             start: None,
             status: Status::NotStarted,
             elapsed: Duration::default(),
-            rx,
-            tx,
         }
+    }
+
+    /// Load the search state from a JSON string.
+    fn load(s: &str) -> Result<Self, SerdeError> {
+        serde_json::from_str(s)
+    }
+
+    /// Save the search state to a JSON string.
+    fn save(&self) -> String {
+        serde_json::to_string(self).unwrap()
     }
 
     /// Start or resume the search.
@@ -214,24 +248,23 @@ impl Search {
         jobs
     }
 
-    /// Send a [`Message`] to the main thread.
-    fn send_message(&self) {
+    /// Create a [`Frame`] to send to the main thread.
+    fn frame(&self) -> Frame {
         let view = self.render();
         let populations = (0..self.world.config().period)
             .map(|t| self.world.population(t as i32))
             .collect();
-        let message = Message {
+        Frame {
             status: self.status,
             running: self.running,
             elapsed: self.elapsed,
             view,
             populations,
-        };
-        self.tx.send(message).unwrap();
+        }
     }
 
-    /// Handle an [`Event`] from the main thread.
-    fn handle_event(&mut self, event: Event) {
+    /// Handle an [`Event`] from the main thread, and return a [`Message`].
+    fn handle_event(&mut self, event: Event) -> Message {
         log::debug!("Received event: {:?}", event);
         match event {
             Event::Start => self.start(),
@@ -240,35 +273,39 @@ impl Search {
                 self.pause();
                 self.should_quit = true;
             }
+            Event::Save => return Message::Save(self.save()),
         }
+        self.frame().into()
     }
 
     /// The main loop of the search thread.
-    fn run(&mut self) {
-        self.send_message();
+    fn run(&mut self, rx: Receiver<Event>, tx: Sender<Message>) {
+        tx.send(self.frame().into()).unwrap();
 
         while !self.should_quit {
             // If the search is running, do not block on the event receiver.
             if self.running {
                 self.step();
-                match self.rx.try_recv() {
+                let message = match rx.try_recv() {
                     Ok(event) => self.handle_event(event),
-                    Err(TryRecvError::Empty) => {}
+                    Err(TryRecvError::Empty) => self.frame().into(),
                     Err(TryRecvError::Disconnected) => {
                         log::error!("The main thread has disconnected.");
                         break;
                     }
-                }
+                };
+
+                tx.send(message).unwrap();
             } else {
-                match self.rx.recv() {
+                let message = match rx.recv() {
                     Ok(event) => self.handle_event(event),
                     Err(_) => {
                         log::error!("The main thread has disconnected.");
                         break;
                     }
-                }
+                };
+                tx.send(message).unwrap();
             }
-            self.send_message();
         }
     }
 }
@@ -291,8 +328,8 @@ impl SearchThread {
         let (tx2, rx2) = mpsc::channel();
         let thread = std::thread::spawn(move || {
             log::info!("Search thread started.");
-            let mut search = Search::new(config, rx, tx2);
-            search.run();
+            let mut search = Search::new(config);
+            search.run(rx, tx2);
             log::info!("Search thread stopped.");
         });
 
@@ -303,6 +340,42 @@ impl SearchThread {
         }
     }
 
+    /// Create a new [`SearchThread`] from a JSON string.
+    ///
+    /// This also returns the [`AppConfig`] so that the main thread can
+    /// update the UI with the new world configuration.
+    pub fn load(s: &str) -> Result<(Self, AppConfig), SerdeError> {
+        // Validate the save file by trying to load it in the main thread.
+        // We need to load it again later in the search thread, because
+        // [`Search`] is not `Send` and cannot be moved between threads.
+        let search = Search::load(s)?;
+        let config = AppConfig {
+            config: search.world.config().clone(),
+            step: search.step,
+            increase_world_size: search.increase_world_size,
+            no_stop: search.no_stop,
+        };
+
+        let (tx, rx) = mpsc::channel();
+        let (tx2, rx2) = mpsc::channel();
+        let s = s.to_string();
+        let thread = std::thread::spawn(move || {
+            log::info!("Search thread started.");
+            let search = Search::load(&s).unwrap();
+            let mut search = search;
+            search.run(rx, tx2);
+            log::info!("Search thread stopped.");
+        });
+
+        let search = Self {
+            thread,
+            tx,
+            rx: rx2,
+        };
+
+        Ok((search, config))
+    }
+
     /// Send an [`Event`] to the search thread.
     pub fn send(&self, event: Event) {
         self.tx.send(event).unwrap();
@@ -310,10 +383,19 @@ impl SearchThread {
 
     /// Try to receive a [`Message`] from the search thread without blocking.
     ///
-    /// If there are more than one messages in the channel, only the last one
-    /// will be returned.
+    /// If there are more than one messages in the channel, it will return the
+    /// first one that is not a frame, or the last one if all of them are frames.
+    ///
+    /// If the channel is empty, it will return `None`.
     pub fn try_recv(&self) -> Option<Message> {
-        self.rx.try_iter().last()
+        let mut message = None;
+        for m in self.rx.try_iter() {
+            if !m.is_frame() {
+                return Some(m);
+            }
+            message = Some(m);
+        }
+        message
     }
 
     /// Wait for the search thread to finish.

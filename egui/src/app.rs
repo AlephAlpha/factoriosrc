@@ -1,12 +1,16 @@
-use crate::search::{Event, SearchThread};
+use crate::search::{Event, Message, SearchThread};
 use documented::{Documented, DocumentedFields};
 use eframe::{glow::Context as GlowContext, App as EframeApp, Frame};
 use egui::{text::LayoutJob, CentralPanel, Context, SidePanel, TopBottomPanel};
-use factoriosrc_lib::{Config, ConfigError, Status};
-use std::time::Duration;
+use factoriosrc_lib::{Config, Status};
+use serde::{Deserialize, Serialize};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 /// Configuration of the application.
-#[derive(Debug, Clone, PartialEq, Eq, Documented, DocumentedFields)]
+#[derive(Debug, Clone, PartialEq, Eq, Documented, DocumentedFields, Serialize, Deserialize)]
 pub struct AppConfig {
     /// The configuration of the search.
     pub config: Config,
@@ -63,11 +67,13 @@ pub struct App {
     /// Found solutions.
     pub solutions: Vec<LayoutJob>,
     /// An error message to display.
-    pub error: Option<ConfigError>,
+    pub error: Option<String>,
     /// Search status.
     pub status: Status,
     /// Time elapsed since the start of the search.
     pub elapsed: Duration,
+    /// A path to save the search state.
+    pub save: Option<PathBuf>,
 }
 
 impl Default for App {
@@ -89,6 +95,7 @@ impl Default for App {
             error: None,
             status: Status::NotStarted,
             elapsed: Duration::default(),
+            save: None,
         }
     }
 }
@@ -127,7 +134,7 @@ impl App {
         assert!(self.mode == Mode::Configuring);
         let mut config = self.config.clone();
         if let Err(e) = config.config.check() {
-            self.error = Some(e);
+            self.error = Some(e.to_string());
         } else {
             self.error = None;
             self.view.clear();
@@ -135,6 +142,27 @@ impl App {
             self.solutions.clear();
             self.search = Some(SearchThread::new(config));
             self.mode = Mode::Paused;
+        }
+    }
+
+    /// Create a new search thread from a file.
+    pub fn load_search(&mut self, path: impl AsRef<Path>) {
+        assert!(self.mode == Mode::Configuring);
+
+        if let Ok(string) = std::fs::read_to_string(path) {
+            if let Ok((search, config)) = SearchThread::load(&string) {
+                self.config = config;
+                self.error = None;
+                self.view.clear();
+                self.populations.clear();
+                self.solutions.clear();
+                self.search = Some(search);
+                self.mode = Mode::Paused;
+            } else {
+                self.error = Some("Failed to load the search state.".to_string());
+            }
+        } else {
+            self.error = Some("Failed to open the save file.".to_string());
         }
     }
 
@@ -170,33 +198,56 @@ impl App {
         self.generation = 0;
     }
 
+    /// Send an event to the search thread to save the current state.
+    pub fn save(&mut self) {
+        assert!(self.mode == Mode::Running || self.mode == Mode::Paused);
+
+        if let Some(search) = &mut self.search {
+            search.send(Event::Save);
+        }
+    }
+
     /// Receive a message from the search thread and update the application state.
     pub fn receive(&mut self) {
         if let Some(search) = &mut self.search {
             if let Some(message) = search.try_recv() {
-                self.status = message.status;
-                self.view = message.view;
-                self.populations = message.populations;
-                self.elapsed = message.elapsed;
-                if message.status == Status::Solved {
-                    // Choose the generation with the smallest population.
-                    let solution = self
-                        .view
-                        .iter()
-                        .zip(&self.populations)
-                        .min_by_key(|(_, &p)| p)
-                        .unwrap()
-                        .0
-                        .clone();
+                match message {
+                    Message::Frame(frame) => {
+                        self.status = frame.status;
+                        self.view = frame.view;
+                        self.populations = frame.populations;
+                        self.elapsed = frame.elapsed;
+                        if frame.status == Status::Solved {
+                            // Choose the generation with the smallest population.
+                            let solution = self
+                                .view
+                                .iter()
+                                .zip(&self.populations)
+                                .min_by_key(|(_, &p)| p)
+                                .unwrap()
+                                .0
+                                .clone();
 
-                    self.solutions.push(solution);
-                }
+                            self.solutions.push(solution);
+                        }
 
-                if message.running {
-                    self.mode = Mode::Running;
-                } else {
-                    log::debug!("Search paused.");
-                    self.mode = Mode::Paused;
+                        if frame.running {
+                            self.mode = Mode::Running;
+                        } else {
+                            log::debug!("Search paused.");
+                            self.mode = Mode::Paused;
+                        }
+                    }
+                    Message::Save(string) => {
+                        if let Some(path) = &self.save.take() {
+                            if let Err(e) = std::fs::write(path, string) {
+                                log::error!("Failed to save the search state: {e}");
+                                self.error = Some("Failed to save the search state.".to_string());
+                            } else {
+                                log::info!("Search state saved to {}", path.display());
+                            }
+                        }
+                    }
                 }
             }
         }

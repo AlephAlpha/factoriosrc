@@ -96,7 +96,7 @@ impl App {
     pub fn load(args: LoadArgs) -> Result<Self> {
         let path = args.load;
         let json = std::fs::read_to_string(path)?;
-        let mut app: App = serde_json::from_str(&json)?;
+        let mut app: Self = serde_json::from_str(&json)?;
         app.save = args.save;
         Ok(app)
     }

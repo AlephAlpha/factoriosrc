@@ -42,7 +42,7 @@ Resume the search from the saved state, and save it again when exiting:
 cargo run --bin factoriosrc-tui --release -- load save.json
 ```
 
-The program is still work in progress, so the usage may change in the future.
+The program is still work in progress, so the usage may change, and the format of the save file may be incompatible between different versions.
 
 ### GUI
 
@@ -77,7 +77,7 @@ Features that rlifesrc has but factoriosrc doesn't:
 - [ ] Custom search order.
 - [x] Save and load the search state.
 - [x] GUI.
-  - [ ] Save and load the search state in the GUI.
+  - [x] Save and load the search state in the GUI.
 - [ ] Web UI.
   - [ ] Port the GUI to the web. I'm using the [egui](https://github.com/emilk/egui) library, which has a web backend. I still need to figure out how to port the multi-threaded part, maybe using WebWorkers.
   - [ ] Better support for mobile devices.

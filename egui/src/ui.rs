@@ -4,6 +4,7 @@ use egui::{Color32, ComboBox, DragValue, Grid, Label, RichText, ScrollArea, Slid
 use factoriosrc_lib::{
     Config, NewState, SearchOrder, Status, Symmetry, Transformation, TranslationCondition,
 };
+use rfd::FileDialog;
 
 impl App {
     /// The configuration panel.
@@ -322,6 +323,12 @@ impl App {
                 if ui.button("New").clicked() {
                     self.new_search();
                 }
+
+                if ui.button("Load").clicked() {
+                    if let Some(path) = FileDialog::new().pick_file() {
+                        self.load_search(&path);
+                    }
+                }
             } else {
                 ui.add_enabled_ui(self.mode == Mode::Paused, |ui| {
                     let text = match self.status {
@@ -334,14 +341,26 @@ impl App {
                         self.start();
                     }
                 });
+
                 ui.add_enabled_ui(self.mode == Mode::Running, |ui| {
                     if ui.button("Pause").clicked() {
                         self.pause();
                     }
                 });
+
                 if ui.button("Stop").clicked() {
                     self.stop();
                 }
+
+                ui.add_enabled_ui(self.mode == Mode::Paused, |ui| {
+                    if ui.button("Save").clicked() {
+                        if let Some(path) = FileDialog::new().set_file_name("save.json").save_file()
+                        {
+                            self.save = Some(path);
+                            self.save();
+                        }
+                    }
+                });
 
                 ui.separator();
 
@@ -399,15 +418,11 @@ impl App {
     pub fn main_panel(&mut self, ui: &mut Ui) {
         match self.mode {
             Mode::Configuring => {
-                for view in self.solutions.iter().rev() {
-                    ScrollArea::both().auto_shrink(false).show(ui, |ui| {
+                ScrollArea::both().auto_shrink(false).show(ui, |ui| {
+                    for view in self.solutions.iter().rev() {
                         ui.add(Label::new(view.clone()).wrap(false));
-                    });
-
-                    if self.mode == Mode::Running {
-                        ui.ctx().request_repaint();
                     }
-                }
+                });
             }
             _ => {
                 if !self.view.is_empty() {
