@@ -207,48 +207,53 @@ impl App {
         }
     }
 
-    /// Receive a message from the search thread and update the application state.
+    /// Handle a message from the search thread and update the application state.
+    pub fn handle(&mut self, message: Message) {
+        match message {
+            Message::Frame(frame) => {
+                self.status = frame.status;
+                self.view = frame.view;
+                self.populations = frame.populations;
+                self.elapsed = frame.elapsed;
+                if frame.status == Status::Solved {
+                    // Choose the generation with the smallest population.
+                    let solution = self
+                        .view
+                        .iter()
+                        .zip(&self.populations)
+                        .min_by_key(|(_, &p)| p)
+                        .unwrap()
+                        .0
+                        .clone();
+
+                    self.solutions.push(solution);
+                }
+
+                if frame.running {
+                    self.mode = Mode::Running;
+                } else {
+                    log::debug!("Search paused.");
+                    self.mode = Mode::Paused;
+                }
+            }
+            Message::Save(string) => {
+                if let Some(path) = &self.save.take() {
+                    if let Err(e) = std::fs::write(path, string) {
+                        log::error!("Failed to save the search state: {e}");
+                        self.error = Some("Failed to save the search state.".to_string());
+                    } else {
+                        log::info!("Search state saved to {}", path.display());
+                    }
+                }
+            }
+        }
+    }
+
+    /// Receive and handle a message from the search thread.
     pub fn receive(&mut self) {
         if let Some(search) = &mut self.search {
             if let Some(message) = search.try_recv() {
-                match message {
-                    Message::Frame(frame) => {
-                        self.status = frame.status;
-                        self.view = frame.view;
-                        self.populations = frame.populations;
-                        self.elapsed = frame.elapsed;
-                        if frame.status == Status::Solved {
-                            // Choose the generation with the smallest population.
-                            let solution = self
-                                .view
-                                .iter()
-                                .zip(&self.populations)
-                                .min_by_key(|(_, &p)| p)
-                                .unwrap()
-                                .0
-                                .clone();
-
-                            self.solutions.push(solution);
-                        }
-
-                        if frame.running {
-                            self.mode = Mode::Running;
-                        } else {
-                            log::debug!("Search paused.");
-                            self.mode = Mode::Paused;
-                        }
-                    }
-                    Message::Save(string) => {
-                        if let Some(path) = &self.save.take() {
-                            if let Err(e) = std::fs::write(path, string) {
-                                log::error!("Failed to save the search state: {e}");
-                                self.error = Some("Failed to save the search state.".to_string());
-                            } else {
-                                log::info!("Search state saved to {}", path.display());
-                            }
-                        }
-                    }
-                }
+                self.handle(message);
             }
         }
     }

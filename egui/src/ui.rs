@@ -320,12 +320,21 @@ impl App {
     pub fn control_panel(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
             if self.mode == Mode::Configuring {
-                if ui.button("New").clicked() {
+                if ui
+                    .button("New")
+                    .on_hover_text("Start a new search with the current configuration.")
+                    .clicked()
+                {
                     self.new_search();
                 }
 
-                if ui.button("Load").clicked() {
+                if ui
+                    .button("Load")
+                    .on_hover_text("Load a search from a save file.")
+                    .clicked()
+                {
                     if let Some(path) = FileDialog::new().pick_file() {
+                        log::info!("Loading search from {:?}", path);
                         self.load_search(&path);
                     }
                 }
@@ -337,25 +346,48 @@ impl App {
                         _ => "Next",
                     };
 
-                    if ui.button(text).clicked() {
+                    let hover_text = match self.status {
+                        Status::NotStarted => "Start the search.",
+                        Status::Running => "Resume the search.",
+                        _ => "Find the next solution.",
+                    };
+
+                    if ui.button(text).on_hover_text(hover_text).clicked() {
                         self.start();
                     }
                 });
 
                 ui.add_enabled_ui(self.mode == Mode::Running, |ui| {
-                    if ui.button("Pause").clicked() {
+                    if ui
+                        .button("Pause")
+                        .on_hover_text("Pause the search.")
+                        .clicked()
+                    {
                         self.pause();
                     }
                 });
 
-                if ui.button("Stop").clicked() {
+                if ui
+                    .button("Stop")
+                    .on_hover_text(
+                        "Stop the search and reset the application to the configuring mode.\n\
+                        This will discard the current search and any partial results.\
+                        Please save the search before stopping if you want to keep it.",
+                    )
+                    .clicked()
+                {
                     self.stop();
                 }
 
                 ui.add_enabled_ui(self.mode == Mode::Paused, |ui| {
-                    if ui.button("Save").clicked() {
+                    if ui
+                        .button("Save")
+                        .on_hover_text("Save the current search state to a file.")
+                        .clicked()
+                    {
                         if let Some(path) = FileDialog::new().set_file_name("save.json").save_file()
                         {
+                            log::info!("Saving search to {:?}", path);
                             self.save = Some(path);
                             self.save();
                         }
