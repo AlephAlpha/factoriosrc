@@ -4,6 +4,7 @@ use egui::{Color32, ComboBox, DragValue, Grid, Label, RichText, ScrollArea, Slid
 use factoriosrc_lib::{
     Config, NewState, SearchOrder, Status, Symmetry, Transformation, TranslationCondition,
 };
+#[cfg(feature = "save")]
 use rfd::FileDialog;
 
 impl App {
@@ -149,12 +150,12 @@ impl App {
                             ui.add(DragValue::new(&mut dy).speed(0.1));
                             ui.end_row();
 
-                            if config.dx != dx {
-                                config.dx = dx;
-                                config.dy = -dx;
-                            } else {
+                            if config.dx == dx {
                                 config.dx = -dy;
                                 config.dy = dy;
+                            } else {
+                                config.dx = dx;
+                                config.dy = -dx;
                             }
                         }
                     }
@@ -328,6 +329,7 @@ impl App {
                     self.new_search();
                 }
 
+                #[cfg(feature = "save")]
                 if ui
                     .button("Load")
                     .on_hover_text("Load a search from a save file.")
@@ -379,6 +381,7 @@ impl App {
                     self.stop();
                 }
 
+                #[cfg(feature = "save")]
                 ui.add_enabled_ui(self.mode == Mode::Paused, |ui| {
                     if ui
                         .button("Save")

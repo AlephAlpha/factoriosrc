@@ -4,7 +4,9 @@ use egui::{
     Color32, FontId,
 };
 use factoriosrc_lib::{Status, World};
+#[cfg(feature = "save")]
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "save")]
 use serde_json::Error as SerdeError;
 use std::{
     sync::mpsc::{self, Receiver, Sender, TryRecvError},
@@ -22,6 +24,7 @@ pub enum Event {
     /// Stop the search and quit the search thread.
     Stop,
     /// Save the search state to a JSON string.
+    #[cfg(feature = "save")]
     Save,
 }
 
@@ -32,6 +35,7 @@ pub enum Message {
     Frame(Frame),
 
     /// A JSON string to save the search state.
+    #[cfg(feature = "save")]
     Save(String),
 }
 
@@ -64,7 +68,8 @@ impl Message {
 }
 
 /// The main struct of the search algorithm.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug)]
+#[cfg_attr(feature = "save", derive(Serialize, Deserialize))]
 struct Search {
     /// The main struct of the search algorithm.
     world: World,
@@ -75,13 +80,13 @@ struct Search {
     /// Whether not to stop the search when a solution is found.
     no_stop: bool,
     /// Whether the search is running.
-    #[serde(skip)]
+    #[cfg_attr(feature = "save", serde(skip))]
     running: bool,
     /// Whether the search should quit.
-    #[serde(skip)]
+    #[cfg_attr(feature = "save", serde(skip))]
     should_quit: bool,
     /// Start time of the current search.
-    #[serde(skip)]
+    #[cfg_attr(feature = "save", serde(skip))]
     start: Option<Instant>,
     /// Search status.
     status: Status,
@@ -106,11 +111,13 @@ impl Search {
     }
 
     /// Load the search state from a JSON string.
+    #[cfg(feature = "save")]
     fn load(s: &str) -> Result<Self, SerdeError> {
         serde_json::from_str(s)
     }
 
     /// Save the search state to a JSON string.
+    #[cfg(feature = "save")]
     fn save(&self) -> String {
         serde_json::to_string(self).unwrap()
     }
@@ -132,33 +139,13 @@ impl Search {
         }
     }
 
-    /// Increment the world size and restart the search.
-    fn increase_world_size(&mut self) {
-        let mut config = self.world.config().clone();
-        let w = config.width;
-        let h = config.height;
-        let d = config.diagonal_width;
-        if d.is_some_and(|d| d < w) {
-            config.diagonal_width = Some(d.unwrap() + 1);
-        } else if config.requires_square() {
-            config.width = w + 1;
-            config.height = h + 1;
-        } else if h > w {
-            config.width = w + 1;
-        } else {
-            config.height = h + 1;
-        }
-
-        self.world = World::new(config).unwrap();
-    }
-
     /// Run the search for the given number of steps.
     fn step(&mut self) {
         self.status = self.world.search(self.step);
 
         if self.status == Status::NoSolution && self.increase_world_size {
             log::info!("Increasing world size.");
-            self.increase_world_size();
+            self.world.increase_world_size();
             self.status = Status::Running;
         }
 
@@ -239,7 +226,7 @@ impl Search {
                         font_id: FontId::monospace(14.0),
                         ..Default::default()
                     },
-                )
+                );
             }
 
             jobs.push(job);
@@ -273,6 +260,7 @@ impl Search {
                 self.pause();
                 self.should_quit = true;
             }
+            #[cfg(feature = "save")]
             Event::Save => return Message::Save(self.save()),
         }
         self.frame().into()
@@ -297,12 +285,11 @@ impl Search {
 
                 tx.send(message).unwrap();
             } else {
-                let message = match rx.recv() {
-                    Ok(event) => self.handle_event(event),
-                    Err(_) => {
-                        log::error!("The main thread has disconnected.");
-                        break;
-                    }
+                let message = if let Ok(event) = rx.recv() {
+                    self.handle_event(event)
+                } else {
+                    log::error!("The main thread has disconnected.");
+                    break;
                 };
                 tx.send(message).unwrap();
             }
@@ -344,6 +331,7 @@ impl SearchThread {
     ///
     /// This also returns the [`AppConfig`] so that the main thread can
     /// update the UI with the new world configuration.
+    #[cfg(feature = "save")]
     pub fn load(s: &str) -> Result<(Self, AppConfig), SerdeError> {
         // Validate the save file by trying to load it in the main thread.
         // We need to load it again later in the search thread, because

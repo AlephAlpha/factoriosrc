@@ -3,14 +3,15 @@ use documented::{Documented, DocumentedFields};
 use eframe::{glow::Context as GlowContext, App as EframeApp, Frame};
 use egui::{text::LayoutJob, CentralPanel, Context, SidePanel, TopBottomPanel};
 use factoriosrc_lib::{Config, Status};
+#[cfg(feature = "save")]
 use serde::{Deserialize, Serialize};
-use std::{
-    path::{Path, PathBuf},
-    time::Duration,
-};
+#[cfg(feature = "save")]
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// Configuration of the application.
-#[derive(Debug, Clone, PartialEq, Eq, Documented, DocumentedFields, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Documented, DocumentedFields)]
+#[cfg_attr(feature = "save", derive(Serialize, Deserialize))]
 pub struct AppConfig {
     /// The configuration of the search.
     pub config: Config,
@@ -73,6 +74,7 @@ pub struct App {
     /// Time elapsed since the start of the search.
     pub elapsed: Duration,
     /// A path to save the search state.
+    #[cfg(feature = "save")]
     pub save: Option<PathBuf>,
 }
 
@@ -95,6 +97,7 @@ impl Default for App {
             error: None,
             status: Status::NotStarted,
             elapsed: Duration::default(),
+            #[cfg(feature = "save")]
             save: None,
         }
     }
@@ -146,6 +149,7 @@ impl App {
     }
 
     /// Create a new search thread from a file.
+    #[cfg(feature = "save")]
     pub fn load_search(&mut self, path: impl AsRef<Path>) {
         assert!(self.mode == Mode::Configuring);
 
@@ -199,6 +203,7 @@ impl App {
     }
 
     /// Send an event to the search thread to save the current state.
+    #[cfg(feature = "save")]
     pub fn save(&mut self) {
         assert!(self.mode == Mode::Running || self.mode == Mode::Paused);
 
@@ -236,6 +241,7 @@ impl App {
                     self.mode = Mode::Paused;
                 }
             }
+            #[cfg(feature = "save")]
             Message::Save(string) => {
                 if let Some(path) = &self.save.take() {
                     if let Err(e) = std::fs::write(path, string) {

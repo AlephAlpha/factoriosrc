@@ -151,7 +151,7 @@ impl World {
         let mut config = config;
         config.check()?;
 
-        let rule = RuleTable::new(config.parse_rule()?)?;
+        let rule = RuleTable::new(&config.parse_rule()?)?;
         let max_population = config.max_population;
 
         let (w, h, p) = (
@@ -443,7 +443,7 @@ impl World {
 
                     let symmetry_cells = symmetry_coords
                         .into_iter()
-                        .map(|coord| self.get_cell_by_coord_ptr(coord) as *const LifeCell)
+                        .map(|coord| self.get_cell_by_coord_ptr(coord).cast_const())
                         .filter(|&cell| !cell.is_null())
                         .collect();
 
@@ -575,7 +575,7 @@ impl World {
         if (-r..w + r).contains(&x) && (-r..h + r).contains(&y) && (0..p).contains(&t) {
             let index = t + (x + r) * p + (y + r) * p * (w + 2 * r);
             debug_assert!(index >= 0 && index < self.size as i32);
-            unsafe { (self.cells_ptr as *mut LifeCell).offset(index as isize) }
+            unsafe { (self.cells_ptr.cast::<LifeCell>()).offset(index as isize) }
         } else {
             std::ptr::null_mut()
         }
@@ -717,7 +717,7 @@ impl World {
     #[inline]
     pub fn get_cell_state(&self, coord: Coord) -> Option<CellState> {
         self.get_cell_by_coord(self.canonicalize_coord(coord))
-            .map_or(Some(CellState::Dead), |cell| cell.state())
+            .map_or(Some(CellState::Dead), LifeCell::state)
     }
 
     /// Get the search status.
@@ -856,6 +856,36 @@ impl World {
         } else {
             header + &body
         }
+    }
+
+    /// Increment the world size.
+    ///
+    /// If the diagonal width exists and is smaller than the width, it will be increased by 1.
+    /// Otherwise, if the height is greater than the width, the width will increased by 1.
+    /// Otherwise, the height will increased by 1.
+    ///
+    /// If the configuration requires a square world, both the width and the height will be
+    /// increased by 1.
+    ///
+    /// The world will be replaced by a new world with the new size. The current search status
+    /// will be lost.
+    pub fn increase_world_size(&mut self) {
+        let mut config = self.config.clone();
+        let w = config.width;
+        let h = config.height;
+        let d = config.diagonal_width;
+        if d.is_some_and(|d| d < w) {
+            config.diagonal_width = Some(d.unwrap() + 1);
+        } else if config.requires_square() {
+            config.width = w + 1;
+            config.height = h + 1;
+        } else if h > w {
+            config.width = w + 1;
+        } else {
+            config.height = h + 1;
+        }
+
+        *self = Self::new(config).unwrap();
     }
 }
 

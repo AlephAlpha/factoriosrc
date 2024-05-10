@@ -99,17 +99,17 @@ impl Descriptor {
     const BITS: usize = Self::DEAD_SHIFT + Self::NEIGHBOR_COUNT_BITS;
 
     /// Get the number of dead neighbors.
-    const fn dead(&self) -> u16 {
+    const fn dead(self) -> u16 {
         (self.0 >> Self::DEAD_SHIFT) & Self::NEIGHBOR_COUNT_MASK
     }
 
     /// Get the number of living neighbors.
-    const fn alive(&self) -> u16 {
+    const fn alive(self) -> u16 {
         (self.0 >> Self::ALIVE_SHIFT) & Self::NEIGHBOR_COUNT_MASK
     }
 
     /// Get the state of the successor cell.
-    const fn successor(&self) -> Option<CellState> {
+    const fn successor(self) -> Option<CellState> {
         match (self.0 >> Self::SUCCESSOR_SHIFT) & Self::STATE_MASK {
             0b00 => None,
             0b01 => Some(CellState::Dead),
@@ -119,7 +119,7 @@ impl Descriptor {
     }
 
     /// Get the state of the current cell.
-    const fn current(&self) -> Option<CellState> {
+    const fn current(self) -> Option<CellState> {
         match (self.0 >> Self::CURRENT_SHIFT) & Self::STATE_MASK {
             0b00 => None,
             0b01 => Some(CellState::Dead),
@@ -254,7 +254,7 @@ impl Debug for RuleTable {
 
 impl RuleTable {
     /// Create and initialize a rule table from a [`Rule`].
-    pub fn new(rule: Rule) -> Result<Self, ConfigError> {
+    pub fn new(rule: &Rule) -> Result<Self, ConfigError> {
         if rule.contains_b0() {
             return Err(ConfigError::UnsupportedRule);
         }

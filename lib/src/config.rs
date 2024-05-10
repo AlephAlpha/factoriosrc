@@ -287,6 +287,7 @@ impl Config {
     ///
     /// See [`dx`](Config::dx) and [`dy`](Config::dy) for more details.
     #[inline]
+    #[must_use]
     pub const fn with_translations(mut self, dx: i32, dy: i32) -> Self {
         self.dx = dx;
         self.dy = dy;
@@ -297,6 +298,7 @@ impl Config {
     ///
     /// See [`diagonal_width`](Config::diagonal_width) for more details.
     #[inline]
+    #[must_use]
     pub const fn with_diagonal_width(mut self, diagonal_width: u32) -> Self {
         self.diagonal_width = Some(diagonal_width);
         self
@@ -306,6 +308,7 @@ impl Config {
     ///
     /// See [`symmetry`](Config::symmetry) for more details.
     #[inline]
+    #[must_use]
     pub const fn with_symmetry(mut self, symmetry: Symmetry) -> Self {
         self.symmetry = symmetry;
         self
@@ -315,6 +318,7 @@ impl Config {
     ///
     /// See [`transformation`](Config::transformation) for more details.
     #[inline]
+    #[must_use]
     pub const fn with_transformation(mut self, transformation: Transformation) -> Self {
         self.transformation = transformation;
         self
@@ -324,6 +328,7 @@ impl Config {
     ///
     /// See [`search_order`](Config::search_order) for more details.
     #[inline]
+    #[must_use]
     pub const fn with_search_order(mut self, search_order: SearchOrder) -> Self {
         self.search_order = Some(search_order);
         self
@@ -333,6 +338,7 @@ impl Config {
     ///
     /// See [`new_state`](Config::new_state) for more details.
     #[inline]
+    #[must_use]
     pub const fn with_new_state(mut self, new_state: NewState) -> Self {
         self.new_state = new_state;
         self
@@ -342,6 +348,7 @@ impl Config {
     ///
     /// See [`seed`](Config::seed) for more details.
     #[inline]
+    #[must_use]
     pub const fn with_seed(mut self, seed: u64) -> Self {
         self.seed = Some(seed);
         self
@@ -351,6 +358,7 @@ impl Config {
     ///
     /// See [`max_population`](Config::max_population) for more details.
     #[inline]
+    #[must_use]
     pub const fn with_max_population(mut self, max_population: usize) -> Self {
         self.max_population = Some(max_population);
         self
@@ -360,6 +368,7 @@ impl Config {
     ///
     /// See [`reduce_max_population`](Config::reduce_max_population) for more details.
     #[inline]
+    #[must_use]
     pub const fn with_reduce_max_population(mut self) -> Self {
         self.reduce_max_population = true;
         self

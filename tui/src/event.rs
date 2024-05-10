@@ -1,8 +1,8 @@
 use color_eyre::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use std::{
-    sync::mpsc::{self, Receiver, Sender, TryRecvError},
-    thread::{self, JoinHandle},
+    sync::mpsc::{self, Receiver, TryRecvError},
+    thread,
 };
 
 /// Terminal events.
@@ -17,35 +17,32 @@ pub enum TermEvent {
 /// Terminal events handler.
 #[derive(Debug)]
 pub struct EventHandler {
-    /// Channel to send events to the main thread.
-    _tx: Sender<TermEvent>,
     /// Channel to receive events from the event thread.
     rx: Receiver<TermEvent>,
-    /// The event thread.
-    _thread: JoinHandle<Result<()>>,
 }
 
 impl EventHandler {
     /// Create a new [`EventHandler`].
     pub fn new() -> Self {
         let (tx, rx) = mpsc::channel();
-        let _tx: Sender<TermEvent> = tx.clone();
-        let _thread = thread::spawn(move || loop {
-            match event::read()? {
-                Event::Key(e) => {
-                    // Send the event only if it is a key press.
-                    if e.kind == KeyEventKind::Press {
-                        tx.send(TermEvent::KeyPress(e.code))?;
+        thread::spawn(move || -> Result<()> {
+            loop {
+                match event::read()? {
+                    Event::Key(e) => {
+                        // Send the event only if it is a key press.
+                        if e.kind == KeyEventKind::Press {
+                            tx.send(TermEvent::KeyPress(e.code))?;
+                        }
                     }
+                    Event::Resize(_, _) => {
+                        tx.send(TermEvent::Resize)?;
+                    }
+                    _ => {}
                 }
-                Event::Resize(_, _) => {
-                    tx.send(TermEvent::Resize)?;
-                }
-                _ => {}
             }
         });
 
-        Self { _tx, rx, _thread }
+        Self { rx }
     }
 
     /// Receive an event.

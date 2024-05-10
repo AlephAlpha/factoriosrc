@@ -180,12 +180,14 @@ impl Transformation {
 
     /// The inverse of the transformation.
     #[inline]
+    #[must_use]
     pub const fn inverse(self) -> Self {
         D8::from(self).inverse().into()
     }
 
     /// The composition of two transformations.
     #[inline]
+    #[must_use]
     pub const fn compose(self, other: Self) -> Self {
         D8::from(self).compose(D8::from(other)).into()
     }
@@ -386,15 +388,11 @@ impl Symmetry {
     pub const fn translation_condition(self) -> TranslationCondition {
         match self {
             Self::C1 => TranslationCondition::Any,
-            Self::C2 => TranslationCondition::NoTranslation,
-            Self::C4 => TranslationCondition::NoTranslation,
             Self::D2H => TranslationCondition::NoHorizontal,
             Self::D2V => TranslationCondition::NoVertical,
             Self::D2D => TranslationCondition::Diagonal,
             Self::D2A => TranslationCondition::Antidiagonal,
-            Self::D4O => TranslationCondition::NoTranslation,
-            Self::D4X => TranslationCondition::NoTranslation,
-            Self::D8 => TranslationCondition::NoTranslation,
+            _ => TranslationCondition::NoTranslation,
         }
     }
 

@@ -197,9 +197,8 @@ impl World {
                     self.set_cell(cell, state, Reason::Guessed);
                     self.start = cell.next;
                     return Some(());
-                } else {
-                    self.start = cell.next;
                 }
+                self.start = cell.next;
             }
         }
 
