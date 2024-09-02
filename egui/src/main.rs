@@ -9,6 +9,6 @@ fn main() -> Result<()> {
     eframe::run_native(
         "factoriosrc",
         NativeOptions::default(),
-        Box::new(|_cc| Box::<App>::default()),
+        Box::new(|_cc| Ok(Box::<App>::default())),
     )
 }

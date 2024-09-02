@@ -41,20 +41,12 @@ impl App {
 
                         ui.label("width")
                             .on_hover_text(Config::get_field_docs("width").unwrap());
-                        ui.add(
-                            DragValue::new(&mut size)
-                                .speed(0.1)
-                                .clamp_range(1..=u16::MAX),
-                        );
+                        ui.add(DragValue::new(&mut size).speed(0.1).range(1..=u16::MAX));
                         ui.end_row();
 
                         ui.label("height")
                             .on_hover_text(Config::get_field_docs("height").unwrap());
-                        ui.add(
-                            DragValue::new(&mut size)
-                                .speed(0.1)
-                                .clamp_range(1..=u16::MAX),
-                        );
+                        ui.add(DragValue::new(&mut size).speed(0.1).range(1..=u16::MAX));
                         ui.end_row();
 
                         config.width = size;
@@ -65,7 +57,7 @@ impl App {
                         ui.add(
                             DragValue::new(&mut config.width)
                                 .speed(0.1)
-                                .clamp_range(1..=u16::MAX),
+                                .range(1..=u16::MAX),
                         );
                         ui.end_row();
 
@@ -74,7 +66,7 @@ impl App {
                         ui.add(
                             DragValue::new(&mut config.height)
                                 .speed(0.1)
-                                .clamp_range(1..=u16::MAX),
+                                .range(1..=u16::MAX),
                         );
                         ui.end_row();
                     }
@@ -84,7 +76,7 @@ impl App {
                     ui.add(
                         DragValue::new(&mut config.period)
                             .speed(0.1)
-                            .clamp_range(1..=u16::MAX),
+                            .range(1..=u16::MAX),
                     );
                     ui.end_row();
 
@@ -103,7 +95,7 @@ impl App {
                                 ),
                                 DragValue::new(&mut config.dx)
                                     .speed(0.1)
-                                    .clamp_range(i16::MIN..=i16::MAX),
+                                    .range(i16::MIN..=i16::MAX),
                             );
                             ui.end_row();
 
@@ -116,7 +108,7 @@ impl App {
                                 ),
                                 DragValue::new(&mut config.dy)
                                     .speed(0.1)
-                                    .clamp_range(i16::MIN..=i16::MAX),
+                                    .range(i16::MIN..=i16::MAX),
                             );
                             ui.end_row();
                         }
@@ -177,9 +169,11 @@ impl App {
                             };
                             ui.add_enabled_ui(checked, |ui| {
                                 ui.add(
-                                    DragValue::new(diagonal_width)
-                                        .speed(0.1)
-                                        .clamp_range(if checked { 1..=u16::MAX } else { 0..=0 }),
+                                    DragValue::new(diagonal_width).speed(0.1).range(if checked {
+                                        1..=u16::MAX
+                                    } else {
+                                        0..=0
+                                    }),
                                 );
                             });
                         })
@@ -410,7 +404,7 @@ impl App {
     }
 
     /// The status panel.
-    pub fn status_panel(&mut self, ui: &mut Ui) {
+    pub fn status_panel(&self, ui: &mut Ui) {
         ui.horizontal(|ui| {
             if let Some(err) = &self.error {
                 ui.label(RichText::new(err.to_string()).color(Color32::RED));
@@ -450,19 +444,19 @@ impl App {
     }
 
     /// The main panel.
-    pub fn main_panel(&mut self, ui: &mut Ui) {
+    pub fn main_panel(&self, ui: &mut Ui) {
         match self.mode {
             Mode::Configuring => {
                 ScrollArea::both().auto_shrink(false).show(ui, |ui| {
                     for view in self.solutions.iter().rev() {
-                        ui.add(Label::new(view.clone()).wrap(false));
+                        ui.add(Label::new(view.clone()).extend());
                     }
                 });
             }
             _ => {
                 if !self.view.is_empty() {
                     ScrollArea::both().auto_shrink(false).show(ui, |ui| {
-                        ui.add(Label::new(self.view[self.generation as usize].clone()).wrap(false));
+                        ui.add(Label::new(self.view[self.generation as usize].clone()).extend());
                     });
 
                     if self.mode == Mode::Running {

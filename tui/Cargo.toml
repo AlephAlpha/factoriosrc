@@ -8,8 +8,8 @@ edition = "2021"
 [dependencies]
 clap = { workspace = true }
 color-eyre = { workspace = true }
-crossterm = "0.27.0"
+crossterm = "0.28.1"
 factoriosrc-lib = { workspace = true, features = ["clap", "serde"] }
-ratatui = "0.26.1"
+ratatui = "0.28.1"
 serde = { workspace = true }
 serde_json = { workspace = true }

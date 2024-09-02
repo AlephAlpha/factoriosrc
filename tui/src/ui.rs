@@ -4,12 +4,12 @@ use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Layout, Rect},
     style::{Style, Stylize},
-    terminal::Frame,
     text::{Line, Span, Text},
     widgets::{
         block::{Block, Title},
         Clear, Paragraph, Widget,
     },
+    Frame,
 };
 
 impl App {
@@ -20,7 +20,7 @@ impl App {
             Constraint::Min(0),
             Constraint::Length(1),
         ])
-        .areas(frame.size());
+        .areas(frame.area());
 
         self.render_top_bar(frame, top);
         self.render_main(frame, main);
@@ -211,22 +211,26 @@ impl Widget for Rle<'_> {
                     let state = self.world.get_cell_state((x as i32, y as i32, self.t));
                     match state {
                         Some(CellState::Alive) => buf
-                            .get_mut(buf_x, buf_y)
+                            .cell_mut((buf_x, buf_y))
+                            .unwrap()
                             .set_char('o')
                             .set_style(Style::new().green()),
                         Some(CellState::Dead) => buf
-                            .get_mut(buf_x, buf_y)
+                            .cell_mut((buf_x, buf_y))
+                            .unwrap()
                             .set_char('.')
                             .set_style(Style::new().red()),
                         None => buf
-                            .get_mut(buf_x, buf_y)
+                            .cell_mut((buf_x, buf_y))
+                            .unwrap()
                             .set_char('?')
                             .set_style(Style::new().blue()),
                     };
                 }
                 if area.width > w + 1 {
                     let buf_x: u16 = area.x + w;
-                    buf.get_mut(buf_x, buf_y)
+                    buf.cell_mut((buf_x, buf_y))
+                        .unwrap()
                         .set_char(if y == h - 1 { '!' } else { '$' })
                         .set_style(Style::new().dark_gray());
                 }

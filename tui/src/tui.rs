@@ -7,7 +7,7 @@ use color_eyre::Result;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
-use ratatui::{backend::CrosstermBackend, terminal::Terminal};
+use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io::{stdout, Stdout};
 
 /// The text-based user interface.

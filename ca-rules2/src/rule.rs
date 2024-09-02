@@ -473,7 +473,7 @@ impl Neighborhood {
 ///    - Remain in the "live" state if it satisfies the [`survival`](Rule::survival) conditions.
 ///    - Otherwise, transition to the next "dying" state, or the "dead" state if there are only 2 states.
 /// - A cell in a "dying" state will transition to the next "dying" state, or the "dead" state if it is
-///  already in the last "dying" state.
+///     already in the last "dying" state.
 ///
 /// When the number of states is 2, there are no "dying" states, and the rule is equivalent to a Life-like rule.
 ///
