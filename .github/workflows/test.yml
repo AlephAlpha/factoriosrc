@@ -1,0 +1,26 @@
+name: Test
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Run formatting check
+        run: cargo fmt --check
+      - name: Run clippy
+        run: cargo clippy -- -D warnings
+      - name: Run tests for factoriosrc-lib without default features
+        run: cargo test --package factoriosrc-lib --no-default-features
+      - name: Run tests for all packages with all features
+        run: cargo test --all-features
+  miri:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up Rust with Miri
+        uses: dtolnay/rust-toolchain@miri
+      - name: Run Miri tests
+        run: cargo miri test test_miri

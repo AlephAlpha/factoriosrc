@@ -1,4 +1,4 @@
-use rand::Rng;
+use rand::RngExt;
 
 use crate::{
     cell::LifeCell,
@@ -19,24 +19,26 @@ impl World {
     /// The cell must be in the same world as `self`.
     /// Otherwise the behavior is undefined.
     unsafe fn check_descriptor(&mut self, cell: &LifeCell) -> Option<()> {
-        let implication = self.rule.implies(cell.descriptor());
+        unsafe {
+            let implication = self.rule.implies(cell.descriptor());
 
-        // The descriptor does not imply anything.
-        if implication.is_empty() {
-            return Some(());
-        }
+            // The descriptor does not imply anything.
+            if implication.is_empty() {
+                return Some(());
+            }
 
-        // A conflict was found.
-        if implication.contains(Implication::Conflict) {
-            return None;
-        }
+            // A conflict was found.
+            if implication.contains(Implication::Conflict) {
+                return None;
+            }
 
-        // The descriptor implies that the successor is dead or alive.
-        //
-        // In this case, the successor was unknown, so there is no implication about the cell
-        // itself or its neighbors. So we can return early.
-        if implication.intersects(Implication::SuccessorDead | Implication::SuccessorAlive) {
-            if let Some(successor) = cell.successor.as_ref() {
+            // The descriptor implies that the successor is dead or alive.
+            //
+            // In this case, the successor was unknown, so there is no implication about the cell
+            // itself or its neighbors. So we can return early.
+            if implication.intersects(Implication::SuccessorDead | Implication::SuccessorAlive)
+                && let Some(successor) = cell.successor.as_ref()
+            {
                 let state = if implication.contains(Implication::SuccessorAlive) {
                     CellState::Alive
                 } else {
@@ -47,37 +49,39 @@ impl World {
 
                 return Some(());
             }
-        }
 
-        // The descriptor implies that the current cell is dead or alive.
-        if implication.intersects(Implication::CurrentDead | Implication::CurrentAlive) {
-            let state = if implication.contains(Implication::CurrentAlive) {
-                CellState::Alive
-            } else {
-                CellState::Dead
-            };
+            // The descriptor implies that the current cell is dead or alive.
+            if implication.intersects(Implication::CurrentDead | Implication::CurrentAlive) {
+                let state = if implication.contains(Implication::CurrentAlive) {
+                    CellState::Alive
+                } else {
+                    CellState::Dead
+                };
 
-            self.set_cell(cell, state, Reason::Deduced);
-        }
+                self.set_cell(cell, state, Reason::Deduced);
+            }
 
-        // The descriptor implies that all unknown neighbors are dead or alive.
-        if implication.intersects(Implication::NeighborhoodDead | Implication::NeighborhoodAlive) {
-            let state = if implication.contains(Implication::NeighborhoodAlive) {
-                CellState::Alive
-            } else {
-                CellState::Dead
-            };
+            // The descriptor implies that all unknown neighbors are dead or alive.
+            if implication
+                .intersects(Implication::NeighborhoodDead | Implication::NeighborhoodAlive)
+            {
+                let state = if implication.contains(Implication::NeighborhoodAlive) {
+                    CellState::Alive
+                } else {
+                    CellState::Dead
+                };
 
-            for i in 0..self.rule.neighborhood_size {
-                if let Some(neighbor) = cell.neighborhood[i].as_ref() {
-                    if neighbor.state().is_none() {
+                for i in 0..self.rule.neighborhood_size {
+                    if let Some(neighbor) = cell.neighborhood[i].as_ref()
+                        && neighbor.state().is_none()
+                    {
                         self.set_cell(neighbor, state, Reason::Deduced);
                     }
                 }
             }
-        }
 
-        Some(())
+            Some(())
+        }
     }
 
     /// Check the neighborhood descriptor of a cell, its neighbors, and its predecessor.
@@ -95,48 +99,47 @@ impl World {
     /// The cell must be in the same world as `self`.
     /// Otherwise the behavior is undefined.
     unsafe fn check_affected(&mut self, cell: &LifeCell) -> Option<()> {
-        // Check if the front becomes empty.
-        if self.front_count == 0 {
-            return None;
-        }
-
-        // Check if the population is too large.
-        if self
-            .max_population
-            .is_some_and(|max_population| *self.population.iter().min().unwrap() > max_population)
-        {
-            return None;
-        }
-
-        // Deduce the state of some cells by symmetry.
-        let state = cell.state().unwrap();
-        for i in 0..cell.symmetry.len() {
-            let symmetry = &*cell.symmetry[i];
-            let symmetry_state = symmetry.state();
-
-            if symmetry_state.is_none() {
-                self.set_cell(symmetry, state, Reason::Deduced);
-            } else if symmetry_state.unwrap() != state {
+        unsafe {
+            // Check if the front becomes empty.
+            if self.front_count == 0 {
                 return None;
             }
-        }
 
-        // Check the neighborhood descriptor of the cell itself.
-        self.check_descriptor(cell)?;
-
-        // Check the neighborhood descriptors of the neighbors.
-        for i in 0..self.rule.neighborhood_size {
-            if let Some(neighbor) = cell.neighborhood[i].as_ref() {
-                self.check_descriptor(neighbor)?;
+            // Check if the population is too large.
+            if self.max_population.is_some_and(|max_population| {
+                *self.population.iter().min().unwrap() > max_population
+            }) {
+                return None;
             }
-        }
 
-        // Check the neighborhood descriptor of the predecessor.
-        if let Some(predecessor) = cell.predecessor.as_ref() {
-            self.check_descriptor(predecessor)?;
-        }
+            // Deduce the state of some cells by symmetry.
+            let state = cell.state().unwrap();
+            for i in 0..cell.symmetry.len() {
+                let symmetry = &*cell.symmetry[i];
+                match symmetry.state() {
+                    None => self.set_cell(symmetry, state, Reason::Deduced),
+                    Some(symmetry_state) if symmetry_state != state => return None,
+                    Some(_) => {}
+                }
+            }
 
-        Some(())
+            // Check the neighborhood descriptor of the cell itself.
+            self.check_descriptor(cell)?;
+
+            // Check the neighborhood descriptors of the neighbors.
+            for i in 0..self.rule.neighborhood_size {
+                if let Some(neighbor) = cell.neighborhood[i].as_ref() {
+                    self.check_descriptor(neighbor)?;
+                }
+            }
+
+            // Check the neighborhood descriptor of the predecessor.
+            if let Some(predecessor) = cell.predecessor.as_ref() {
+                self.check_descriptor(predecessor)?;
+            }
+
+            Some(())
+        }
     }
 
     /// Check all cells in the stack that have not been checked yet.
@@ -192,7 +195,7 @@ impl World {
                     let state = match self.config.new_state {
                         NewState::Alive => CellState::Alive,
                         NewState::Dead => CellState::Dead,
-                        NewState::Random => self.rng.gen(),
+                        NewState::Random => self.rng.random(),
                     };
                     self.set_cell(cell, state, Reason::Guessed);
                     self.start = cell.next;
@@ -290,7 +293,7 @@ impl World {
             _ => Status::Running,
         };
 
-        while status == Status::Running && !max_steps.is_some_and(|max_steps| steps >= max_steps) {
+        while status == Status::Running && max_steps.is_none_or(|max_steps| steps < max_steps) {
             status = self.step();
 
             // If a pattern is found, check that its period is correct,

@@ -24,7 +24,7 @@ pub type Coord = (i32, i32, i32);
 /// The reason why a cell is set to a state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub(crate) enum Reason {
+pub enum Reason {
     /// The state is known from the configuration before the search.
     #[cfg_attr(feature = "serde", serde(rename = "k"))]
     Known,
@@ -171,7 +171,7 @@ impl World {
         let cells_ptr = Box::into_raw(cells);
 
         let rng = config.seed.map_or_else(
-            Xoshiro256PlusPlus::from_entropy,
+            || Xoshiro256PlusPlus::from_rng(&mut rand::rng()),
             Xoshiro256PlusPlus::seed_from_u64,
         );
 
@@ -221,7 +221,7 @@ impl World {
                     // So we only need to consider the left half of the first row.
 
                     let w = if self.config.dx == 0 {
-                        (self.config.width + 1) / 2
+                        self.config.width.div_ceil(2)
                     } else {
                         self.config.width
                     };
@@ -262,7 +262,7 @@ impl World {
                     // So we only need to consider the top half of the first column.
 
                     let h = if self.config.dy == 0 {
-                        (self.config.height + 1) / 2
+                        self.config.height.div_ceil(2)
                     } else {
                         self.config.height
                     };
@@ -500,10 +500,10 @@ impl World {
                         let y = a - x;
 
                         if (0..w).contains(&y)
-                            && !self
+                            && self
                                 .config
                                 .diagonal_width
-                                .is_some_and(|d| (x - y).abs() >= d as i32)
+                                .is_none_or(|d| (x - y).abs() < d as i32)
                         {
                             for t in (0..self.config.period as i32).rev() {
                                 let cell = self.get_cell_by_coord_ptr((x, y, t));
@@ -965,8 +965,10 @@ impl World {
     /// The raw pointer must be valid and point to a cell in the world.
     /// Otherwise the behavior is undefined.
     const unsafe fn cell_to_index(&self, cell: *const LifeCell) -> usize {
-        let offset = cell.offset_from(self.cells_ptr as *const LifeCell);
-        offset as usize
+        unsafe {
+            let offset = cell.offset_from(self.cells_ptr as *const LifeCell);
+            offset as usize
+        }
     }
 
     /// Convert an index in the world to a raw pointer to a [`LifeCell`].
@@ -976,7 +978,7 @@ impl World {
     /// The index must be in the range `0..size`.
     /// Otherwise the behavior is undefined.
     const unsafe fn index_to_cell(&self, index: usize) -> *const LifeCell {
-        (self.cells_ptr as *const LifeCell).add(index)
+        unsafe { (self.cells_ptr as *const LifeCell).add(index) }
     }
 
     /// Convert a [`World`] to a [`WorldSerde`].

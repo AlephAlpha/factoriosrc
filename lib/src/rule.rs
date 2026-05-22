@@ -1,9 +1,9 @@
 use crate::error::ConfigError;
 use ca_rules2::{Neighborhood, NeighborhoodType, Rule};
-use enumflags2::{bitflags, BitFlags};
+use enumflags2::{BitFlags, bitflags};
 use rand::{
-    distributions::{Distribution, Standard},
-    Rng,
+    Rng, RngExt,
+    distr::{Distribution, StandardUniform},
 };
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -37,10 +37,10 @@ impl Not for CellState {
     }
 }
 
-impl Distribution<CellState> for Standard {
+impl Distribution<CellState> for StandardUniform {
     #[inline]
     fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> CellState {
-        match rng.gen_range(0..2) {
+        match rng.random_range(0..2) {
             0 => CellState::Dead,
             1 => CellState::Alive,
             _ => unreachable!(),
@@ -194,10 +194,11 @@ impl Descriptor {
 }
 
 /// Possible implications of a neighborhood descriptor.
+#[allow(clippy::use_self)]
 #[bitflags]
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum Implication {
+pub enum Implication {
     /// A conflict has occurred.
     Conflict,
 

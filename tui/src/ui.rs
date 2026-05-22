@@ -1,15 +1,12 @@
 use crate::app::{App, Mode};
 use factoriosrc_lib::{CellState, Status, World};
 use ratatui::{
+    Frame,
     buffer::Buffer,
     layout::{Constraint, Layout, Rect},
-    style::{Style, Stylize},
+    style::Style,
     text::{Line, Span, Text},
-    widgets::{
-        block::{Block, Title},
-        Clear, Paragraph, Widget,
-    },
-    Frame,
+    widgets::{Block, Clear, Paragraph, Widget},
 };
 
 impl App {
@@ -114,7 +111,7 @@ impl App {
         frame: &mut Frame,
         area: Rect,
         text: impl Into<Text<'b>>,
-        title: impl Into<Title<'b>>,
+        title: impl Into<Line<'b>>,
         style: Style,
     ) {
         let text = text.into();

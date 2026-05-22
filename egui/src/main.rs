@@ -1,4 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![warn(clippy::nursery)]
 
 use eframe::{NativeOptions, Result};
 use factoriosrc_egui::App;

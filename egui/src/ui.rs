@@ -162,7 +162,7 @@ impl App {
                             let diagonal_width = if checked {
                                 config
                                     .diagonal_width
-                                    .get_or_insert(config.width.min(config.height))
+                                    .get_or_insert_with(|| config.width.min(config.height))
                             } else {
                                 config.diagonal_width = None;
                                 &mut dummy
@@ -182,7 +182,7 @@ impl App {
 
                     ui.label("symmetry")
                         .on_hover_text(Config::get_field_docs("symmetry").unwrap());
-                    ComboBox::from_id_source("symmetry")
+                    ComboBox::from_id_salt("symmetry")
                         .selected_text(config.symmetry.to_string())
                         .show_ui(ui, |ui| {
                             for (i, symmetry) in Symmetry::iter().enumerate() {
@@ -191,14 +191,14 @@ impl App {
                                     symmetry,
                                     symmetry.to_string(),
                                 )
-                                .on_hover_text(Symmetry::FIELD_DOCS[i].unwrap());
+                                .on_hover_text(Symmetry::FIELD_DOCS[i]);
                             }
                         });
                     ui.end_row();
 
                     ui.label("transformation")
                         .on_hover_text(Config::get_field_docs("transformation").unwrap());
-                    ComboBox::from_id_source("transformation")
+                    ComboBox::from_id_salt("transformation")
                         .selected_text(config.transformation.to_string())
                         .show_ui(ui, |ui| {
                             for (i, transformation) in Transformation::iter().enumerate() {
@@ -207,14 +207,14 @@ impl App {
                                     transformation,
                                     transformation.to_string(),
                                 )
-                                .on_hover_text(Transformation::FIELD_DOCS[i].unwrap());
+                                .on_hover_text(Transformation::FIELD_DOCS[i]);
                             }
                         });
                     ui.end_row();
 
                     ui.label("search order")
                         .on_hover_text(Config::get_field_docs("search_order").unwrap());
-                    ComboBox::from_id_source("search_order")
+                    ComboBox::from_id_salt("search_order")
                         .selected_text(
                             config
                                 .search_order
@@ -229,14 +229,14 @@ impl App {
                                     Some(search_order),
                                     search_order.to_string(),
                                 )
-                                .on_hover_text(SearchOrder::FIELD_DOCS[i].unwrap());
+                                .on_hover_text(SearchOrder::FIELD_DOCS[i]);
                             }
                         });
                     ui.end_row();
 
                     ui.label("new state")
                         .on_hover_text(Config::get_field_docs("new_state").unwrap());
-                    ComboBox::from_id_source("new_state")
+                    ComboBox::from_id_salt("new_state")
                         .selected_text(config.new_state.to_string())
                         .show_ui(ui, |ui| {
                             for (i, new_state) in NewState::iter().enumerate() {
@@ -245,7 +245,7 @@ impl App {
                                     new_state,
                                     new_state.to_string(),
                                 )
-                                .on_hover_text(NewState::FIELD_DOCS[i].unwrap());
+                                .on_hover_text(NewState::FIELD_DOCS[i]);
                             }
                         });
                     ui.end_row();
@@ -328,11 +328,10 @@ impl App {
                     .button("Load")
                     .on_hover_text("Load a search from a save file.")
                     .clicked()
+                    && let Some(path) = FileDialog::new().pick_file()
                 {
-                    if let Some(path) = FileDialog::new().pick_file() {
-                        log::info!("Loading search from {:?}", path);
-                        self.load_search(&path);
-                    }
+                    log::info!("Loading search from {:?}", path);
+                    self.load_search(&path);
                 }
             } else {
                 ui.add_enabled_ui(self.mode == Mode::Paused, |ui| {
@@ -381,13 +380,11 @@ impl App {
                         .button("Save")
                         .on_hover_text("Save the current search state to a file.")
                         .clicked()
+                        && let Some(path) = FileDialog::new().set_file_name("save.json").save_file()
                     {
-                        if let Some(path) = FileDialog::new().set_file_name("save.json").save_file()
-                        {
-                            log::info!("Saving search to {:?}", path);
-                            self.save = Some(path);
-                            self.save();
-                        }
+                        log::info!("Saving search to {:?}", path);
+                        self.save = Some(path);
+                        self.save();
                     }
                 });
 

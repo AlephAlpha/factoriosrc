@@ -1,4 +1,4 @@
-use crate::{parse_rule, NeighborError, ParseRuleError};
+use crate::{NeighborError, ParseRuleError, parse_rule};
 use std::str::FromStr;
 
 /// The coordinates of a neighbor and its weight.
@@ -80,6 +80,8 @@ impl Neighbor {
 }
 
 /// Predefined neighborhood types.
+///
+/// The center cell is not included in the neighborhood.
 ///
 /// This enum is non-exhaustive. More neighborhood types may be added in the future.
 ///
@@ -403,7 +405,7 @@ impl Neighborhood {
     }
 
     /// Number of neighbors.
-    pub fn size(&self) -> usize {
+    pub const fn size(&self) -> usize {
         match self {
             Self::Totalistic(neighborhood_type, radius)
             | Self::Nontotalistic(neighborhood_type, radius) => neighborhood_type.size(*radius),
@@ -473,7 +475,7 @@ impl Neighborhood {
 ///    - Remain in the "live" state if it satisfies the [`survival`](Rule::survival) conditions.
 ///    - Otherwise, transition to the next "dying" state, or the "dead" state if there are only 2 states.
 /// - A cell in a "dying" state will transition to the next "dying" state, or the "dead" state if it is
-///     already in the last "dying" state.
+///   already in the last "dying" state.
 ///
 /// When the number of states is 2, there are no "dying" states, and the rule is equivalent to a Life-like rule.
 ///
@@ -547,7 +549,7 @@ impl Rule {
     }
 
     /// Number of neighbors.
-    pub fn neighborhood_size(&self) -> usize {
+    pub const fn neighborhood_size(&self) -> usize {
         self.neighborhood.size()
     }
 

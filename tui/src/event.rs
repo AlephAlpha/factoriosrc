@@ -28,11 +28,11 @@ impl EventHandler {
         thread::spawn(move || -> Result<()> {
             loop {
                 match event::read()? {
-                    Event::Key(e) => {
+                    Event::Key(e)
                         // Send the event only if it is a key press.
-                        if e.kind == KeyEventKind::Press {
-                            tx.send(TermEvent::KeyPress(e.code))?;
-                        }
+                        if e.kind == KeyEventKind::Press =>
+                    {
+                        tx.send(TermEvent::KeyPress(e.code))?;
                     }
                     Event::Resize(_, _) => {
                         tx.send(TermEvent::Resize)?;

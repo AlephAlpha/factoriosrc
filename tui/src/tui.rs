@@ -5,10 +5,10 @@ use crate::{
 };
 use color_eyre::Result;
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use ratatui::{backend::CrosstermBackend, Terminal};
-use std::io::{stdout, Stdout};
+use ratatui::{Terminal, backend::CrosstermBackend};
+use std::io::{Stdout, stdout};
 
 /// The text-based user interface.
 #[derive(Debug)]

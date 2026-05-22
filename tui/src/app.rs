@@ -113,7 +113,7 @@ impl App {
     /// Display the next generation.
     ///
     /// If the current generation is the last one, do nothing.
-    pub fn next_generation(&mut self) {
+    pub const fn next_generation(&mut self) {
         let period = self.world.config().period as i32;
 
         if self.generation < period - 1 {
@@ -124,7 +124,7 @@ impl App {
     /// Display the previous generation.
     ///
     /// If the current generation is the first one, do nothing.
-    pub fn previous_generation(&mut self) {
+    pub const fn previous_generation(&mut self) {
         if self.generation > 0 {
             self.generation -= 1;
         }

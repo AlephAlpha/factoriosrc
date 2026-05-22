@@ -6,7 +6,6 @@
 #![warn(clippy::nursery)]
 #![warn(clippy::unnested_or_patterns)]
 #![warn(clippy::uninlined_format_args)]
-#![allow(clippy::redundant_pub_crate)]
 
 mod cell;
 mod config;

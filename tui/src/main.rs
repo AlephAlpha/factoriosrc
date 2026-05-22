@@ -1,3 +1,5 @@
+#![warn(clippy::nursery)]
+
 mod app;
 mod args;
 mod event;

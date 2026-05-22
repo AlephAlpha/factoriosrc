@@ -1,7 +1,7 @@
 use crate::app::AppConfig;
 use egui::{
-    text::{LayoutJob, TextFormat},
     Color32, FontId,
+    text::{LayoutJob, TextFormat},
 };
 use factoriosrc_lib::{Status, World};
 #[cfg(feature = "save")]

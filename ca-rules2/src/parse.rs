@@ -112,7 +112,7 @@ impl<'a> Parser<'a> {
     }
 
     /// Peek at the next character without consuming it.
-    fn peek(&self) -> Option<u8> {
+    const fn peek(&self) -> Option<u8> {
         self.input.first().copied()
     }
 

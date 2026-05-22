@@ -3,8 +3,8 @@ gui := "./target/release/factoriosrc-egui"
 
 # Install the dependencies
 init:
-    cargo install miniserve
-    cargo install hyperfine
+    if [ ! -x "$(command -v miniserve)" ]; then cargo install miniserve; fi
+    if [ ! -x "$(command -v hyperfine)" ]; then cargo install hyperfine; fi
     rustup toolchain install nightly
     rustup +nightly component add miri
     cargo +nightly miri setup
@@ -13,13 +13,18 @@ init:
 build:
     cargo build --release
 
-# Run the release binary
+# Run the release binary (TUI)
 run *ARGS: build
-    {{bin}} {{ARGS}}
+    {{ bin }} {{ ARGS }}
 
 # Run the GUI (WIP)
 gui: build
-    RUST_LOG=factoriosrc_egui=DEBUG {{gui}}
+    RUST_LOG=factoriosrc_egui=DEBUG {{ gui }}
+
+# Run linting and formatting checks
+lint:
+    cargo fmt --check
+    cargo clippy -- -D warnings
 
 # Run the tests
 test:
@@ -28,7 +33,7 @@ test:
 
 # Run the tests with Miri
 test-miri:
-    cargo +nightly miri test --features serde test_miri
+    cargo +nightly miri test test_miri
 
 # Build and serve the documentation
 doc:
@@ -37,12 +42,12 @@ doc:
 
 # Show the help message
 help: build
-    {{bin}} --help
+    {{ bin }} --help
 
 # Run the benchmark
 bench: build
-    hyperfine --warmup 3 '{{bin}} -r B3/S23 26 8 4 -y 1 -n a --no-tui'
+    hyperfine --warmup 3 '{{ bin }} --no-tui new -r B3/S23 26 8 4 -y 1 -n a'
 
 # Run the benchmark, comparing with rlifesrc
 bench-compare: build
-    hyperfine --warmup 3 '{{bin}} -r B3/S23 26 8 4 -y 1 -n a --no-tui' 'rlifesrc 26 8 4 0 1 --no-tui'
+    hyperfine --warmup 3 '{{ bin }} --no-tui new -r B3/S23 26 8 4 -y 1 -n a' 'rlifesrc 26 8 4 0 1 --no-tui'

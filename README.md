@@ -1,6 +1,6 @@
 # factoriosrc
 
-Search for patterns in [Factorio (R3,C2,S2,B3,N+)](https://conwaylife.com/forums/viewtopic.php?f=11&t=6166) cellular automata, using an algorithm similar to [rlifesrc](https://github.com/AlephAlpha/rlifesrc).
+Search for patterns in [Factorio (R3,C2,S2,B3,N+)](https://conwaylife.com/forums/viewtopic.php?f=11&t=6166) and other cellular automata, using an algorithm similar to [rlifesrc](https://github.com/AlephAlpha/rlifesrc).
 
 This program is still work in progress. Many features are still missing.
 
@@ -81,6 +81,7 @@ Features that rlifesrc has but factoriosrc doesn't:
 - [ ] Web UI.
   - [ ] Port the GUI to the web. I'm using the [egui](https://github.com/emilk/egui) library, which has a web backend. I still need to figure out how to port the multi-threaded part, maybe using WebWorkers.
   - [ ] Better support for mobile devices.
+- [ ] Better documentation.
 
 Features that rlifesrc doesn't have and factoriosrc may add:
 

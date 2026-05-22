@@ -465,7 +465,7 @@ impl Config {
             let width = if self.transformation == Transformation::S2
                 || Transformation::S2.is_element_of(self.symmetry)
             {
-                (self.width + 1) / 2
+                self.width.div_ceil(2)
             } else {
                 self.width
             };
@@ -475,7 +475,7 @@ impl Config {
             let height = if self.transformation == Transformation::S0
                 || Transformation::S0.is_element_of(self.symmetry)
             {
-                (self.height + 1) / 2
+                self.height.div_ceil(2)
             } else {
                 self.height
             };

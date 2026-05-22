@@ -14,7 +14,7 @@ use std::cell::Cell;
 /// - Other raw pointers may be null.
 /// - When a pointer is non-null, it must point to a cell in the same [`World`].
 #[derive(Debug)]
-pub(crate) struct LifeCell {
+pub struct LifeCell {
     /// The generation of the cell.
     pub(crate) generation: i32,
 
@@ -27,21 +27,21 @@ pub(crate) struct LifeCell {
     pub(crate) descriptor: Cell<Descriptor>,
 
     /// The predecessor of the cell.
-    pub(crate) predecessor: *const LifeCell,
+    pub(crate) predecessor: *const Self,
 
     /// The successor of the cell.
-    pub(crate) successor: *const LifeCell,
+    pub(crate) successor: *const Self,
 
     /// The neighborhood of the cell.
-    pub(crate) neighborhood: [*const LifeCell; MAX_NEIGHBORHOOD_SIZE],
+    pub(crate) neighborhood: [*const Self; MAX_NEIGHBORHOOD_SIZE],
 
     /// Cells that are known to be equal to this cell because of the symmetry.
     ///
     /// The pointers in this vector should be non-null.
-    pub(crate) symmetry: Vec<*const LifeCell>,
+    pub(crate) symmetry: Vec<*const Self>,
 
     /// The next cell to be searched according to the search order.
-    pub(crate) next: *const LifeCell,
+    pub(crate) next: *const Self,
 
     /// Whether the cell is on the front, i.e. the first row or column, depending on the search order.
     ///
@@ -68,12 +68,12 @@ impl LifeCell {
     }
 
     /// Get the state of the cell.
-    pub(crate) fn state(&self) -> Option<CellState> {
+    pub(crate) const fn state(&self) -> Option<CellState> {
         self.state.get()
     }
 
     /// Get the neighborhood descriptor of the cell.
-    pub(crate) fn descriptor(&self) -> Descriptor {
+    pub(crate) const fn descriptor(&self) -> Descriptor {
         self.descriptor.get()
     }
 

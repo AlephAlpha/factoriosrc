@@ -1,18 +1,18 @@
 [package]
 name = "factoriosrc-egui"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 documented = { workspace = true }
 eframe = { workspace = true, features = ["x11"] }
-env_logger = "0.11.3"
+env_logger = "0.11.10"
 egui = { workspace = true }
 factoriosrc-lib = { workspace = true, features = ["documented"] }
 log = { workspace = true }
-rfd = { version = "0.14.1", optional = true }
+rfd = { version = "0.17.2", optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 

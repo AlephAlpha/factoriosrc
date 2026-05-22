@@ -1,4 +1,4 @@
-use clap::{error::ErrorKind, Args, CommandFactory, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand, error::ErrorKind};
 use factoriosrc_lib::Config;
 use std::path::PathBuf;
 
@@ -105,7 +105,7 @@ impl Cli {
                 }
             }
             Command::Load(args) => {
-                args.save.get_or_insert(args.load.clone());
+                args.save.get_or_insert_with(|| args.load.clone());
             }
         }
 

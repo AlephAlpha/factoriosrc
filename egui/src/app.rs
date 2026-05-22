@@ -1,7 +1,7 @@
 use crate::search::{Event, Message, SearchThread};
 use documented::{Documented, DocumentedFields};
-use eframe::{glow::Context as GlowContext, App as EframeApp, Frame};
-use egui::{text::LayoutJob, CentralPanel, Context, SidePanel, TopBottomPanel};
+use eframe::{App as EframeApp, Frame, glow::Context as GlowContext};
+use egui::{CentralPanel, Context, Panel, Ui, text::LayoutJob};
 use factoriosrc_lib::{Config, Status};
 #[cfg(feature = "save")]
 use serde::{Deserialize, Serialize};
@@ -104,24 +104,26 @@ impl Default for App {
 }
 
 impl EframeApp for App {
-    fn update(&mut self, ctx: &Context, _frame: &mut Frame) {
-        SidePanel::left("config_panel").show(ctx, |ui| {
+    fn logic(&mut self, _ctx: &Context, _frame: &mut Frame) {
+        self.receive();
+    }
+
+    fn ui(&mut self, ui: &mut Ui, _frame: &mut Frame) {
+        Panel::left("config_panel").show_inside(ui, |ui| {
             self.config_panel(ui);
         });
 
-        TopBottomPanel::top("control_panel").show(ctx, |ui| {
+        Panel::top("control_panel").show_inside(ui, |ui| {
             self.control_panel(ui);
         });
 
-        TopBottomPanel::bottom("status_panel").show(ctx, |ui| {
+        Panel::bottom("status_panel").show_inside(ui, |ui| {
             self.status_panel(ui);
         });
 
-        CentralPanel::default().show(ctx, |ui| {
+        CentralPanel::default().show_inside(ui, |ui| {
             self.main_panel(ui);
         });
-
-        self.receive();
     }
 
     fn on_exit(&mut self, _gl: Option<&GlowContext>) {
@@ -226,7 +228,7 @@ impl App {
                         .view
                         .iter()
                         .zip(&self.populations)
-                        .min_by_key(|(_, &p)| p)
+                        .min_by_key(|item| item.1)
                         .unwrap()
                         .0
                         .clone();
@@ -257,10 +259,10 @@ impl App {
 
     /// Receive and handle a message from the search thread.
     pub fn receive(&mut self) {
-        if let Some(search) = &mut self.search {
-            if let Some(message) = search.try_recv() {
-                self.handle(message);
-            }
+        if let Some(search) = &mut self.search
+            && let Some(message) = search.try_recv()
+        {
+            self.handle(message);
         }
     }
 }
