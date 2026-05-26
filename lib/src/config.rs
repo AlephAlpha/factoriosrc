@@ -233,7 +233,7 @@ pub struct Config {
 
     /// Random seed for guessing the state of an unknown cell.
     ///
-    /// Only used if [`new_state`](Config::new_state) is [`Random`](NewState::Random).
+    /// This is only used when [`new_state`](Config::new_state) is [`Random`](NewState::Random).
     ///
     /// If this is [`None`], then the seed is randomly generated.
     #[cfg_attr(feature = "clap", arg(long))]
@@ -252,7 +252,7 @@ pub struct Config {
 
     /// Whether to reduce the upper bound of the population when a solution is found.
     ///
-    /// If this is [`true`], when a solution with population `p` is found, then
+    /// If this is `true`, when a solution with population `p` is found, then
     /// [`max_population`](Config::max_population) will be set to `p - 1`.
     ///
     /// This is useful for finding the smallest possible pattern.

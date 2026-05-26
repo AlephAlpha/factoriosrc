@@ -79,7 +79,7 @@ Features that rlifesrc has but factoriosrc doesn't:
 - [x] GUI.
   - [x] Save and load the search state in the GUI.
 - [ ] Web UI.
-  - [ ] Port the GUI to the web. I'm using the [egui](https://github.com/emilk/egui) library, which has a web backend. I still need to figure out how to port the multi-threaded part, maybe using WebWorkers.
+  - [ ] Port the GUI to the web. I'm using the [egui](https://github.com/emilk/egui) library, which has a web backend. I still need to figure out how to use WebWorkers, so that the search can run in the background without blocking the UI.
   - [ ] Better support for mobile devices.
 - [ ] Better documentation.
 

@@ -67,7 +67,7 @@ pub enum Status {
 /// // Search for a solution.
 /// world.search(None);
 /// assert_eq!(world.status(), Status::Solved);
-/// // Print the solution in RLE format.
+/// // Print the solution of the first generation in RLE format.
 /// println!("{}", world.rle(0, true));
 /// ```
 #[derive(Debug)]
@@ -205,6 +205,8 @@ impl World {
     }
 
     /// For each cell, check if it is on the front.
+    ///
+    /// See [this GitHub issue](](https://github.com/AlephAlpha/rlifesrc/issues/81) for the detailed reasoning.
     fn init_front(&mut self) {
         let mut use_front = false;
 
@@ -776,7 +778,7 @@ impl World {
 
         let t = t.rem_euclid(p);
 
-        let header = format!("x = {}, y = {}, rule = {}\n", w, h, self.config.rule_str);
+        let header = format!("x = {w}, y = {h}, rule = {}\n", self.config.rule_str);
 
         let mut body = String::new();
 

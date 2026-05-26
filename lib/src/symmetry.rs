@@ -142,7 +142,7 @@ impl Transformation {
     /// This function checks whether the transformation is an element of the subgroup
     /// corresponding to a given symmetry.
     ///
-    /// For example, [`S0`](Transformation::S0) is a subgroup of [`D2V`](Symmetry::D2V).
+    /// For example, [`S0`](Transformation::S0) is an element of [`D2V`](Symmetry::D2V).
     /// This means that if a pattern has [`D2V`](Symmetry::D2V) symmetry, it is invariant
     /// under the [`S0`](Transformation::S0) transformation.
     #[inline]

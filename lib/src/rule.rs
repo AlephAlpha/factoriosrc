@@ -226,8 +226,7 @@ pub enum Implication {
 /// In a totalistic rule, the state of a cell is determined by the state of itself and
 /// the number of living neighbors.
 ///
-/// Currently, the numbers of living and dead neighbors are represented by 4-bit integers
-/// in the neighborhood descriptor. So the neighborhood size is limited to 24.
+/// Currently, the neighborhood size is limited to 24.
 #[derive(Clone)]
 pub struct RuleTable {
     /// The size of the neighborhood.
@@ -316,9 +315,12 @@ impl RuleTable {
             };
 
             // When the current cell is unknown.
-            // In this case, the successor cell can still be deduced to be dead, if the number of living
-            // neighbors is neither in `birth` nor in `survival`.
+            // In this case, the successor cell can still be deduced, if it should be in the same state
+            // regardless of whether the current cell is dead or alive.
             let descriptor_unknown = Descriptor::new(dead, alive, None, None);
+            if birth.contains(&(alive as u64)) && survival.contains(&(alive as u64)) {
+                self.table[descriptor_unknown.0 as usize] |= Implication::SuccessorAlive;
+            }
             if !birth.contains(&(alive as u64)) && !survival.contains(&(alive as u64)) {
                 self.table[descriptor_unknown.0 as usize] |= Implication::SuccessorDead;
             }
