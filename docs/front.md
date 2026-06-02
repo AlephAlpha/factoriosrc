@@ -112,10 +112,14 @@ Known cells are fixed to absolute coordinates. That breaks the translation invar
 front optimization relies on, unless the known-cell constraint itself is closed under the same
 translation or reflection argument.
 
-The safe default for a future known-cells feature is therefore:
+The current implementation takes the conservative route:
 
-- disable the stronger front optimization when arbitrary known cells are present
-- or re-enable it only after proving that the known-cell set is compatible with the chosen front
+- any non-empty known-cell set disables the stronger front optimization
+- the search falls back to treating the whole first generation as front
+
+This is intentionally conservative. A future implementation may re-enable stronger front pruning
+for specific known-cell sets, but only after proving that the chosen constraints are compatible
+with the relevant translation or reflection argument.
 
 ### More rules
 

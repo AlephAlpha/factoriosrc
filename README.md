@@ -74,6 +74,8 @@ Features that rlifesrc has but factoriosrc doesn't:
   - [ ] Update (or completely rewrite) the [ca-rules](https://crates.io/crates/ca-rules) crate.
 - [x] Support trying a random state for unknown cells.
 - [ ] Set some cells to be known in the configuration.
+  - [x] Support setting known cells in the lib.
+  - [ ] Support setting known cells in the CLI, TUI, and GUI.
 - [ ] Fully custom search order, where the user specifies the exact cell-by-cell traversal (for example, serpentine rows or a spiral from the center).
 - [x] Save and load the search state.
 - [x] GUI.

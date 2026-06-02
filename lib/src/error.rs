@@ -30,6 +30,14 @@ pub enum ConfigError {
     /// The translations do not satisfy the symmetry.
     #[error("The translations do not satisfy the symmetry")]
     InvalidTranslation,
+
+    /// A known cell is outside the world.
+    #[error("A known cell is outside the world")]
+    InvalidKnownCell,
+
+    /// Known cell constraints conflict with each other.
+    #[error("Known cell constraints conflict with each other")]
+    ConflictingKnownCells,
 }
 
 /// An error that can occur when deserializing a [`World`].

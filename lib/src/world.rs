@@ -189,19 +189,20 @@ impl World {
             start: std::ptr::null(),
             status: Status::NotStarted,
         };
-        world.init();
+        world.init()?;
 
         Ok(world)
     }
 
     /// Initialize the world.
-    fn init(&mut self) {
+    fn init(&mut self) -> Result<(), ConfigError> {
         self.init_front();
         self.init_neighborhood();
         self.init_predecessor_successor();
         self.init_symmetry();
+        self.init_known()?;
         self.init_next();
-        self.init_known();
+        Ok(())
     }
 
     /// For each cell, check if it is on the front.
@@ -210,127 +211,130 @@ impl World {
     fn init_front(&mut self) {
         let mut use_front = false;
 
-        match self.config.search_order.unwrap() {
-            // If the search order is row-first, the front is the first row.
-            SearchOrder::RowFirst => {
-                if self.config.symmetry.is_subgroup_of(Symmetry::D2H)
-                    && self.config.transformation.is_element_of(Symmetry::D2H)
-                    && self.config.diagonal_width.is_none()
-                {
-                    use_front = true;
+        if self.config.known_cells.is_empty() {
+            match self.config.search_order.unwrap() {
+                // If the search order is row-first, the front is the first row.
+                SearchOrder::RowFirst => {
+                    if self.config.symmetry.is_subgroup_of(Symmetry::D2H)
+                        && self.config.transformation.is_element_of(Symmetry::D2H)
+                        && self.config.diagonal_width.is_none()
+                    {
+                        use_front = true;
 
-                    // If `dx` is zero, a pattern is still valid if we reflect it horizontally.
-                    // So we only need to consider the left half of the first row.
+                        // If `dx` is zero, a pattern is still valid if we reflect it horizontally.
+                        // So we only need to consider the left half of the first row.
 
-                    let w = if self.config.dx == 0 {
-                        self.config.width.div_ceil(2)
-                    } else {
-                        self.config.width
-                    };
+                        let w = if self.config.dx == 0 {
+                            self.config.width.div_ceil(2)
+                        } else {
+                            self.config.width
+                        };
 
-                    // If both `dx` and `dy` are zero, a pattern is still valid if we rotate the
-                    // generations, i.e. the first generation becomes the last, the second becomes
-                    // the first, and so on. So we only need to consider the first generation.
+                        // If both `dx` and `dy` are zero, a pattern is still valid if we rotate the
+                        // generations, i.e. the first generation becomes the last, the second becomes
+                        // the first, and so on. So we only need to consider the first generation.
 
-                    // If `dx` is zero, `dy` is positive, a similar argument still applies.
-                    // But the front becomes the `dy-1`-th row of the first generation.
+                        // If `dx` is zero, `dy` is positive, a similar argument still applies.
+                        // But the front becomes the `dy-1`-th row of the first generation.
 
-                    if self.config.dx == 0 && self.config.dy >= 0 {
-                        let y = self.config.dy.max(1) - 1;
-                        for x in 0..w as i32 {
-                            self.get_cell_by_coord_mut((x, y, 0)).unwrap().is_front = true;
-                            self.front_count += 1;
-                        }
-                    } else {
-                        for x in 0..w as i32 {
-                            for t in 0..self.config.period as i32 {
-                                self.get_cell_by_coord_mut((x, 0, t)).unwrap().is_front = true;
+                        if self.config.dx == 0 && self.config.dy >= 0 {
+                            let y = self.config.dy.max(1) - 1;
+                            for x in 0..w as i32 {
+                                self.get_cell_by_coord_mut((x, y, 0)).unwrap().is_front = true;
                                 self.front_count += 1;
+                            }
+                        } else {
+                            for x in 0..w as i32 {
+                                for t in 0..self.config.period as i32 {
+                                    self.get_cell_by_coord_mut((x, 0, t)).unwrap().is_front = true;
+                                    self.front_count += 1;
+                                }
                             }
                         }
                     }
                 }
-            }
 
-            // If the search order is column-first, the front is the first column.
-            SearchOrder::ColumnFirst => {
-                if self.config.symmetry.is_subgroup_of(Symmetry::D2V)
-                    && self.config.transformation.is_element_of(Symmetry::D2V)
-                    && self.config.diagonal_width.is_none()
-                {
-                    use_front = true;
+                // If the search order is column-first, the front is the first column.
+                SearchOrder::ColumnFirst => {
+                    if self.config.symmetry.is_subgroup_of(Symmetry::D2V)
+                        && self.config.transformation.is_element_of(Symmetry::D2V)
+                        && self.config.diagonal_width.is_none()
+                    {
+                        use_front = true;
 
-                    // If `dy` is zero, a pattern is still valid if we reflect it vertically.
-                    // So we only need to consider the top half of the first column.
+                        // If `dy` is zero, a pattern is still valid if we reflect it vertically.
+                        // So we only need to consider the top half of the first column.
 
-                    let h = if self.config.dy == 0 {
-                        self.config.height.div_ceil(2)
-                    } else {
-                        self.config.height
-                    };
+                        let h = if self.config.dy == 0 {
+                            self.config.height.div_ceil(2)
+                        } else {
+                            self.config.height
+                        };
 
-                    // If both `dx` and `dy` are zero, a pattern is still valid if we rotate the
-                    // generations, i.e. the first generation becomes the last, the second becomes
-                    // the first, and so on. So we only need to consider the first generation.
+                        // If both `dx` and `dy` are zero, a pattern is still valid if we rotate the
+                        // generations, i.e. the first generation becomes the last, the second becomes
+                        // the first, and so on. So we only need to consider the first generation.
 
-                    // If `dy` is zero, `dx` is positive, a similar argument still applies.
-                    // But the front becomes the `dx-1`-th column of the first generation.
+                        // If `dy` is zero, `dx` is positive, a similar argument still applies.
+                        // But the front becomes the `dx-1`-th column of the first generation.
 
-                    if self.config.dx >= 0 && self.config.dy == 0 {
-                        let x = self.config.dx.max(1) - 1;
-                        for y in 0..h as i32 {
-                            self.get_cell_by_coord_mut((x, y, 0)).unwrap().is_front = true;
-                            self.front_count += 1;
-                        }
-                    } else {
-                        for y in 0..h as i32 {
-                            for t in 0..self.config.period as i32 {
-                                self.get_cell_by_coord_mut((0, y, t)).unwrap().is_front = true;
+                        if self.config.dx >= 0 && self.config.dy == 0 {
+                            let x = self.config.dx.max(1) - 1;
+                            for y in 0..h as i32 {
+                                self.get_cell_by_coord_mut((x, y, 0)).unwrap().is_front = true;
                                 self.front_count += 1;
                             }
-                        }
-                    }
-                }
-            }
-
-            // If the search order is diagonal, the front is both the first row and the first column.
-            SearchOrder::Diagonal => {
-                if self.config.symmetry.is_subgroup_of(Symmetry::D2D)
-                    && self.config.transformation.is_element_of(Symmetry::D2D)
-                {
-                    use_front = true;
-
-                    let d = self.config.diagonal_width.unwrap_or(self.config.width);
-
-                    // If `dx` equals `dy`, a pattern is still valid if we reflect it diagonally.
-                    // So we only need to consider the first row, not the first column.
-
-                    // If both `dx` and `dy` are zero, a pattern is still valid if we rotate the
-                    // generations, i.e. the first generation becomes the last, the second becomes
-                    // the first, and so on. So we only need to consider the first generation.
-
-                    // If `dx` equals `dy` and is positive, a similar argument still applies.
-                    // But the front becomes the `dy-1`-th row of the first generation.
-
-                    if self.config.dx == self.config.dy && self.config.dx >= 0 {
-                        let y = self.config.dy.max(1) - 1;
-                        for x in 0..d as i32 {
-                            self.get_cell_by_coord_mut((x, y, 0)).unwrap().is_front = true;
-                            self.front_count += 1;
-                        }
-                    } else {
-                        for x in 0..d as i32 {
-                            for t in 0..self.config.period as i32 {
-                                self.get_cell_by_coord_mut((x, 0, t)).unwrap().is_front = true;
-                                self.front_count += 1;
-                            }
-                        }
-
-                        if self.config.dx != self.config.dy {
-                            for y in 1..d as i32 {
+                        } else {
+                            for y in 0..h as i32 {
                                 for t in 0..self.config.period as i32 {
                                     self.get_cell_by_coord_mut((0, y, t)).unwrap().is_front = true;
                                     self.front_count += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // If the search order is diagonal, the front is both the first row and the first column.
+                SearchOrder::Diagonal => {
+                    if self.config.symmetry.is_subgroup_of(Symmetry::D2D)
+                        && self.config.transformation.is_element_of(Symmetry::D2D)
+                    {
+                        use_front = true;
+
+                        let d = self.config.diagonal_width.unwrap_or(self.config.width);
+
+                        // If `dx` equals `dy`, a pattern is still valid if we reflect it diagonally.
+                        // So we only need to consider the first row, not the first column.
+
+                        // If both `dx` and `dy` are zero, a pattern is still valid if we rotate the
+                        // generations, i.e. the first generation becomes the last, the second becomes
+                        // the first, and so on. So we only need to consider the first generation.
+
+                        // If `dx` equals `dy` and is positive, a similar argument still applies.
+                        // But the front becomes the `dy-1`-th row of the first generation.
+
+                        if self.config.dx == self.config.dy && self.config.dx >= 0 {
+                            let y = self.config.dy.max(1) - 1;
+                            for x in 0..d as i32 {
+                                self.get_cell_by_coord_mut((x, y, 0)).unwrap().is_front = true;
+                                self.front_count += 1;
+                            }
+                        } else {
+                            for x in 0..d as i32 {
+                                for t in 0..self.config.period as i32 {
+                                    self.get_cell_by_coord_mut((x, 0, t)).unwrap().is_front = true;
+                                    self.front_count += 1;
+                                }
+                            }
+
+                            if self.config.dx != self.config.dy {
+                                for y in 1..d as i32 {
+                                    for t in 0..self.config.period as i32 {
+                                        self.get_cell_by_coord_mut((0, y, t)).unwrap().is_front =
+                                            true;
+                                        self.front_count += 1;
+                                    }
                                 }
                             }
                         }
@@ -531,8 +535,8 @@ impl World {
     ///
     /// If the predecessor of a cell is outside the world, that cell is also known to be dead.
     ///
-    /// In the future, user may be able to specify some cells to be known.
-    fn init_known(&mut self) {
+    /// User-specified known cells are applied after the implicit dead cells.
+    fn init_known(&mut self) -> Result<(), ConfigError> {
         let (w, h, p) = (
             self.config.width as i32,
             self.config.height as i32,
@@ -554,12 +558,28 @@ impl World {
                                 .is_some_and(|d| (x - y).abs() >= d as i32)
                             || (*cell).predecessor.is_null()
                         {
-                            self.set_cell(&*cell, CellState::Dead, Reason::Known);
+                            self.set_known_cell(&*cell, CellState::Dead)?;
                         }
                     }
                 }
             }
         }
+
+        for known_cell in self.config.known_cells.clone() {
+            let cell = self.get_cell_by_coord_ptr((
+                known_cell.x as i32,
+                known_cell.y as i32,
+                known_cell.t as i32,
+            ));
+
+            debug_assert!(!cell.is_null());
+
+            unsafe {
+                self.set_known_cell(&*cell, known_cell.state)?;
+            }
+        }
+
+        Ok(())
     }
 
     /// Get a raw pointer to a cell by its coordinates.
@@ -595,6 +615,29 @@ impl World {
     /// Return [`None`] if the cell is outside the world.
     fn get_cell_by_coord_mut(&mut self, coord: Coord) -> Option<&mut LifeCell> {
         unsafe { self.get_cell_by_coord_ptr(coord).as_mut() }
+    }
+
+    /// Set the state of a cell. The cell should be unknown.
+    ///
+    /// # Safety
+    ///
+    /// The cell must be in the same world as `self`.
+    /// Otherwise the behavior is undefined.
+    unsafe fn set_known_cell(
+        &mut self,
+        cell: &LifeCell,
+        state: CellState,
+    ) -> Result<(), ConfigError> {
+        match cell.state() {
+            None => {
+                unsafe {
+                    self.set_cell(cell, state, Reason::Known);
+                }
+                Ok(())
+            }
+            Some(existing_state) if existing_state == state => Ok(()),
+            Some(_) => Err(ConfigError::ConflictingKnownCells),
+        }
     }
 
     /// Set the state of a cell. The cell should be unknown.
@@ -1072,7 +1115,7 @@ impl World {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::Transformation;
+    use crate::{KnownCell, Transformation};
 
     fn front_coords(world: &World) -> Vec<Coord> {
         let mut coords = Vec::new();
@@ -1161,6 +1204,24 @@ mod test {
     }
 
     #[test]
+    fn test_init_front_falls_back_to_whole_first_generation_when_known_cells_are_present() {
+        let world = World::new(
+            Config::new("B3/S23", 4, 5, 2)
+                .with_symmetry(Symmetry::D2V)
+                .with_search_order(SearchOrder::ColumnFirst)
+                .with_known_cell(KnownCell::new(1, 1, 1, CellState::Alive)),
+        )
+        .unwrap();
+
+        let front = front_coords(&world);
+
+        assert_eq!(front.len(), 20);
+        assert!(front.iter().all(|&(_, _, t)| t == 0));
+        assert!(front.contains(&(3, 4, 0)));
+        assert_eq!(world.front_count, 20);
+    }
+
+    #[test]
     fn test_front_count_tracks_unknown_or_alive_front_cells() {
         let mut world = World::new(
             Config::new("B3/S23", 4, 5, 1)
@@ -1189,6 +1250,51 @@ mod test {
         assert_eq!(world.front_count, initial);
     }
 
+    #[test]
+    fn test_known_cells_are_excluded_from_search_order() {
+        let world = World::new(
+            Config::new("B3/S23", 1, 1, 1).with_known_cell(KnownCell::new(
+                0,
+                0,
+                0,
+                CellState::Alive,
+            )),
+        )
+        .unwrap();
+
+        assert!(world.start.is_null());
+        assert_eq!(world.get_cell_state((0, 0, 0)), Some(CellState::Alive));
+    }
+
+    #[test]
+    fn test_world_new_rejects_known_cells_conflicting_with_implicit_dead() {
+        assert!(matches!(
+            World::new(
+                Config::new("B3/S23", 2, 2, 1)
+                    .with_translations(2, 0)
+                    .with_known_cell(KnownCell::new(0, 0, 0, CellState::Alive)),
+            ),
+            Err(ConfigError::ConflictingKnownCells)
+        ));
+    }
+
+    #[test]
+    fn test_search_rejects_known_cells_conflicting_with_symmetry() {
+        let mut world = World::new(
+            Config::new("B3/S23", 2, 1, 1)
+                .with_symmetry(Symmetry::D2H)
+                .with_search_order(SearchOrder::RowFirst)
+                .with_known_cells([
+                    KnownCell::new(0, 0, 0, CellState::Alive),
+                    KnownCell::new(1, 0, 0, CellState::Dead),
+                ]),
+        )
+        .unwrap();
+
+        world.search(None);
+        assert_eq!(world.status(), Status::NoSolution);
+    }
+
     /// Test with Miri to see if there is any undefined behavior.
     #[test]
     fn test_miri() {
@@ -1211,5 +1317,27 @@ mod test {
         world2.search(None);
         assert_eq!(world.status(), world2.status());
         assert_eq!(world.rle(0, true), world2.rle(0, true));
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn test_known_cells_round_trip_through_serde() {
+        let world = World::new(Config::new("B3/S23", 2, 1, 1).with_known_cells([
+            KnownCell::new(0, 0, 0, CellState::Alive),
+            KnownCell::new(1, 0, 0, CellState::Dead),
+        ]))
+        .unwrap();
+
+        let world2 = World::try_from(world.to_serde()).unwrap();
+
+        assert_eq!(world.config().known_cells, world2.config().known_cells);
+        assert_eq!(
+            world.get_cell_state((0, 0, 0)),
+            world2.get_cell_state((0, 0, 0))
+        );
+        assert_eq!(
+            world.get_cell_state((1, 0, 0)),
+            world2.get_cell_state((1, 0, 0))
+        );
     }
 }

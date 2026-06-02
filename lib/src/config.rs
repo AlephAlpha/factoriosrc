@@ -1,6 +1,6 @@
 use crate::{
     error::ConfigError,
-    rule::MAX_NEIGHBORHOOD_SIZE,
+    rule::{CellState, MAX_NEIGHBORHOOD_SIZE},
     symmetry::{Symmetry, Transformation},
 };
 use ca_rules2::{Neighborhood, NeighborhoodType, Rule};
@@ -10,7 +10,7 @@ use clap::{Args, ValueEnum};
 use documented::{Documented, DocumentedFields};
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
-use std::str::FromStr;
+use std::{collections::BTreeMap, str::FromStr};
 use strum::{Display, EnumIter, EnumString, IntoEnumIterator};
 
 /// Search order.
@@ -103,6 +103,31 @@ impl NewState {
     #[inline]
     pub fn iter() -> impl Iterator<Item = Self> {
         <Self as IntoEnumIterator>::iter()
+    }
+}
+
+/// A cell whose state is fixed before the search starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct KnownCell {
+    /// The horizontal coordinate of the cell.
+    pub x: u32,
+
+    /// The vertical coordinate of the cell.
+    pub y: u32,
+
+    /// The generation of the cell.
+    pub t: u32,
+
+    /// The fixed state of the cell.
+    pub state: CellState,
+}
+
+impl KnownCell {
+    /// Create a known cell at the given coordinates.
+    #[inline]
+    pub const fn new(x: u32, y: u32, t: u32, state: CellState) -> Self {
+        Self { x, y, t, state }
     }
 }
 
@@ -240,6 +265,17 @@ pub struct Config {
     #[cfg_attr(feature = "serde", serde(default))]
     pub seed: Option<u64>,
 
+    /// Cells whose states are fixed before the search starts.
+    ///
+    /// The coordinates are absolute coordinates in the search world.
+    /// All known cells must lie inside the world.
+    ///
+    /// Repeated coordinates with the same state are deduplicated during validation.
+    /// Repeated coordinates with different states are rejected.
+    #[cfg_attr(feature = "clap", arg(skip))]
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub known_cells: Vec<KnownCell>,
+
     /// Upper bound of the population of the pattern.
     ///
     /// If the period is greater than 1, then this is the upper bound of the minimum population
@@ -278,6 +314,7 @@ impl Config {
             search_order: None,
             new_state: NewState::Dead,
             seed: None,
+            known_cells: Vec::new(),
             max_population: None,
             reduce_max_population: false,
         }
@@ -351,6 +388,25 @@ impl Config {
     #[must_use]
     pub const fn with_seed(mut self, seed: u64) -> Self {
         self.seed = Some(seed);
+        self
+    }
+
+    /// Add a known cell to the configuration.
+    #[inline]
+    #[must_use]
+    pub fn with_known_cell(mut self, known_cell: KnownCell) -> Self {
+        self.known_cells.push(known_cell);
+        self
+    }
+
+    /// Add multiple known cells to the configuration.
+    #[inline]
+    #[must_use]
+    pub fn with_known_cells<I>(mut self, known_cells: I) -> Self
+    where
+        I: IntoIterator<Item = KnownCell>,
+    {
+        self.known_cells.extend(known_cells);
         self
     }
 
@@ -430,7 +486,8 @@ impl Config {
     }
 
     /// Check whether the configuration is valid,
-    /// and find a search order if it is not specified.
+    /// find a search order if it is not specified,
+    /// and remove duplicate known cells.
     pub fn check(&mut self) -> Result<(), ConfigError> {
         self.parse_rule()?;
 
@@ -445,6 +502,28 @@ impl Config {
         if self.max_population.is_some_and(|p| p == 0) {
             return Err(ConfigError::InvalidMaxPopulation);
         }
+
+        let mut known_cells = BTreeMap::new();
+        for known_cell in &self.known_cells {
+            if known_cell.x >= self.width
+                || known_cell.y >= self.height
+                || known_cell.t >= self.period
+            {
+                return Err(ConfigError::InvalidKnownCell);
+            }
+
+            match known_cells.insert((known_cell.x, known_cell.y, known_cell.t), known_cell.state) {
+                Some(state) if state != known_cell.state => {
+                    return Err(ConfigError::ConflictingKnownCells);
+                }
+                _ => {}
+            }
+        }
+
+        self.known_cells = known_cells
+            .into_iter()
+            .map(|((x, y, t), state)| KnownCell::new(x, y, t, state))
+            .collect();
 
         if self.width != self.height && self.requires_square() {
             return Err(ConfigError::NotSquare);
@@ -577,6 +656,23 @@ mod tests {
                 .check(),
             Err(ConfigError::InvalidTranslation)
         ));
+
+        assert!(matches!(
+            Config::new("B3/S23", 4, 4, 1)
+                .with_known_cell(KnownCell::new(4, 0, 0, CellState::Alive))
+                .check(),
+            Err(ConfigError::InvalidKnownCell)
+        ));
+
+        assert!(matches!(
+            Config::new("B3/S23", 4, 4, 1)
+                .with_known_cells([
+                    KnownCell::new(1, 1, 0, CellState::Alive),
+                    KnownCell::new(1, 1, 0, CellState::Dead),
+                ])
+                .check(),
+            Err(ConfigError::ConflictingKnownCells)
+        ));
     }
 
     #[test]
@@ -601,5 +697,20 @@ mod tests {
         let mut config = Config::new("B3/S23", 2, 5, 1).with_search_order(SearchOrder::ColumnFirst);
         config.check().unwrap();
         assert_eq!(config.search_order, Some(SearchOrder::ColumnFirst));
+    }
+
+    #[test]
+    fn test_check_deduplicates_identical_known_cells() {
+        let mut config = Config::new("B3/S23", 3, 3, 1).with_known_cells([
+            KnownCell::new(1, 1, 0, CellState::Alive),
+            KnownCell::new(1, 1, 0, CellState::Alive),
+        ]);
+
+        config.check().unwrap();
+
+        assert_eq!(
+            config.known_cells,
+            vec![KnownCell::new(1, 1, 0, CellState::Alive)]
+        );
     }
 }
