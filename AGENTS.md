@@ -3,6 +3,7 @@
 ## Workspace
 - This is a Rust workspace with 4 crates: `factoriosrc-lib` in `lib/` (core search engine), `ca-rules2/` (rule parsing), `factoriosrc-tui` in `tui/` (CLI/TUI), and `factoriosrc-egui` in `egui/` (desktop GUI).
 - Most behavior changes belong in `factoriosrc-lib`. `World` in `lib/src/world.rs` owns the search state and unsafe cell graph; both frontends wrap it.
+- The non-empty front optimization in `lib/src/world.rs` depends on translation/reflection invariants and on the current 2-state non-`B0` rule subset. Read `docs/front.md` before changing `init_front()`, `front_count`, supported rule families, known-cell constraints, symmetry, transformations, or search-order logic.
 - `Config::check()` and `Config::parse_rule()` in `lib/src/config.rs` are the source of truth for validation, supported rules, and automatic search-order selection. Update UI/docs after changing them, not the other way around.
 - App-level rule support is narrower than `ca-rules2`: the search app currently accepts only 2-state, non-`B0`, totalistic, non-hexagonal rules with neighborhood size `<= 24`.
 

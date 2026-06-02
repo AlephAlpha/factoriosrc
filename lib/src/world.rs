@@ -206,7 +206,7 @@ impl World {
 
     /// For each cell, check if it is on the front.
     ///
-    /// See [this GitHub issue](](https://github.com/AlephAlpha/rlifesrc/issues/81) for the detailed reasoning.
+    /// See [this GitHub issue](https://github.com/AlephAlpha/rlifesrc/issues/81) for the detailed reasoning.
     fn init_front(&mut self) {
         let mut use_front = false;
 
@@ -1072,11 +1072,121 @@ impl World {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::Transformation;
+
+    fn front_coords(world: &World) -> Vec<Coord> {
+        let mut coords = Vec::new();
+
+        for t in 0..world.config().period as i32 {
+            for y in 0..world.config().height as i32 {
+                for x in 0..world.config().width as i32 {
+                    if world.get_cell_by_coord((x, y, t)).unwrap().is_front {
+                        coords.push((x, y, t));
+                    }
+                }
+            }
+        }
+
+        coords
+    }
 
     #[test]
     fn test_world_new_assigns_automatic_search_order() {
         let world = World::new(Config::new("B3/S23", 2, 5, 1)).unwrap();
         assert_eq!(world.config().search_order, Some(SearchOrder::RowFirst));
+    }
+
+    #[test]
+    fn test_init_front_uses_half_column_for_vertical_reflection() {
+        let world = World::new(
+            Config::new("B3/S23", 4, 5, 1)
+                .with_symmetry(Symmetry::D2V)
+                .with_search_order(SearchOrder::ColumnFirst),
+        )
+        .unwrap();
+
+        assert_eq!(front_coords(&world), vec![(0, 0, 0), (0, 1, 0), (0, 2, 0)]);
+        assert_eq!(world.front_count, 3);
+    }
+
+    #[test]
+    fn test_init_front_can_shift_row_front_into_generation_zero() {
+        let world = World::new(
+            Config::new("B3/S23", 4, 5, 2)
+                .with_translations(0, 2)
+                .with_search_order(SearchOrder::RowFirst),
+        )
+        .unwrap();
+
+        assert_eq!(front_coords(&world), vec![(0, 1, 0), (1, 1, 0)]);
+    }
+
+    #[test]
+    fn test_init_front_uses_first_row_for_diagonal_search() {
+        let world =
+            World::new(Config::new("B3/S23", 4, 4, 1).with_search_order(SearchOrder::Diagonal))
+                .unwrap();
+
+        assert_eq!(
+            front_coords(&world),
+            vec![(0, 0, 0), (1, 0, 0), (2, 0, 0), (3, 0, 0)]
+        );
+        assert_eq!(world.front_count, 4);
+    }
+
+    #[test]
+    fn test_init_front_falls_back_to_whole_first_generation() {
+        let world = World::new(
+            Config::new("B3/S23", 3, 3, 1)
+                .with_transformation(Transformation::R1)
+                .with_search_order(SearchOrder::RowFirst),
+        )
+        .unwrap();
+
+        assert_eq!(
+            front_coords(&world),
+            vec![
+                (0, 0, 0),
+                (1, 0, 0),
+                (2, 0, 0),
+                (0, 1, 0),
+                (1, 1, 0),
+                (2, 1, 0),
+                (0, 2, 0),
+                (1, 2, 0),
+                (2, 2, 0),
+            ]
+        );
+        assert_eq!(world.front_count, 9);
+    }
+
+    #[test]
+    fn test_front_count_tracks_unknown_or_alive_front_cells() {
+        let mut world = World::new(
+            Config::new("B3/S23", 4, 5, 1)
+                .with_symmetry(Symmetry::D2V)
+                .with_search_order(SearchOrder::ColumnFirst),
+        )
+        .unwrap();
+
+        let initial = world.front_count;
+        let alive_front_cell = world.get_cell_by_coord_ptr((0, 0, 0));
+        let dead_front_cell = world.get_cell_by_coord_ptr((0, 1, 0));
+
+        unsafe {
+            world.set_cell(&*alive_front_cell, CellState::Alive, Reason::Guessed);
+        }
+        assert_eq!(world.front_count, initial);
+
+        unsafe {
+            world.set_cell(&*dead_front_cell, CellState::Dead, Reason::Guessed);
+        }
+        assert_eq!(world.front_count, initial - 1);
+
+        unsafe {
+            world.unset_cell(&*dead_front_cell);
+        }
+        assert_eq!(world.front_count, initial);
     }
 
     /// Test with Miri to see if there is any undefined behavior.
