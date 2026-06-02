@@ -1073,6 +1073,12 @@ impl World {
 mod test {
     use super::*;
 
+    #[test]
+    fn test_world_new_assigns_automatic_search_order() {
+        let world = World::new(Config::new("B3/S23", 2, 5, 1)).unwrap();
+        assert_eq!(world.config().search_order, Some(SearchOrder::RowFirst));
+    }
+
     /// Test with Miri to see if there is any undefined behavior.
     #[test]
     fn test_miri() {

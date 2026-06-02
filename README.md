@@ -74,7 +74,7 @@ Features that rlifesrc has but factoriosrc doesn't:
   - [ ] Update (or completely rewrite) the [ca-rules](https://crates.io/crates/ca-rules) crate.
 - [x] Support trying a random state for unknown cells.
 - [ ] Set some cells to be known in the configuration.
-- [ ] Custom search order.
+- [ ] Fully custom search order, where the user specifies the exact cell-by-cell traversal (for example, serpentine rows or a spiral from the center).
 - [x] Save and load the search state.
 - [x] GUI.
   - [x] Save and load the search state in the GUI.
@@ -88,11 +88,12 @@ Features that rlifesrc doesn't have and factoriosrc may add:
 - [ ] Support searching non-periodic patterns. For example, find a parent of a given pattern.
 - [ ] Support more symmetries and transformations. (https://github.com/AlephAlpha/rlifesrc/issues/51)
   - [ ] Support hexagonal symmetries and transformations.
-  - [ ] Support custom symmetries and transformations. Maybe describe them using a DSL.
+  - [ ] Support custom symmetries and transformations.
+  - [ ] Design a DSL for defining symmetries and transformations. We may also use the same DSL for setting known cells.
   - [ ] Separate the symmetries and transformations into another crate.
 - [x] A seedable RNG. (https://github.com/AlephAlpha/rlifesrc/issues/183)
   - [x] Use a RNG with `serde` support, so that we can save and load the random state.
-- [ ] More user-friendly TUI and web UI.
+- [ ] More user-friendly UI.
   - [ ] Set cells to be known by clicking.
   - [ ] Automatically save the search state in the browser cache. (https://github.com/AlephAlpha/rlifesrc/issues/366)
 - [ ] More. See rlifesrc's issues.

@@ -8,9 +8,8 @@
 
 ## Verify
 - Normal CI uses stable Rust. Only Miri setup/tests need nightly.
-- To match `.github/workflows/test.yml`, run from the repo root in this order: `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test --package factoriosrc-lib --no-default-features`, `cargo test --all-features`.
-- Do not assume `just test` matches CI. It runs `cargo test --package factoriosrc-lib` and `cargo test`, not `cargo test --all-features`.
-- Focused checks: `cargo test -p ca-rules2`, `cargo test -p factoriosrc-lib`, `cargo test -p factoriosrc-lib test_miri -- --exact`.
+- `just test` now matches `.github/workflows/test.yml` and runs, in order: `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test --package factoriosrc-lib --no-default-features`, `cargo test --all-features`.
+- Focused checks: `cargo test -p ca-rules2`, `cargo test -p factoriosrc-lib --no-default-features`, `cargo test -p factoriosrc-lib`, `cargo test --all-features`, `cargo test -p factoriosrc-lib test_miri -- --exact`.
 - If you touch unsafe search internals (`lib/src/world.rs`, `lib/src/search.rs`, `lib/src/cell.rs`), run Miri after `just init`: `cargo +nightly miri test test_miri`.
 
 ## Features

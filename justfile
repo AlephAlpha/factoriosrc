@@ -26,10 +26,11 @@ lint:
     cargo fmt --check
     cargo clippy -- -D warnings
 
-# Run the tests
+# Run the local validation baseline
 test:
-    cargo test --package factoriosrc-lib
-    cargo test
+    just lint
+    cargo test --package factoriosrc-lib --no-default-features
+    cargo test --all-features
 
 # Run the tests with Miri
 test-miri:

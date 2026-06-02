@@ -512,3 +512,94 @@ impl Config {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_rule_accepts_supported_rules() {
+        assert!(Config::new("B3/S23", 3, 3, 1).parse_rule().is_ok());
+        assert!(Config::new("R3,C2,S2,B3,N+", 5, 5, 1).parse_rule().is_ok());
+    }
+
+    #[test]
+    fn test_parse_rule_rejects_invalid_rule_strings() {
+        assert!(matches!(
+            Config::new("not a rule", 3, 3, 1).parse_rule(),
+            Err(ConfigError::InvalidRule)
+        ));
+    }
+
+    #[test]
+    fn test_parse_rule_rejects_unsupported_rules() {
+        for rule in ["B03/S23", "B2/S/3", "B245/S3H", "R3,C2,S2,B3"] {
+            assert!(matches!(
+                Config::new(rule, 3, 3, 1).parse_rule(),
+                Err(ConfigError::UnsupportedRule)
+            ));
+        }
+    }
+
+    #[test]
+    fn test_check_rejects_invalid_configurations() {
+        assert!(matches!(
+            Config::new("B3/S23", 0, 3, 1).check(),
+            Err(ConfigError::InvalidSize)
+        ));
+
+        assert!(matches!(
+            Config::new("B3/S23", 3, 3, 1)
+                .with_max_population(0)
+                .check(),
+            Err(ConfigError::InvalidMaxPopulation)
+        ));
+
+        assert!(matches!(
+            Config::new("B3/S23", 3, 4, 1)
+                .with_search_order(SearchOrder::Diagonal)
+                .check(),
+            Err(ConfigError::NotSquare)
+        ));
+
+        assert!(matches!(
+            Config::new("B3/S23", 4, 4, 1)
+                .with_diagonal_width(2)
+                .with_symmetry(Symmetry::D2H)
+                .check(),
+            Err(ConfigError::HasDiagonalWidth)
+        ));
+
+        assert!(matches!(
+            Config::new("B3/S23", 4, 4, 1)
+                .with_translations(1, 0)
+                .with_symmetry(Symmetry::D2H)
+                .check(),
+            Err(ConfigError::InvalidTranslation)
+        ));
+    }
+
+    #[test]
+    fn test_check_chooses_automatic_search_order() {
+        let mut row_first = Config::new("B3/S23", 2, 5, 1);
+        row_first.check().unwrap();
+        assert_eq!(row_first.search_order, Some(SearchOrder::RowFirst));
+
+        let mut column_first = Config::new("B3/S23", 5, 2, 1);
+        column_first.check().unwrap();
+        assert_eq!(column_first.search_order, Some(SearchOrder::ColumnFirst));
+
+        let mut diagonal = Config::new("B3/S23", 5, 5, 1)
+            .with_diagonal_width(3)
+            .with_transformation(Transformation::S1);
+        diagonal.check().unwrap();
+        assert_eq!(diagonal.search_order, Some(SearchOrder::Diagonal));
+    }
+
+    #[test]
+    fn test_check_preserves_explicit_search_order() {
+        let mut config = Config::new("B3/S23", 2, 5, 1).with_search_order(SearchOrder::ColumnFirst);
+        config.check().unwrap();
+        assert_eq!(config.search_order, Some(SearchOrder::ColumnFirst));
+    }
+}
