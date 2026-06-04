@@ -330,7 +330,7 @@ impl App {
                     .clicked()
                     && let Some(path) = FileDialog::new().pick_file()
                 {
-                    log::info!("Loading search from {:?}", path);
+                    log::info!("Loading search from {}", path.display());
                     self.load_search(&path);
                 }
             } else {
@@ -382,7 +382,7 @@ impl App {
                         .clicked()
                         && let Some(path) = FileDialog::new().set_file_name("save.json").save_file()
                     {
-                        log::info!("Saving search to {:?}", path);
+                        log::info!("Saving search to {}", path.display());
                         self.save = Some(path);
                         self.save();
                     }
@@ -461,6 +461,6 @@ impl App {
                     }
                 }
             }
-        };
+        }
     }
 }

@@ -15,6 +15,7 @@ mod search;
 mod symmetry;
 mod world;
 
+pub use cell::Reason;
 pub use config::{Config, KnownCell, NewState, SearchOrder};
 pub use error::ConfigError;
 pub use rule::{CellState, RuleTable};

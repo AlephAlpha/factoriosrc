@@ -156,13 +156,15 @@ pub struct Config {
     pub rule_str: String,
 
     /// Width of the world.
+    #[cfg_attr(feature = "clap", arg(default_value_t = 0))]
     pub width: u32,
 
     /// Height of the world.
+    #[cfg_attr(feature = "clap", arg(default_value_t = 0))]
     pub height: u32,
 
     /// Period of the pattern.
-    #[cfg_attr(feature = "clap", arg(default_value = "1"))]
+    #[cfg_attr(feature = "clap", arg(default_value_t = 1))]
     pub period: u32,
 
     /// Horizontal translation of the world.
@@ -174,7 +176,7 @@ pub struct Config {
     /// `(x + dx, y + dy)` on the 0-th generation.
     #[cfg_attr(
         feature = "clap",
-        arg(short = 'x', long, allow_negative_numbers = true, default_value = "0")
+        arg(short = 'x', long, allow_negative_numbers = true, default_value_t = 0)
     )]
     #[cfg_attr(feature = "serde", serde(default))]
     pub dx: i32,
@@ -188,7 +190,7 @@ pub struct Config {
     /// `(x + dx, y + dy)` on the 0-th generation.
     #[cfg_attr(
         feature = "clap",
-        arg(short = 'y', long, allow_negative_numbers = true, default_value = "0")
+        arg(short = 'y', long, allow_negative_numbers = true, default_value_t = 0)
     )]
     #[cfg_attr(feature = "serde", serde(default))]
     pub dy: i32,

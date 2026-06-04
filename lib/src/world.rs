@@ -1,8 +1,8 @@
 #[cfg(feature = "serde")]
 use crate::error::SerdeError;
 use crate::{
-    cell::LifeCell,
-    config::{Config, SearchOrder},
+    cell::{LifeCell, Reason},
+    config::{Config, KnownCell, SearchOrder},
     error::ConfigError,
     rule::{CellState, RuleTable},
     symmetry::Symmetry,
@@ -20,23 +20,6 @@ use strum::Display;
 /// The first two coordinates are the x and y coordinates, respectively.
 /// The third coordinate is the generation of the cell.
 pub type Coord = (i32, i32, i32);
-
-/// The reason why a cell is set to a state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub enum Reason {
-    /// The state is known from the configuration before the search.
-    #[cfg_attr(feature = "serde", serde(rename = "k"))]
-    Known,
-
-    /// The state is deduced from some other cells.
-    #[cfg_attr(feature = "serde", serde(rename = "d"))]
-    Deduced,
-
-    /// The state is chosen as a guess.
-    #[cfg_attr(feature = "serde", serde(rename = "g"))]
-    Guessed,
-}
 
 /// Status of the search.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Display)]
@@ -676,6 +659,9 @@ impl World {
             self.population[cell.generation as usize] += 1;
         }
 
+        // Track the reason on the cell itself.
+        cell.reason.set(Some(reason));
+
         // Push the cell to the stack.
         self.stack.push((cell, reason));
     }
@@ -716,6 +702,9 @@ impl World {
         if state == CellState::Alive {
             self.population[cell.generation as usize] -= 1;
         }
+
+        // Clear the reason on the cell.
+        cell.reason.set(None);
     }
 
     /// Canonicalize the coordinates of a cell.
@@ -763,6 +752,35 @@ impl World {
     pub fn get_cell_state(&self, coord: Coord) -> Option<CellState> {
         self.get_cell_by_coord(self.canonicalize_coord(coord))
             .map_or(Some(CellState::Dead), LifeCell::state)
+    }
+
+    /// Get the reason why a cell is set to its current state.
+    ///
+    /// The coordinates are [canonicalized](World::canonicalize_coord) before getting the reason.
+    ///
+    /// If the cell is outside the world after canonicalization, returns [`Some(Reason::Known)`]
+    /// (cells outside the world are implicitly dead from the configuration).
+    ///
+    /// If the cell is unknown, return [`None`].
+    #[inline]
+    pub fn get_cell_reason(&self, coord: Coord) -> Option<Reason> {
+        self.get_cell_by_coord(self.canonicalize_coord(coord))
+            .map_or(Some(Reason::Known), |cell| cell.reason.get())
+    }
+
+    /// Get the known cells from the configuration.
+    #[inline]
+    pub fn known_cells(&self) -> &[KnownCell] {
+        &self.config.known_cells
+    }
+
+    /// Get the number of cells that have been set (checked) during the search.
+    ///
+    /// This is the size of the internal stack, reflecting how many state assignments
+    /// have been made. It is a proxy for search progress.
+    #[inline]
+    pub const fn cells_checked(&self) -> usize {
+        self.stack.len()
     }
 
     /// Get the search status.

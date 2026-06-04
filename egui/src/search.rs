@@ -252,7 +252,7 @@ impl Search {
 
     /// Handle an [`Event`] from the main thread, and return a [`Message`].
     fn handle_event(&mut self, event: Event) -> Message {
-        log::debug!("Received event: {:?}", event);
+        log::debug!("Received event: {event:?}");
         match event {
             Event::Start => self.start(),
             Event::Pause => self.pause(),

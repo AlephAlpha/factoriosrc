@@ -1,8 +1,9 @@
 use crate::{
     app::{App, Mode},
-    args::{Cli, Command},
+    args::Command,
     event::EventHandler,
 };
+use arboard::Clipboard;
 use color_eyre::Result;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -22,12 +23,12 @@ pub struct Tui {
 }
 
 impl Tui {
-    /// Create a new [`Tui`] from the command line arguments.
-    pub fn new(args: Cli) -> Result<Self> {
+    /// Create a new [`Tui`] from the command.
+    pub fn new(cmd: Command) -> Result<Self> {
         let backend = CrosstermBackend::new(stdout());
         let terminal = Terminal::new(backend)?;
 
-        let app = match args.command {
+        let app = match cmd {
             Command::New(args) => App::new(args)?,
             Command::Load(args) => App::load(args)?,
         };
@@ -90,7 +91,15 @@ impl Tui {
             } else {
                 let event = self.event_handler.recv()?;
                 self.app.update(event);
-            };
+            }
+
+            if self.app.should_copy {
+                self.app.should_copy = false;
+                let rle = self.app.current_rle();
+                if let Ok(mut cb) = Clipboard::new() {
+                    let _ = cb.set_text(&rle);
+                }
+            }
 
             self.draw()?;
         }

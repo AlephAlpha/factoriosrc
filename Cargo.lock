@@ -1155,6 +1155,7 @@ dependencies = [
 name = "factoriosrc-tui"
 version = "0.1.0"
 dependencies = [
+ "arboard",
  "clap",
  "color-eyre",
  "crossterm",

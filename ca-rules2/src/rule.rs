@@ -237,7 +237,7 @@ impl NeighborhoodType {
                     }
                 }
             }
-        };
+        }
         coords
     }
 

@@ -1,10 +1,10 @@
 use rand::RngExt;
 
 use crate::{
-    cell::LifeCell,
+    cell::{LifeCell, Reason},
     config::NewState,
     rule::{CellState, Implication},
-    world::{Reason, Status, World},
+    world::{Status, World},
 };
 
 impl World {

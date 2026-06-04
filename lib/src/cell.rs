@@ -1,6 +1,26 @@
 use crate::rule::{CellState, Descriptor, MAX_NEIGHBORHOOD_SIZE};
 use std::cell::Cell;
 
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
+
+/// The reason why a cell is set to a state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub enum Reason {
+    /// The state is known from the configuration before the search.
+    #[cfg_attr(feature = "serde", serde(rename = "k"))]
+    Known,
+
+    /// The state is deduced from some other cells.
+    #[cfg_attr(feature = "serde", serde(rename = "d"))]
+    Deduced,
+
+    /// The state is chosen as a guess.
+    #[cfg_attr(feature = "serde", serde(rename = "g"))]
+    Guessed,
+}
+
 /// A cell in the cellular automaton.
 ///
 /// The name `LifeCell` is used to avoid confusion with the [`Cell`] type in `std::cell`.
@@ -47,6 +67,11 @@ pub struct LifeCell {
     ///
     /// This is used to ensure that the front is always non-empty.
     pub(crate) is_front: bool,
+
+    /// The reason why this cell was set to its current state.
+    ///
+    /// [`None`] if the cell is unknown.
+    pub(crate) reason: Cell<Option<Reason>>,
 }
 
 impl LifeCell {
@@ -64,6 +89,7 @@ impl LifeCell {
             symmetry: Vec::new(),
             next: std::ptr::null(),
             is_front: false,
+            reason: Cell::new(None),
         }
     }
 

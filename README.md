@@ -6,6 +6,8 @@ This program is still work in progress. Many features are still missing.
 
 Now it has a simple text-based UI. A simple GUI is work in progress. A web UI will be added in the future.
 
+Since 2026, most of the development has been done by AI assistants. I don't have time to review all the AI-generated code, so there may be bugs. Please report any issues you find.
+
 ## Usage
 
 You need to install [Rust](https://rustup.rs/) first.
@@ -21,7 +23,7 @@ cargo build --release
 Print the help message:
 
 ```bash
-cargo run --bin factoriosrc-tui --release -- --help
+cargo run --bin factoriosrc-tui --release -- help
 ```
 
 Search for a c/2 spaceship with [D2-](https://conwaylife.com/wiki/Static_symmetry#D2) symmetry in a bounding box of size 30x10:
@@ -46,7 +48,7 @@ The program is still work in progress, so the usage may change, and the format o
 
 ### GUI
 
-The GUI is still work in progress. I have only tested it on Linux. It may not work on other platforms.
+The GUI is still work in progress. I have only tested it on Linux. I'm not sure if it works on other platforms.
 
 ```bash
 cargo run --bin factoriosrc-egui --release
@@ -70,12 +72,13 @@ Features that rlifesrc has but factoriosrc doesn't:
   - [ ] Non-totalistic rules.
   - [ ] Generations rules.
   - [ ] Hexagonal rules.
-  - [ ] Check the symmetry of a rule.
+  - [ ] Check the symmetry of a rule. So that we can know what symmetries and transformations are compatible with the rule, and whether [the front optimization](docs/front.md) can be applied.
   - [ ] Update (or completely rewrite) the [ca-rules](https://crates.io/crates/ca-rules) crate.
 - [x] Support trying a random state for unknown cells.
 - [ ] Set some cells to be known in the configuration.
   - [x] Support setting known cells in the lib.
-  - [ ] Support setting known cells in the CLI, TUI, and GUI.
+  - [x] Support setting known cells in the CLI and the TUI.
+  - [ ] Support setting known cells in the GUI.
 - [ ] Fully custom search order, where the user specifies the exact cell-by-cell traversal (for example, serpentine rows or a spiral from the center).
 - [x] Save and load the search state.
 - [x] GUI.
@@ -96,8 +99,11 @@ Features that rlifesrc doesn't have and factoriosrc may add:
 - [x] A seedable RNG. (https://github.com/AlephAlpha/rlifesrc/issues/183)
   - [x] Use a RNG with `serde` support, so that we can save and load the random state.
 - [ ] More user-friendly UI.
-  - [ ] Set cells to be known by clicking.
+  - [ ] Add scrollbars in the TUI.
+  - [ ] Support mouse input in the TUI, e.g., to choose a field to edit in the config panel.
+  - [ ] Set cells to be known by clicking, in both the TUI and the GUI.
   - [ ] Automatically save the search state in the browser cache. (https://github.com/AlephAlpha/rlifesrc/issues/366)
+- [ ] Set some cells to be known during the search.
 - [ ] More. See rlifesrc's issues.
 
 And finally:
