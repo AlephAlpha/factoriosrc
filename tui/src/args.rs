@@ -2,6 +2,12 @@ use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum, error::ErrorKind
 use factoriosrc_lib::{CellState, Config, KnownCell};
 use std::path::PathBuf;
 
+const CLI_ABOUT: &str = "Search for oscillators, spaceships, and other patterns in Factorio and related cellular automata.";
+const CLI_LONG_ABOUT: &str = "Search for oscillators, spaceships, and other patterns in Factorio and related cellular automata.\n\nUse 'new' to start from a configuration, or 'load' to resume a saved search. In an interactive terminal the TUI starts automatically; otherwise the program falls back to non-TUI output.";
+const CLI_AFTER_HELP: &str = "Examples:\n  factoriosrc-tui new 30 10 2 -x 1 -s D2-\n  factoriosrc-tui new 30 8 3 -x 1 -r R2,C0,S4-6,B5-6,N# --save save.json\n  factoriosrc-tui load save.json\n\nRun 'factoriosrc-tui COMMAND --help' for command-specific examples and options.";
+const NEW_AFTER_HELP: &str = "Examples:\n  factoriosrc-tui new 30 10 2 -x 1 -s D2-\n  factoriosrc-tui new 30 8 3 -x 1 -r R2,C0,S4-6,B5-6,N# --save save.json\n  factoriosrc-tui new 20 20 1 --known-cell 0,0,0,alive --known-cell 1,0,0,dead\n\nTips:\n  Omit WIDTH or HEIGHT in an interactive terminal to open the configuration screen first.\n  Use --no-tui for scripts or when you only want final output.";
+const LOAD_AFTER_HELP: &str = "Examples:\n  factoriosrc-tui load save.json\n  factoriosrc-tui load save.json --step 50000 --no-stop true\n\nTips:\n  If --save is omitted, the loaded path is reused for saving on exit.\n  Use --no-tui to print results directly instead of entering the TUI.";
+
 /// Output format for non-TUI mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
 pub enum OutputFormat {
@@ -16,6 +22,12 @@ pub enum OutputFormat {
 
 /// A simple tool to search for patterns in Factorio and other cellular automata.
 #[derive(Debug, Parser)]
+#[command(
+    about = CLI_ABOUT,
+    long_about = CLI_LONG_ABOUT,
+    after_help = CLI_AFTER_HELP,
+    arg_required_else_help = true
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
@@ -33,11 +45,12 @@ pub enum Command {
 
 /// Start a new search.
 #[derive(Debug, Args)]
+#[command(after_help = NEW_AFTER_HELP)]
 pub struct NewArgs {
     #[command(flatten)]
     pub config: Config,
 
-    /// Number of steps between each display of the current partial result.
+    /// Display/update interval in search steps.
     ///
     /// If the TUI interface is disabled, the program will print the current partial result
     /// every `step` steps. If `step` is not specified, it will only print the final result.
@@ -47,7 +60,7 @@ pub struct NewArgs {
     #[arg(long)]
     pub step: Option<usize>,
 
-    /// Whether to increase the world size when the search fails.
+    /// Restart with a slightly larger world after an exhausted search.
     ///
     /// If the diagonal width exists and is smaller than the width, it will be increased by 1.
     /// Otherwise, if the height is greater than the width, the width will increased by 1.
@@ -61,13 +74,13 @@ pub struct NewArgs {
     #[arg(long)]
     pub increase_world_size: bool,
 
-    /// Do not stop the search when a solution is found.
+    /// Continue searching after the first solution.
     ///
     /// The search will continue until no more solutions exist, or paused by the user.
     #[arg(long)]
     pub no_stop: bool,
 
-    /// Whether to disable the TUI interface.
+    /// Force non-TUI output.
     ///
     /// If the program is run in a non-interactive environment (e.g. when stdout is not a TTY),
     /// the TUI interface will be automatically disabled, and this flag will be ignored.
@@ -77,7 +90,7 @@ pub struct NewArgs {
     #[arg(long)]
     pub no_tui: bool,
 
-    /// A path to save the state of the search.
+    /// Save search state to this file on exit.
     ///
     /// If not specified, the state will not be saved.
     ///
@@ -85,7 +98,7 @@ pub struct NewArgs {
     #[arg(long)]
     pub save: Option<PathBuf>,
 
-    /// Set a cell to a known state, specified as `x,y,t,state`.
+    /// Pin a cell to a known state as `x,y,t,state`.
     ///
     /// `state` is either `alive` or `dead`. This option can be repeated.
     ///
@@ -93,7 +106,7 @@ pub struct NewArgs {
     #[arg(short = 'k', long = "known-cell", value_name = "X,Y,T,STATE")]
     pub known_cells: Vec<String>,
 
-    /// Path to a file containing known cells.
+    /// Read known cells from a file.
     ///
     /// Format: one cell per line `x,y,t,state`.
     #[arg(long, value_name = "PATH")]
@@ -103,18 +116,19 @@ pub struct NewArgs {
     #[arg(long, value_name = "FORMAT", default_value = "rle")]
     pub format: OutputFormat,
 
-    /// Generation to display (only used in non-TUI mode).
+    /// Generation to print in non-TUI mode.
     #[arg(short = 'g', long, value_name = "GEN", default_value_t = 0)]
     pub generation: i32,
 }
 
 /// Load a saved search.
 #[derive(Debug, Args)]
+#[command(after_help = LOAD_AFTER_HELP)]
 pub struct LoadArgs {
     /// A path to load the state of the search.
     pub load: PathBuf,
 
-    /// A path to save the state of the search.
+    /// Save search state to this file on exit.
     ///
     /// If not specified, it will default to the path of the loaded state.
     ///
@@ -122,7 +136,7 @@ pub struct LoadArgs {
     #[arg(long)]
     pub save: Option<PathBuf>,
 
-    /// Override the step size for the loaded search.
+    /// Override the display/update interval for the loaded search.
     #[arg(long)]
     pub step: Option<usize>,
 
@@ -130,11 +144,11 @@ pub struct LoadArgs {
     #[arg(long)]
     pub no_stop: Option<bool>,
 
-    /// Override whether to increase the world size when the search fails.
+    /// Override whether to enlarge the world after an exhausted search.
     #[arg(long)]
     pub increase_world_size: Option<bool>,
 
-    /// Whether to disable the TUI interface.
+    /// Force non-TUI output.
     ///
     /// If the program is run in a non-interactive environment (e.g. when stdout is not a TTY),
     /// the TUI interface will be automatically disabled, and this flag will be ignored.
@@ -148,7 +162,7 @@ pub struct LoadArgs {
     #[arg(long, value_name = "FORMAT", default_value = "rle")]
     pub format: OutputFormat,
 
-    /// Generation to display (only used in non-TUI mode).
+    /// Generation to print in non-TUI mode.
     #[arg(short = 'g', long, value_name = "GEN")]
     pub generation: Option<i32>,
 }
@@ -162,7 +176,10 @@ impl Cli {
             Command::New(args) => {
                 if args.step == Some(0) {
                     Self::command()
-                        .error(ErrorKind::ValueValidation, "step must be > 0")
+                        .error(
+                            ErrorKind::ValueValidation,
+                            "invalid --step value: expected a positive integer greater than 0",
+                        )
                         .exit();
                 }
 
@@ -174,9 +191,8 @@ impl Cli {
                             .error(
                                 ErrorKind::ValueValidation,
                                 format!(
-                                    "invalid --known-cell format: '{s}'. \
-                                     Expected 'x,y,t,state' where state is \
-                                     'alive'/'dead' or '1'/'0'"
+                                    "invalid --known-cell value '{s}': expected \
+                                     'x,y,t,state' where state is 'alive'/'dead' or '1'/'0'"
                                 ),
                             )
                             .exit();
@@ -190,8 +206,8 @@ impl Cli {
                             .error(
                                 ErrorKind::ValueValidation,
                                 format!(
-                                    "invalid coordinates in '--known-cell {s}': \
-                                         x, y, t must be non-negative integers"
+                                    "invalid coordinates in '--known-cell {s}': expected x, y, \
+                                     and t to be non-negative integers"
                                 ),
                             )
                             .exit();
@@ -204,8 +220,8 @@ impl Cli {
                                 .error(
                                     ErrorKind::ValueValidation,
                                     format!(
-                                        "invalid state '{}' in '--known-cell {s}': \
-                                         expected 'alive'/'dead' or '1'/'0'",
+                                        "invalid state '{}' in '--known-cell {s}': expected \
+                                         'alive'/'dead' or '1'/'0'",
                                         parts[3]
                                     ),
                                 )
@@ -239,9 +255,9 @@ impl Cli {
                                 .error(
                                     ErrorKind::ValueValidation,
                                     format!(
-                                        "invalid format in '{}' line {}: '{line}'. \
-                                         Expected 'x,y,t,state' where state is \
-                                         'alive'/'dead' or '1'/'0'",
+                                        "invalid known-cells file entry in '{}' line {}: '{line}'. \
+                                         Expected 'x,y,t,state' where state is 'alive'/'dead' \
+                                         or '1'/'0'",
                                         path.display(),
                                         line_num + 1
                                     ),
@@ -257,8 +273,8 @@ impl Cli {
                                 .error(
                                     ErrorKind::ValueValidation,
                                     format!(
-                                        "invalid coordinates in '{}' line {}: \
-                                             x, y, t must be non-negative integers",
+                                        "invalid coordinates in '{}' line {}: expected x, y, and \
+                                         t to be non-negative integers",
                                         path.display(),
                                         line_num + 1
                                     ),
@@ -273,8 +289,8 @@ impl Cli {
                                     .error(
                                         ErrorKind::ValueValidation,
                                         format!(
-                                            "invalid state '{}' in '{}' line {}: \
-                                             expected 'alive'/'dead' or '1'/'0'",
+                                            "invalid state '{}' in '{}' line {}: expected \
+                                             'alive'/'dead' or '1'/'0'",
                                             parts[3],
                                             path.display(),
                                             line_num + 1
@@ -289,7 +305,10 @@ impl Cli {
 
                 if args.generation < 0 {
                     Self::command()
-                        .error(ErrorKind::ValueValidation, "generation must be >= 0")
+                        .error(
+                            ErrorKind::ValueValidation,
+                            "invalid --generation value: expected a non-negative integer",
+                        )
                         .exit();
                 }
 

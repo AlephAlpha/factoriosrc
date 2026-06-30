@@ -1,11 +1,19 @@
 use crate::{
     args::{LoadArgs, NewArgs},
-    event::TermEvent,
+    event::{MouseAction, MouseInput, TermEvent},
+    layout::{
+        centered_popup_rect, point_in_rect, split_grid_scrollable_area, split_main_layout,
+        split_mark_layout, split_vertical_scrollable_area,
+    },
 };
 use color_eyre::Result;
 use crossterm::event::KeyCode;
 use factoriosrc_lib::{
     CellState, Config, KnownCell, NewState, SearchOrder, Status, Symmetry, Transformation, World,
+};
+use ratatui::{
+    layout::{Margin, Rect},
+    text::Text,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -139,12 +147,28 @@ impl ConfigField {
     }
 }
 
+/// A viewport offset for oversized content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ViewportOffset {
+    pub x: u16,
+    pub y: u16,
+}
+
+/// Ephemeral TUI state that should not be serialized into save files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct UiState {
+    pub terminal_area: Rect,
+    pub search_viewport: ViewportOffset,
+    pub help_scroll: u16,
+}
+
 /// State for the mark-known-cells mode.
 #[derive(Debug, Clone)]
 pub struct MarkState {
     pub cursor_x: u32,
     pub cursor_y: u32,
     pub known_cells: Vec<KnownCell>,
+    pub viewport: ViewportOffset,
 }
 
 /// State for the configuration form.
@@ -162,6 +186,15 @@ pub struct ConfigState {
 }
 
 impl ConfigState {
+    fn trim_known_cells_to_world(&mut self) {
+        let width = self.working_config.width;
+        let height = self.working_config.height;
+        let period = self.working_config.period;
+        self.working_config
+            .known_cells
+            .retain(|cell| cell.x < width && cell.y < height && cell.t < period);
+    }
+
     /// Get the string representation of a config field's current value.
     pub fn field_value(&self, field: ConfigField) -> String {
         let cfg = &self.working_config;
@@ -199,25 +232,31 @@ impl ConfigState {
                 self.working_config.rule_str = self.edit_buffer.clone();
             }
             ConfigField::Width => {
-                let Ok(v) = self.edit_buffer.parse::<u32>() else {
+                if let Ok(v) = self.edit_buffer.parse::<u32>()
+                    && v > 0
+                {
+                    self.working_config.width = v;
+                } else {
                     self.error = Some("width must be a positive integer".to_string());
-                    return;
-                };
-                self.working_config.width = v;
+                }
             }
             ConfigField::Height => {
-                let Ok(v) = self.edit_buffer.parse::<u32>() else {
+                if let Ok(v) = self.edit_buffer.parse::<u32>()
+                    && v > 0
+                {
+                    self.working_config.height = v;
+                } else {
                     self.error = Some("height must be a positive integer".to_string());
-                    return;
-                };
-                self.working_config.height = v;
+                }
             }
             ConfigField::Period => {
-                let Ok(v) = self.edit_buffer.parse::<u32>() else {
+                if let Ok(v) = self.edit_buffer.parse::<u32>()
+                    && v > 0
+                {
+                    self.working_config.period = v;
+                } else {
                     self.error = Some("period must be a positive integer".to_string());
-                    return;
-                };
-                self.working_config.period = v;
+                }
             }
             ConfigField::Dx => {
                 let Ok(v) = self.edit_buffer.parse::<i32>() else {
@@ -345,6 +384,16 @@ impl ConfigState {
                 };
                 self.working_config.search_order = VARIANTS[next];
             }
+            ConfigField::ReduceMaxPopulation => {
+                self.working_config.reduce_max_population =
+                    !self.working_config.reduce_max_population;
+            }
+            ConfigField::IncreaseWorldSize => {
+                self.increase_world_size = !self.increase_world_size;
+            }
+            ConfigField::NoStop => {
+                self.no_stop = !self.no_stop;
+            }
             ConfigField::DiagonalWidth => {
                 match self.working_config.diagonal_width {
                     Some(_) => self.working_config.diagonal_width = None,
@@ -413,6 +462,9 @@ pub struct App {
     /// Mark-known-cells mode state.
     #[serde(skip)]
     pub mark_state: Option<MarkState>,
+    /// Ephemeral UI state used for layout and future pointer interactions.
+    #[serde(skip)]
+    pub ui_state: UiState,
 }
 
 impl App {
@@ -445,6 +497,7 @@ impl App {
         let save = args.save;
         let config_state = None;
         let mark_state = None;
+        let ui_state = UiState::default();
 
         let mut app = Self {
             world,
@@ -462,6 +515,7 @@ impl App {
             save,
             config_state,
             mark_state,
+            ui_state,
         };
 
         if needs_config {
@@ -499,6 +553,472 @@ impl App {
             std::fs::write(save, json)?;
         }
         Ok(())
+    }
+
+    /// Synchronize transient terminal metrics used by the TUI.
+    pub const fn sync_terminal_area(&mut self, area: Rect) {
+        self.ui_state.terminal_area = area;
+    }
+
+    fn current_view_content_size(&self) -> (u16, u16) {
+        if self.viewing_solution.is_some() {
+            let rle = self.current_rle();
+            let height = rle.lines().count().max(1).min(u16::MAX as usize) as u16;
+            let width = rle
+                .lines()
+                .map(|line| line.chars().count())
+                .max()
+                .unwrap_or(0)
+                .min(u16::MAX as usize) as u16;
+            (width, height)
+        } else {
+            (
+                self.world.config().width as u16,
+                self.world.config().height as u16,
+            )
+        }
+    }
+
+    fn pan_search_viewport(&mut self, dx: i16, dy: i16) {
+        let (content_width, content_height) = self.current_view_content_size();
+        self.ui_state.search_viewport.x = self
+            .ui_state
+            .search_viewport
+            .x
+            .saturating_add_signed(dx)
+            .min(content_width.saturating_sub(1));
+        self.ui_state.search_viewport.y = self
+            .ui_state
+            .search_viewport
+            .y
+            .saturating_add_signed(dy)
+            .min(content_height.saturating_sub(1));
+    }
+
+    fn reset_search_viewport(&mut self) {
+        self.ui_state.search_viewport = ViewportOffset::default();
+    }
+
+    const fn scroll_help(&mut self, delta: i16) {
+        self.ui_state.help_scroll = self.ui_state.help_scroll.saturating_add_signed(delta);
+    }
+
+    const fn reset_help_scroll(&mut self) {
+        self.ui_state.help_scroll = 0;
+    }
+
+    fn search_page_step(&self) -> i16 {
+        self.ui_state.terminal_area.height.saturating_sub(4).max(1) as i16
+    }
+
+    fn config_page_step(&self) -> usize {
+        self.ui_state.terminal_area.height.saturating_sub(4).max(1) as usize
+    }
+
+    fn mark_viewport_span(&self) -> ViewportOffset {
+        let area = self.ui_state.terminal_area;
+        let main_height = area.height.saturating_sub(2);
+        let visible_height = main_height.saturating_sub(1).max(1);
+        let visible_width = area.width.max(1);
+        ViewportOffset {
+            x: visible_width,
+            y: visible_height,
+        }
+    }
+
+    fn sync_mark_viewport_to_cursor(&mut self) {
+        let span = self.mark_viewport_span();
+        let Some(state) = &mut self.mark_state else {
+            return;
+        };
+
+        let cursor_x = state.cursor_x as u16;
+        let cursor_y = state.cursor_y as u16;
+
+        if cursor_x < state.viewport.x {
+            state.viewport.x = cursor_x;
+        } else if cursor_x >= state.viewport.x.saturating_add(span.x) {
+            state.viewport.x = cursor_x.saturating_add(1).saturating_sub(span.x);
+        }
+
+        if cursor_y < state.viewport.y {
+            state.viewport.y = cursor_y;
+        } else if cursor_y >= state.viewport.y.saturating_add(span.y) {
+            state.viewport.y = cursor_y.saturating_add(1).saturating_sub(span.y);
+        }
+    }
+
+    fn move_config_focus(&mut self, delta: isize) {
+        let field = self
+            .config_state
+            .as_ref()
+            .map(|state| state.fields[state.focus_index]);
+        let Some(field) = field else {
+            return;
+        };
+
+        if field.is_text_field()
+            && let Some(state) = &mut self.config_state
+        {
+            state.commit_edit();
+        }
+        if self
+            .config_state
+            .as_ref()
+            .is_some_and(|state| state.error.is_some())
+        {
+            return;
+        }
+
+        if let Some(state) = &mut self.config_state {
+            let len = state.fields.len() as isize;
+            let next = (state.focus_index as isize + delta).rem_euclid(len) as usize;
+            state.focus_index = next;
+            state.edit_buffer = state.field_value(state.fields[state.focus_index]);
+        }
+    }
+
+    fn config_field_line_indices(&self) -> Option<Vec<usize>> {
+        let state = self.config_state.as_ref()?;
+        let mut lines = 0usize;
+        let mut indices = vec![0usize; state.fields.len()];
+
+        for (i, field) in state.fields.iter().enumerate() {
+            if field.is_button() {
+                if matches!(field, ConfigField::Apply) {
+                    lines += 1;
+                }
+                indices[i] = lines;
+                lines += 1;
+                if matches!(field, ConfigField::Cancel) {
+                    lines += 1;
+                }
+            } else {
+                indices[i] = lines;
+                lines += 1;
+            }
+        }
+
+        Some(indices)
+    }
+
+    fn handle_config_mouse_event(&mut self, mouse: MouseInput) {
+        if self.config_state.is_none() {
+            return;
+        }
+        if self
+            .config_state
+            .as_ref()
+            .is_some_and(|state| state.show_confirm)
+        {
+            if matches!(mouse.action, MouseAction::LeftDown) {
+                let rect = centered_popup_rect(
+                    self.ui_state.terminal_area,
+                    &Text::from(
+                        "Changing the configuration will reset all search progress.\n\nAre you sure? ([y]/[n])",
+                    ),
+                );
+                if point_in_rect(mouse.column, mouse.row, rect) {
+                    self.apply_config_with_confirmation(true);
+                } else if let Some(state) = &mut self.config_state {
+                    state.show_confirm = false;
+                }
+            }
+            return;
+        }
+
+        let area = self.ui_state.terminal_area;
+        let inner = area.inner(Margin {
+            vertical: 1,
+            horizontal: 1,
+        });
+        let field_lines = match self.config_field_line_indices() {
+            Some(indices) => indices,
+            None => return,
+        };
+        let scroll_offset = self
+            .config_state
+            .as_ref()
+            .map(|state| state.scroll_offset.get())
+            .unwrap_or(0);
+        let total_lines = field_lines.last().copied().unwrap_or(0).saturating_add(3);
+        let scroll = split_vertical_scrollable_area(inner, total_lines as u16);
+
+        match mouse.action {
+            MouseAction::ScrollUp => {
+                if let Some(state) = &mut self.config_state {
+                    state.scroll_offset.set(scroll_offset.saturating_sub(1));
+                }
+            }
+            MouseAction::ScrollDown => {
+                let viewport = scroll.viewport.height.max(1) as usize;
+                let max_offset = total_lines.saturating_sub(viewport);
+                if let Some(state) = &mut self.config_state {
+                    state
+                        .scroll_offset
+                        .set(scroll_offset.saturating_add(1).min(max_offset));
+                }
+            }
+            MouseAction::LeftDown | MouseAction::LeftDrag => {
+                if !point_in_rect(mouse.column, mouse.row, scroll.viewport) {
+                    return;
+                }
+                let line = scroll_offset + mouse.row.saturating_sub(scroll.viewport.y) as usize;
+                let Some((focus_index, _)) = field_lines
+                    .iter()
+                    .enumerate()
+                    .find(|(_, field_line)| **field_line == line)
+                else {
+                    return;
+                };
+
+                if let Some(state) = &mut self.config_state {
+                    state.focus_index = focus_index;
+                    let field = state.fields[focus_index];
+                    state.edit_buffer = state.field_value(field);
+                }
+
+                let field = self
+                    .config_state
+                    .as_ref()
+                    .map(|state| state.fields[focus_index])
+                    .expect("config state should exist after setting focus");
+                match field {
+                    ConfigField::Apply => self.apply_config(),
+                    ConfigField::Cancel => self.cancel_config(),
+                    ConfigField::KnownCells => {
+                        self.handle_config_event(KeyCode::Enter);
+                    }
+                    _ if field.is_direct_edit() => {
+                        if let Some(state) = &mut self.config_state {
+                            state.cycle_field(field, true);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn handle_mark_mouse_event(&mut self, mouse: MouseInput) {
+        let Some(_) = self.mark_state else {
+            return;
+        };
+
+        let area = self.ui_state.terminal_area;
+        let layout = split_mark_layout(area);
+        let (width, height) = self
+            .config_state
+            .as_ref()
+            .map(|state| {
+                (
+                    state.working_config.width as u16,
+                    state.working_config.height as u16,
+                )
+            })
+            .unwrap_or_else(|| {
+                (
+                    self.world.config().width as u16,
+                    self.world.config().height as u16,
+                )
+            });
+        let scroll = split_grid_scrollable_area(layout.main, width, height);
+
+        match mouse.action {
+            MouseAction::ScrollUp => {
+                if let Some(state) = &mut self.mark_state {
+                    state.viewport.y = state.viewport.y.saturating_sub(1);
+                }
+            }
+            MouseAction::ScrollDown => {
+                if let Some(state) = &mut self.mark_state {
+                    state.viewport.y = state.viewport.y.saturating_add(1);
+                }
+            }
+            MouseAction::LeftDown | MouseAction::LeftDrag => {
+                if !point_in_rect(mouse.column, mouse.row, scroll.body) {
+                    return;
+                }
+                let (viewport_x, viewport_y) = self
+                    .mark_state
+                    .as_ref()
+                    .map(|state| (state.viewport.x, state.viewport.y))
+                    .unwrap_or_default();
+                let world_x = viewport_x + mouse.column.saturating_sub(scroll.body.x);
+                let world_y = viewport_y + mouse.row.saturating_sub(scroll.body.y);
+                if world_x >= width || world_y >= height {
+                    return;
+                }
+
+                if let Some(state) = &mut self.mark_state {
+                    state.cursor_x = world_x as u32;
+                    state.cursor_y = world_y as u32;
+                }
+
+                if matches!(mouse.action, MouseAction::LeftDown) {
+                    let coord = (world_x as u32, world_y as u32, self.generation as u32);
+                    if let Some(state) = &mut self.mark_state {
+                        let pos = state
+                            .known_cells
+                            .iter()
+                            .position(|k| (k.x, k.y, k.t) == coord);
+                        match pos {
+                            Some(i) if state.known_cells[i].state == CellState::Alive => {
+                                state.known_cells[i].state = CellState::Dead;
+                            }
+                            Some(i) => {
+                                state.known_cells.remove(i);
+                            }
+                            None => {
+                                state.known_cells.push(KnownCell::new(
+                                    world_x as u32,
+                                    world_y as u32,
+                                    self.generation as u32,
+                                    CellState::Alive,
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    const fn handle_usage_mouse_event(&mut self, mouse: MouseInput) {
+        if matches!(mouse.action, MouseAction::ScrollUp) {
+            self.scroll_help(-1);
+        } else if matches!(mouse.action, MouseAction::ScrollDown) {
+            self.scroll_help(1);
+        } else if matches!(mouse.action, MouseAction::LeftDown) {
+            self.mode = Mode::Paused;
+        }
+    }
+
+    fn handle_quit_mouse_event(&mut self, mouse: MouseInput) {
+        if !matches!(mouse.action, MouseAction::LeftDown) {
+            return;
+        }
+        let rect = centered_popup_rect(
+            split_main_layout(self.ui_state.terminal_area).main,
+            &Text::from("Are you sure you want to quit? ([y]/[n])"),
+        );
+        if point_in_rect(mouse.column, mouse.row, rect) {
+            self.should_quit = true;
+        } else {
+            self.mode = Mode::Paused;
+        }
+    }
+
+    fn handle_search_view_mouse_event(&mut self, mouse: MouseInput) {
+        match mouse.action {
+            MouseAction::ScrollUp => self.pan_search_viewport(0, -1),
+            MouseAction::ScrollDown => self.pan_search_viewport(0, 1),
+            _ => {}
+        }
+    }
+
+    fn handle_search_navigation_key(&mut self, key: KeyCode) -> bool {
+        match key {
+            KeyCode::Char('=' | '+') => {
+                self.next_generation();
+                true
+            }
+            KeyCode::Char('-' | '_') => {
+                self.previous_generation();
+                true
+            }
+            KeyCode::PageUp => {
+                self.pan_search_viewport(0, -self.search_page_step());
+                true
+            }
+            KeyCode::PageDown => {
+                self.pan_search_viewport(0, self.search_page_step());
+                true
+            }
+            KeyCode::Up => {
+                self.pan_search_viewport(0, -1);
+                true
+            }
+            KeyCode::Down => {
+                self.pan_search_viewport(0, 1);
+                true
+            }
+            KeyCode::Left => {
+                self.pan_search_viewport(-1, 0);
+                true
+            }
+            KeyCode::Right => {
+                self.pan_search_viewport(1, 0);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn handle_running_key(&mut self, key: KeyCode) {
+        if self.handle_search_navigation_key(key) {
+            return;
+        }
+
+        match key {
+            KeyCode::Char('q' | 'Q') | KeyCode::Esc => {
+                self.pause();
+                self.mode = Mode::Quit;
+            }
+            KeyCode::Char(' ') | KeyCode::Enter => {
+                self.pause();
+            }
+            KeyCode::Char('h' | 'H') => {
+                self.pause();
+                self.reset_help_scroll();
+                self.mode = Mode::Usage;
+            }
+            KeyCode::Char('o' | 'O') => {
+                self.pause();
+                self.enter_config_mode();
+            }
+            KeyCode::Char('c' | 'C') => {
+                self.should_copy = true;
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_paused_key(&mut self, key: KeyCode) {
+        if self.handle_search_navigation_key(key) {
+            return;
+        }
+
+        match key {
+            KeyCode::Char('q' | 'Q') | KeyCode::Esc => {
+                if self.viewing_solution.is_some() {
+                    self.viewing_solution = None;
+                } else {
+                    self.mode = Mode::Quit;
+                }
+            }
+            KeyCode::Char(' ') | KeyCode::Enter => {
+                self.viewing_solution = None;
+                self.start();
+            }
+            KeyCode::Char('h' | 'H') => {
+                self.reset_help_scroll();
+                self.mode = Mode::Usage;
+            }
+            KeyCode::Char('o' | 'O') => {
+                self.enter_config_mode();
+            }
+            KeyCode::Char('n' | 'N') => {
+                self.next_solution();
+            }
+            KeyCode::Char('p' | 'P') => {
+                self.previous_solution();
+            }
+            KeyCode::Char('c' | 'C') => {
+                self.should_copy = true;
+            }
+            _ => {}
+        }
     }
 
     /// Display the next generation.
@@ -579,35 +1099,40 @@ impl App {
     }
 
     /// Navigate to the next solution.
-    pub const fn next_solution(&mut self) {
+    pub fn next_solution(&mut self) {
         if self.solutions.is_empty() {
             return;
         }
         match self.viewing_solution {
             Some(i) if i + 1 < self.solutions.len() => {
                 self.viewing_solution = Some(i + 1);
+                self.reset_search_viewport();
             }
             None => {
                 self.generation = 0;
                 self.viewing_solution = Some(0);
+                self.reset_search_viewport();
             }
             _ => {}
         }
     }
 
     /// Navigate to the previous solution.
-    pub const fn previous_solution(&mut self) {
+    pub fn previous_solution(&mut self) {
         match self.viewing_solution {
             Some(0) => {
                 self.viewing_solution = None;
+                self.reset_search_viewport();
             }
             Some(i) => {
                 self.viewing_solution = Some(i - 1);
+                self.reset_search_viewport();
             }
             None => {
                 if let Some(last) = self.solutions.len().checked_sub(1) {
                     self.generation = 0;
                     self.viewing_solution = Some(last);
+                    self.reset_search_viewport();
                 }
             }
         }
@@ -643,9 +1168,20 @@ impl App {
 
     /// Apply the working configuration, rebuilding the World.
     pub fn apply_config(&mut self) {
+        self.apply_config_with_confirmation(false);
+    }
+
+    fn apply_config_with_confirmation(&mut self, confirmed: bool) {
         let Some(ref mut state) = self.config_state else {
             return;
         };
+
+        if state.working_config.width > 0
+            && state.working_config.height > 0
+            && state.working_config.period > 0
+        {
+            state.trim_known_cells_to_world();
+        }
 
         // Validate config.
         if let Err(e) = state.working_config.check() {
@@ -657,7 +1193,7 @@ impl App {
         let search_started =
             self.world.status() != Status::NotStarted || !self.solutions.is_empty();
 
-        if search_started && !state.show_confirm {
+        if search_started && !confirmed && !state.show_confirm {
             state.show_confirm = true;
             return;
         }
@@ -687,10 +1223,7 @@ impl App {
         if self.config_state.as_ref().is_some_and(|s| s.show_confirm) {
             match key {
                 KeyCode::Char('y' | 'Y') => {
-                    if let Some(s) = &mut self.config_state {
-                        s.show_confirm = false;
-                    }
-                    self.apply_config();
+                    self.apply_config_with_confirmation(true);
                 }
                 KeyCode::Char('n' | 'N') | KeyCode::Esc => {
                     if let Some(s) = &mut self.config_state {
@@ -707,41 +1240,22 @@ impl App {
 
         match key {
             KeyCode::Tab => {
-                if field.is_text_field()
-                    && let Some(s) = &mut self.config_state
-                {
-                    s.commit_edit();
-                }
-                if self
-                    .config_state
-                    .as_ref()
-                    .is_some_and(|s| s.error.is_some())
-                {
-                    return;
-                }
-                if let Some(s) = &mut self.config_state {
-                    s.focus_index = (s.focus_index + 1) % s.fields.len();
-                    s.edit_buffer = s.field_value(s.fields[s.focus_index]);
-                }
+                self.move_config_focus(1);
+            }
+            KeyCode::Down => {
+                self.move_config_focus(1);
             }
             KeyCode::BackTab => {
-                if field.is_text_field()
-                    && let Some(s) = &mut self.config_state
-                {
-                    s.commit_edit();
-                }
-                if self
-                    .config_state
-                    .as_ref()
-                    .is_some_and(|s| s.error.is_some())
-                {
-                    return;
-                }
-                if let Some(s) = &mut self.config_state {
-                    let len = s.fields.len();
-                    s.focus_index = (s.focus_index + len - 1) % len;
-                    s.edit_buffer = s.field_value(s.fields[s.focus_index]);
-                }
+                self.move_config_focus(-1);
+            }
+            KeyCode::Up => {
+                self.move_config_focus(-1);
+            }
+            KeyCode::PageDown => {
+                self.move_config_focus(self.config_page_step() as isize);
+            }
+            KeyCode::PageUp => {
+                self.move_config_focus(-(self.config_page_step() as isize));
             }
             KeyCode::Enter => {
                 if field.is_button() {
@@ -754,17 +1268,35 @@ impl App {
                     && let Some(s) = &mut self.config_state
                 {
                     s.commit_edit();
+                } else if field.is_direct_edit()
+                    && let Some(s) = &mut self.config_state
+                {
+                    s.cycle_field(field, true);
                 } else if field == ConfigField::KnownCells {
+                    let Some(config_state) = self.config_state.as_mut() else {
+                        return;
+                    };
+                    if config_state.working_config.width == 0
+                        || config_state.working_config.height == 0
+                        || config_state.working_config.period == 0
+                    {
+                        config_state.error = Some(
+                            "known cells editor requires positive width, height, and period"
+                                .to_string(),
+                        );
+                        return;
+                    }
+                    config_state.trim_known_cells_to_world();
+                    self.generation = self
+                        .generation
+                        .min(config_state.working_config.period.saturating_sub(1) as i32);
                     // Enter mark-known-cells mode.
-                    let known_cells = self
-                        .config_state
-                        .as_ref()
-                        .map(|s| s.working_config.known_cells.clone())
-                        .unwrap_or_default();
+                    let known_cells = config_state.working_config.known_cells.clone();
                     self.mark_state = Some(MarkState {
                         cursor_x: 0,
                         cursor_y: 0,
                         known_cells,
+                        viewport: ViewportOffset::default(),
                     });
                     self.mode = Mode::MarkKnown;
                 }
@@ -785,23 +1317,13 @@ impl App {
                 }
             }
             KeyCode::Char(' ') => match field {
-                ConfigField::ReduceMaxPopulation => {
-                    if let Some(s) = &mut self.config_state {
-                        s.working_config.reduce_max_population ^= true;
-                    }
-                }
-                ConfigField::IncreaseWorldSize => {
-                    if let Some(s) = &mut self.config_state {
-                        s.increase_world_size ^= true;
-                    }
-                }
-                ConfigField::NoStop => {
-                    if let Some(s) = &mut self.config_state {
-                        s.no_stop ^= true;
-                    }
-                }
                 ConfigField::Apply => self.apply_config(),
                 ConfigField::Cancel => self.cancel_config(),
+                _ if field.is_direct_edit()
+                    && let Some(s) = &mut self.config_state =>
+                {
+                    s.cycle_field(field, true);
+                }
                 _ if field.is_text_field()
                     && let Some(s) = &mut self.config_state =>
                 {
@@ -834,32 +1356,63 @@ impl App {
 
     /// Handle a key event in mark-known-cells mode.
     fn handle_mark_event(&mut self, key: KeyCode) {
+        let (w, h, period) = self
+            .config_state
+            .as_ref()
+            .map(|state| {
+                (
+                    state.working_config.width,
+                    state.working_config.height,
+                    state.working_config.period,
+                )
+            })
+            .unwrap_or_else(|| {
+                (
+                    self.world.config().width,
+                    self.world.config().height,
+                    self.world.config().period,
+                )
+            });
+        let page_step = self.mark_viewport_span().y.max(1) as u32;
         let Some(ref mut state) = self.mark_state else {
             return;
         };
-        let w = self.world.config().width;
-        let h = self.world.config().height;
 
         match key {
             KeyCode::Up => {
                 if state.cursor_y > 0 {
                     state.cursor_y -= 1;
                 }
+                self.sync_mark_viewport_to_cursor();
             }
             KeyCode::Down => {
                 if state.cursor_y + 1 < h {
                     state.cursor_y += 1;
                 }
+                self.sync_mark_viewport_to_cursor();
             }
             KeyCode::Left => {
                 if state.cursor_x > 0 {
                     state.cursor_x -= 1;
                 }
+                self.sync_mark_viewport_to_cursor();
             }
             KeyCode::Right => {
                 if state.cursor_x + 1 < w {
                     state.cursor_x += 1;
                 }
+                self.sync_mark_viewport_to_cursor();
+            }
+            KeyCode::PageUp => {
+                state.cursor_y = state.cursor_y.saturating_sub(page_step);
+                self.sync_mark_viewport_to_cursor();
+            }
+            KeyCode::PageDown => {
+                state.cursor_y = state
+                    .cursor_y
+                    .saturating_add(page_step)
+                    .min(h.saturating_sub(1));
+                self.sync_mark_viewport_to_cursor();
             }
             KeyCode::Char(' ') => {
                 let coord = (state.cursor_x, state.cursor_y, self.generation as u32);
@@ -909,7 +1462,7 @@ impl App {
                 state.known_cells.retain(|k| (k.x, k.y, k.t) != coord);
             }
             KeyCode::Char('=' | '+') => {
-                let period = self.world.config().period as i32;
+                let period = period as i32;
                 if self.generation < period - 1 {
                     self.generation += 1;
                 }
@@ -925,6 +1478,7 @@ impl App {
                     && let Some(ref mut s) = self.config_state
                 {
                     s.working_config.known_cells = mark.known_cells;
+                    s.trim_known_cells_to_world();
                 }
                 self.mode = Mode::Config;
                 // Refresh edit buffer if KnownCells field is focused.
@@ -947,82 +1501,30 @@ impl App {
     pub fn update(&mut self, event: TermEvent) {
         match self.mode {
             Mode::Running => match event {
-                TermEvent::KeyPress(key) => match key {
-                    KeyCode::Char('q' | 'Q') | KeyCode::Esc => {
-                        self.pause();
-                        self.mode = Mode::Quit;
-                    }
-                    KeyCode::Char(' ') | KeyCode::Enter => {
-                        self.pause();
-                    }
-                    KeyCode::Char('=' | '+') => {
-                        self.next_generation();
-                    }
-                    KeyCode::Char('-' | '_') => {
-                        self.previous_generation();
-                    }
-                    KeyCode::Char('h' | 'H') => {
-                        self.pause();
-                        self.mode = Mode::Usage;
-                    }
-                    KeyCode::Char('o' | 'O') => {
-                        self.pause();
-                        self.enter_config_mode();
-                    }
-                    KeyCode::Char('c' | 'C') => {
-                        self.should_copy = true;
-                    }
-                    _ => {}
-                },
+                TermEvent::KeyPress(key) => self.handle_running_key(key),
+                TermEvent::Mouse(mouse) => self.handle_search_view_mouse_event(mouse),
                 TermEvent::Resize => {}
             },
             Mode::Paused => match event {
-                TermEvent::KeyPress(key) => match key {
-                    KeyCode::Char('q' | 'Q') | KeyCode::Esc => {
-                        if self.viewing_solution.is_some() {
-                            self.viewing_solution = None;
-                        } else {
-                            self.mode = Mode::Quit;
-                        }
-                    }
-                    KeyCode::Char(' ') | KeyCode::Enter => {
-                        self.viewing_solution = None;
-                        self.start();
-                    }
-                    KeyCode::Char('=' | '+') => {
-                        self.next_generation();
-                    }
-                    KeyCode::Char('-' | '_') => {
-                        self.previous_generation();
-                    }
-                    KeyCode::Char('h' | 'H') => {
-                        self.mode = Mode::Usage;
-                    }
-                    KeyCode::Char('o' | 'O') => {
-                        self.enter_config_mode();
-                    }
-                    KeyCode::Char('n' | 'N') => {
-                        self.next_solution();
-                    }
-                    KeyCode::Char('p' | 'P') => {
-                        self.previous_solution();
-                    }
-                    KeyCode::Char('c' | 'C') => {
-                        self.should_copy = true;
-                    }
-                    _ => {}
-                },
+                TermEvent::KeyPress(key) => self.handle_paused_key(key),
+                TermEvent::Mouse(mouse) => self.handle_search_view_mouse_event(mouse),
                 TermEvent::Resize => {}
             },
             Mode::Config => match event {
                 TermEvent::KeyPress(key) => {
                     self.handle_config_event(key);
                 }
+                TermEvent::Mouse(mouse) => {
+                    self.handle_config_mouse_event(mouse);
+                }
                 TermEvent::Resize => {}
             },
             Mode::MarkKnown => match event {
                 TermEvent::KeyPress(key) => {
                     self.handle_mark_event(key);
+                }
+                TermEvent::Mouse(mouse) => {
+                    self.handle_mark_mouse_event(mouse);
                 }
                 TermEvent::Resize => {}
             },
@@ -1036,6 +1538,9 @@ impl App {
                     }
                     _ => {}
                 },
+                TermEvent::Mouse(mouse) => {
+                    self.handle_quit_mouse_event(mouse);
+                }
                 TermEvent::Resize => {}
             },
             Mode::Usage => match event {
@@ -1046,10 +1551,270 @@ impl App {
                     KeyCode::Char('h' | 'H' | ' ') | KeyCode::Enter => {
                         self.mode = Mode::Paused;
                     }
+                    KeyCode::Up => {
+                        self.scroll_help(-1);
+                    }
+                    KeyCode::Down => {
+                        self.scroll_help(1);
+                    }
+                    KeyCode::PageUp => {
+                        self.scroll_help(-8);
+                    }
+                    KeyCode::PageDown => {
+                        self.scroll_help(8);
+                    }
+                    KeyCode::Home => {
+                        self.ui_state.help_scroll = 0;
+                    }
                     _ => {}
                 },
+                TermEvent::Mouse(mouse) => {
+                    self.handle_usage_mouse_event(mouse);
+                }
                 TermEvent::Resize => {}
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::args::{NewArgs, OutputFormat};
+
+    fn test_config_state() -> ConfigState {
+        ConfigState {
+            working_config: Config::new("B3/S23", 8, 6, 1),
+            increase_world_size: false,
+            no_stop: false,
+            fields: ConfigField::all(),
+            focus_index: 0,
+            edit_buffer: String::new(),
+            error: None,
+            show_confirm: false,
+            scroll_offset: Cell::new(0),
+        }
+    }
+
+    fn test_app() -> App {
+        App::new(NewArgs {
+            config: Config::new("B3/S23", 8, 6, 1),
+            step: None,
+            increase_world_size: false,
+            no_stop: false,
+            no_tui: false,
+            save: None,
+            known_cells: Vec::new(),
+            known_cells_file: None,
+            format: OutputFormat::Rle,
+            generation: 0,
+        })
+        .expect("test app should build")
+    }
+
+    #[test]
+    fn cycle_field_toggles_boolean_config_fields() {
+        let mut state = test_config_state();
+
+        state.cycle_field(ConfigField::ReduceMaxPopulation, true);
+        assert!(state.working_config.reduce_max_population);
+
+        state.cycle_field(ConfigField::IncreaseWorldSize, true);
+        assert!(state.increase_world_size);
+
+        state.cycle_field(ConfigField::NoStop, true);
+        assert!(state.no_stop);
+    }
+
+    #[test]
+    fn enter_cycles_direct_edit_boolean_fields_in_config_mode() {
+        let mut app = test_app();
+        app.enter_config_mode();
+
+        let reduce_index = app
+            .config_state
+            .as_ref()
+            .and_then(|state| {
+                state
+                    .fields
+                    .iter()
+                    .position(|field| *field == ConfigField::ReduceMaxPopulation)
+            })
+            .expect("reduce pop field should exist");
+
+        if let Some(state) = &mut app.config_state {
+            state.focus_index = reduce_index;
+        }
+
+        app.handle_config_event(KeyCode::Enter);
+
+        let state = app
+            .config_state
+            .as_ref()
+            .expect("config state should remain active");
+        assert!(state.working_config.reduce_max_population);
+    }
+
+    #[test]
+    fn confirming_config_apply_rebuilds_world() {
+        let mut app = test_app();
+        app.solutions.push(vec![app.world.rle(0, true)]);
+        app.enter_config_mode();
+
+        if let Some(state) = &mut app.config_state {
+            state.working_config.width = 9;
+            state.show_confirm = true;
+        }
+
+        app.handle_config_event(KeyCode::Char('y'));
+
+        assert_eq!(app.world.config().width, 9);
+        assert!(app.config_state.is_none());
+        assert_eq!(app.mode, Mode::Paused);
+    }
+
+    #[test]
+    fn resizing_config_does_not_eagerly_prune_known_cells() {
+        let mut state = test_config_state();
+        state.working_config.known_cells = vec![
+            KnownCell::new(1, 1, 0, CellState::Alive),
+            KnownCell::new(6, 1, 0, CellState::Alive),
+            KnownCell::new(1, 1, 2, CellState::Dead),
+        ];
+
+        state.focus_index = state
+            .fields
+            .iter()
+            .position(|field| *field == ConfigField::Width)
+            .expect("width field should exist");
+        state.edit_buffer = "4".to_string();
+        state.commit_edit();
+
+        assert_eq!(state.working_config.known_cells.len(), 3);
+
+        state.focus_index = state
+            .fields
+            .iter()
+            .position(|field| *field == ConfigField::Period)
+            .expect("period field should exist");
+        state.edit_buffer = "1".to_string();
+        state.commit_edit();
+
+        assert_eq!(state.working_config.known_cells.len(), 3);
+    }
+
+    #[test]
+    fn applying_config_prunes_out_of_bounds_known_cells() {
+        let mut app = test_app();
+        app.enter_config_mode();
+
+        if let Some(state) = &mut app.config_state {
+            state.working_config.width = 4;
+            state.working_config.period = 1;
+            state.working_config.known_cells = vec![
+                KnownCell::new(1, 1, 0, CellState::Alive),
+                KnownCell::new(6, 1, 0, CellState::Alive),
+                KnownCell::new(1, 1, 2, CellState::Dead),
+            ];
+        }
+
+        app.apply_config_with_confirmation(true);
+
+        assert_eq!(app.world.config().known_cells.len(), 1);
+        assert_eq!(app.world.config().known_cells[0].x, 1);
+        assert_eq!(app.world.config().known_cells[0].t, 0);
+    }
+
+    #[test]
+    fn commit_edit_rejects_zero_for_positive_dimensions() {
+        let mut state = test_config_state();
+
+        state.focus_index = state
+            .fields
+            .iter()
+            .position(|field| *field == ConfigField::Width)
+            .expect("width field should exist");
+        state.edit_buffer = "0".to_string();
+        state.commit_edit();
+        assert_eq!(
+            state.error.as_deref(),
+            Some("width must be a positive integer")
+        );
+
+        state.error = None;
+        state.focus_index = state
+            .fields
+            .iter()
+            .position(|field| *field == ConfigField::Height)
+            .expect("height field should exist");
+        state.edit_buffer = "0".to_string();
+        state.commit_edit();
+        assert_eq!(
+            state.error.as_deref(),
+            Some("height must be a positive integer")
+        );
+
+        state.error = None;
+        state.focus_index = state
+            .fields
+            .iter()
+            .position(|field| *field == ConfigField::Period)
+            .expect("period field should exist");
+        state.edit_buffer = "0".to_string();
+        state.commit_edit();
+        assert_eq!(
+            state.error.as_deref(),
+            Some("period must be a positive integer")
+        );
+    }
+
+    #[test]
+    fn mouse_click_focuses_direct_edit_config_field() {
+        let mut app = test_app();
+        app.enter_config_mode();
+        app.sync_terminal_area(Rect::new(0, 0, 80, 24));
+
+        app.update(TermEvent::Mouse(MouseInput {
+            action: MouseAction::LeftDown,
+            column: 3,
+            row: 14,
+        }));
+
+        let state = app
+            .config_state
+            .as_ref()
+            .expect("config state should exist");
+        assert_eq!(
+            state.fields[state.focus_index],
+            ConfigField::ReduceMaxPopulation
+        );
+        assert!(state.working_config.reduce_max_population);
+    }
+
+    #[test]
+    fn mouse_click_toggles_mark_cell() {
+        let mut app = test_app();
+        app.enter_config_mode();
+        if let Some(state) = &mut app.config_state {
+            state.focus_index = state
+                .fields
+                .iter()
+                .position(|field| *field == ConfigField::KnownCells)
+                .expect("known cells field should exist");
+        }
+        app.handle_config_event(KeyCode::Enter);
+        app.sync_terminal_area(Rect::new(0, 0, 80, 24));
+
+        app.update(TermEvent::Mouse(MouseInput {
+            action: MouseAction::LeftDown,
+            column: 1,
+            row: 2,
+        }));
+
+        let state = app.mark_state.as_ref().expect("mark state should exist");
+        assert_eq!(state.cursor_x, 1);
+        assert_eq!(state.cursor_y, 0);
+        assert_eq!(state.known_cells.len(), 1);
+        assert_eq!(state.known_cells[0].state, CellState::Alive);
     }
 }

@@ -1,15 +1,52 @@
 use color_eyre::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{
+    self, Event, KeyCode, KeyEventKind, MouseButton, MouseEvent, MouseEventKind,
+};
 use std::{
     sync::mpsc::{self, Receiver, TryRecvError},
     thread,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseAction {
+    LeftDown,
+    LeftDrag,
+    ScrollUp,
+    ScrollDown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MouseInput {
+    pub action: MouseAction,
+    pub column: u16,
+    pub row: u16,
+}
+
+impl MouseInput {
+    const fn from_crossterm(event: MouseEvent) -> Option<Self> {
+        let action = match event.kind {
+            MouseEventKind::Down(MouseButton::Left) => MouseAction::LeftDown,
+            MouseEventKind::Drag(MouseButton::Left) => MouseAction::LeftDrag,
+            MouseEventKind::ScrollUp => MouseAction::ScrollUp,
+            MouseEventKind::ScrollDown => MouseAction::ScrollDown,
+            _ => return None,
+        };
+
+        Some(Self {
+            action,
+            column: event.column,
+            row: event.row,
+        })
+    }
+}
 
 /// Terminal events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TermEvent {
     /// Key press event.
     KeyPress(KeyCode),
+    /// Mouse event.
+    Mouse(MouseInput),
     /// Terminal resize event.
     Resize,
 }
@@ -36,6 +73,11 @@ impl EventHandler {
                     }
                     Event::Resize(_, _) => {
                         tx.send(TermEvent::Resize)?;
+                    }
+                    Event::Mouse(mouse) => {
+                        if let Some(mouse) = MouseInput::from_crossterm(mouse) {
+                            tx.send(TermEvent::Mouse(mouse))?;
+                        }
                     }
                     _ => {}
                 }

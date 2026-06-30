@@ -5,6 +5,7 @@ use crate::{
 };
 use arboard::Clipboard;
 use color_eyre::Result;
+use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
@@ -47,10 +48,15 @@ impl Tui {
     /// Initialize the terminal.
     fn init(&mut self) -> Result<()> {
         enable_raw_mode()?;
-        crossterm::execute!(self.terminal.backend_mut(), EnterAlternateScreen)?;
+        crossterm::execute!(
+            self.terminal.backend_mut(),
+            EnterAlternateScreen,
+            EnableMouseCapture
+        )?;
         self.terminal.clear()?;
         self.terminal.hide_cursor()?;
 
+        self.sync_terminal_area()?;
         self.draw()?;
         self.event_handler = Some(EventHandler::new());
         Ok(())
@@ -59,7 +65,11 @@ impl Tui {
     /// Cleanup the terminal.
     fn cleanup(&mut self) -> Result<()> {
         disable_raw_mode()?;
-        crossterm::execute!(self.terminal.backend_mut(), LeaveAlternateScreen)?;
+        crossterm::execute!(
+            self.terminal.backend_mut(),
+            DisableMouseCapture,
+            LeaveAlternateScreen
+        )?;
         self.terminal.show_cursor()?;
         Ok(())
     }
@@ -67,6 +77,12 @@ impl Tui {
     /// Draw the text-based user interface.
     fn draw(&mut self) -> Result<()> {
         self.terminal.draw(|f| self.app.render(f))?;
+        Ok(())
+    }
+
+    /// Synchronize the app's transient UI state with the current terminal size.
+    fn sync_terminal_area(&mut self) -> Result<()> {
+        self.app.sync_terminal_area(self.terminal.size()?.into());
         Ok(())
     }
 
@@ -81,6 +97,8 @@ impl Tui {
     /// The main loop.
     pub fn run(&mut self) -> Result<()> {
         while !self.app.should_quit {
+            self.sync_terminal_area()?;
+
             // If the application is running, do not block on the event handler.
             if self.app.mode == Mode::Running {
                 self.app.step();

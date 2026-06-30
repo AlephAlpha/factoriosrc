@@ -1,17 +1,238 @@
-use crate::app::{App, ConfigField, Mode};
+use crate::app::{App, ConfigField, Mode, ViewportOffset};
+use crate::layout::{
+    centered_popup_rect, clamp_scroll_offset, split_grid_scrollable_area, split_main_layout,
+    split_mark_layout, split_scrollable_area, split_vertical_scrollable_area,
+};
 use factoriosrc_lib::{CellState, Reason, Status, World};
 use ratatui::{
     Frame,
     buffer::Buffer,
-    layout::{Constraint, Layout, Rect},
-    style::{Modifier, Style},
+    layout::{Constraint, Layout, Margin, Rect},
+    style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Clear, Paragraph, Widget},
+    widgets::{Block, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Widget},
 };
+
+#[derive(Debug, Clone, Copy)]
+struct Palette {
+    chrome: Style,
+    chrome_muted: Style,
+    text: Style,
+    emphasis: Style,
+    accent: Style,
+    success: Style,
+    warning: Style,
+    danger: Style,
+    unknown: Style,
+    known_alive: Style,
+    known_dead: Style,
+    deduced: Style,
+    guessed_dead: Style,
+    border: Style,
+}
+
+impl Palette {
+    const fn new() -> Self {
+        Self {
+            chrome: Style::new().fg(Color::Black).bg(Color::Cyan),
+            chrome_muted: Style::new().fg(Color::Black).bg(Color::Rgb(165, 214, 227)),
+            text: Style::new().fg(Color::White),
+            emphasis: Style::new().fg(Color::White).add_modifier(Modifier::BOLD),
+            accent: Style::new().fg(Color::LightCyan),
+            success: Style::new().fg(Color::LightGreen),
+            warning: Style::new().fg(Color::LightYellow),
+            danger: Style::new().fg(Color::LightRed),
+            unknown: Style::new().fg(Color::LightCyan),
+            known_alive: Style::new()
+                .fg(Color::LightGreen)
+                .add_modifier(Modifier::BOLD),
+            known_dead: Style::new()
+                .fg(Color::LightRed)
+                .add_modifier(Modifier::BOLD),
+            deduced: Style::new().fg(Color::Yellow),
+            guessed_dead: Style::new().fg(Color::Gray),
+            border: Style::new().fg(Color::Rgb(130, 176, 191)),
+        }
+    }
+}
+
+fn metric_spans(
+    label: &str,
+    value: impl ToString,
+    label_style: Style,
+    value_style: Style,
+) -> Vec<Span<'static>> {
+    vec![
+        Span::styled(format!("{label}: "), label_style),
+        Span::styled(value.to_string(), value_style),
+    ]
+}
+
+fn status_style(status: Status, mode: Mode, palette: Palette) -> Style {
+    match status {
+        Status::Solved => palette.success.add_modifier(Modifier::BOLD),
+        Status::NoSolution => palette.danger.add_modifier(Modifier::BOLD),
+        Status::Running if mode == Mode::Running => palette.warning.add_modifier(Modifier::BOLD),
+        Status::Running => palette.accent.add_modifier(Modifier::BOLD),
+        Status::NotStarted => palette.chrome_muted,
+    }
+}
+
+fn config_label_width(content_width: u16) -> u16 {
+    content_width
+        .saturating_div(3)
+        .clamp(8, 20)
+        .min(content_width.saturating_sub(2))
+}
+
+const fn help_text() -> &'static str {
+    "Search View\n\
+     [Space]/[Enter] Start or pause the search\n\
+     [Arrow Keys]    Pan across the current result\n\
+     [PgUp]/[PgDn]   Pan faster by one page\n\
+     [=] / [-]       Move to the next / previous generation\n\
+     [n] / [p]       Browse found solutions when paused\n\
+     \n\
+     Configuration\n\
+     [o]             Open the configuration form\n\
+     [Tab]/[Shift+Tab] or [Up]/[Down]\n\
+                     Move between fields in the form\n\
+     [Enter]/[Space] Use the current field or button\n\
+     [Left]/[Right]  Change toggles and enumerated fields\n\
+     \n\
+     Known Cells\n\
+     [Arrows]        Move the cursor\n\
+     [PgUp]/[PgDn]   Move by one visible page\n\
+     [Space]         Cycle unknown -> alive -> dead -> unknown\n\
+     [Enter]         Save known-cell edits and return\n\
+     \n\
+     General\n\
+     [c]             Copy the current RLE text\n\
+     [h]             Open or close this help window\n\
+     [q]/[Esc]       Quit or close the current overlay"
+}
+
+const fn config_field_help(field: ConfigField) -> &'static str {
+    match field {
+        ConfigField::RuleString => {
+            "Cellular automaton rule. Use Life-like or higher-range totalistic syntax."
+        }
+        ConfigField::Width => {
+            "Width of the search world in cells. In interactive TUI mode you can leave it small and adjust later."
+        }
+        ConfigField::Height => "Height of the search world in cells.",
+        ConfigField::Period => "Number of generations in the repeating cycle.",
+        ConfigField::Dx => "Horizontal translation applied over one full period.",
+        ConfigField::Dy => "Vertical translation applied over one full period.",
+        ConfigField::DiagonalWidth => "Optional diagonal band for diagonal spaceship searches.",
+        ConfigField::Symmetry => "Required symmetry of the searched pattern.",
+        ConfigField::Transformation => "Transformation applied before translation each period.",
+        ConfigField::SearchOrder => {
+            "Traversal order for unresolved cells. Auto usually picks a sensible default."
+        }
+        ConfigField::NewState => "How unknown cells are guessed during search.",
+        ConfigField::Seed => "Random seed used only when New state is random.",
+        ConfigField::MaxPopulation => "Optional upper bound on the population.",
+        ConfigField::ReduceMaxPopulation => {
+            "Tighten the population bound whenever a smaller solution is found."
+        }
+        ConfigField::KnownCells => {
+            "Open the known-cells editor to pin specific cells before search starts. All known cells must stay inside the current world bounds."
+        }
+        ConfigField::IncreaseWorldSize => {
+            "Restart with a slightly larger world after an exhausted search."
+        }
+        ConfigField::NoStop => "Keep searching after the first solution instead of pausing.",
+        ConfigField::Apply => "Validate the current settings and rebuild the search world.",
+        ConfigField::Cancel => "Discard configuration edits and return to the search view.",
+    }
+}
+
+fn wrap_text_lines(text: &str, width: u16) -> Vec<Line<'static>> {
+    if width == 0 {
+        return Vec::new();
+    }
+
+    let mut wrapped = Vec::new();
+    let width = width as usize;
+
+    for line in text.lines() {
+        if line.is_empty() {
+            wrapped.push(Line::from(""));
+            continue;
+        }
+
+        let chars: Vec<char> = line.chars().collect();
+        for chunk in chars.chunks(width.max(1)) {
+            let chunk: String = chunk.iter().collect();
+            wrapped.push(Line::from(chunk));
+        }
+    }
+
+    wrapped
+}
+
+fn render_vertical_scrollbar(
+    frame: &mut Frame,
+    area: Option<Rect>,
+    content_length: u16,
+    viewport_length: u16,
+    position: u16,
+    palette: Palette,
+) {
+    let Some(area) = area else {
+        return;
+    };
+    if area.width == 0 || area.height == 0 || content_length <= viewport_length {
+        return;
+    }
+
+    let scroll_range = content_length
+        .saturating_sub(viewport_length)
+        .saturating_add(1);
+    let mut state = ScrollbarState::new(scroll_range.max(1) as usize)
+        .position(position as usize)
+        .viewport_content_length(viewport_length.max(1) as usize);
+    let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+        .begin_symbol(None)
+        .end_symbol(None)
+        .track_style(palette.border)
+        .thumb_style(palette.accent.add_modifier(Modifier::BOLD));
+    frame.render_stateful_widget(scrollbar, area, &mut state);
+}
+
+fn render_horizontal_scrollbar(
+    frame: &mut Frame,
+    area: Option<Rect>,
+    content_length: u16,
+    viewport_length: u16,
+    position: u16,
+    palette: Palette,
+) {
+    let Some(area) = area else {
+        return;
+    };
+    if area.width == 0 || area.height == 0 || content_length <= viewport_length {
+        return;
+    }
+
+    let scroll_range = content_length
+        .saturating_sub(viewport_length)
+        .saturating_add(1);
+    let mut state = ScrollbarState::new(scroll_range.max(1) as usize)
+        .position(position as usize)
+        .viewport_content_length(viewport_length.max(1) as usize);
+    let scrollbar = Scrollbar::new(ScrollbarOrientation::HorizontalBottom)
+        .begin_symbol(None)
+        .end_symbol(None)
+        .track_style(palette.border)
+        .thumb_style(palette.accent.add_modifier(Modifier::BOLD));
+    frame.render_stateful_widget(scrollbar, area, &mut state);
+}
 
 impl App {
     /// Render the TUI interface.
-    pub fn render(&self, frame: &mut Frame) {
+    pub fn render(&mut self, frame: &mut Frame) {
         let area = frame.area();
 
         match self.mode {
@@ -25,22 +246,16 @@ impl App {
                 self.render_mark_view(frame, area);
             }
             _ => {
-                let [top, main, legend, bottom] = Layout::vertical([
-                    Constraint::Length(1),
-                    Constraint::Min(0),
-                    Constraint::Length(1),
-                    Constraint::Length(1),
-                ])
-                .areas(area);
+                let layout = split_main_layout(area);
 
-                self.render_top_bar(frame, top);
-                self.render_main(frame, main);
-                self.render_legend_bar(frame, legend);
-                self.render_bottom_bar(frame, bottom);
+                self.render_top_bar(frame, layout.top);
+                self.render_main(frame, layout.main);
+                self.render_legend_bar(frame, layout.legend);
+                self.render_bottom_bar(frame, layout.bottom);
 
                 match self.mode {
-                    Mode::Usage => self.render_help(frame, main),
-                    Mode::Quit => self.render_quit(frame, main),
+                    Mode::Usage => self.render_help(frame, layout.main),
+                    Mode::Quit => self.render_quit(frame, layout.main),
                     _ => {}
                 }
             }
@@ -52,50 +267,98 @@ impl App {
     /// This includes the current generation, the population, the number of solutions found, and the
     /// elapsed time.
     fn render_top_bar(&self, frame: &mut Frame, area: Rect) {
-        let chunks = Layout::horizontal(Constraint::from_ratios([(1, 4), (1, 4), (1, 4), (1, 4)]))
-            .split(area);
-
-        let style = Style::new().black().on_light_blue();
+        let palette = Palette::new();
+        let chunks = Layout::horizontal([
+            Constraint::Length(18),
+            Constraint::Length(22),
+            Constraint::Length(18),
+            Constraint::Min(16),
+        ])
+        .split(area);
 
         if let Some(i) = self.viewing_solution {
-            let label =
-                Paragraph::new(format!("Solution {}/{}", i + 1, self.solutions.len())).style(style);
+            let label = Paragraph::new(Line::from(metric_spans(
+                "Solution",
+                format!("{}/{}", i + 1, self.solutions.len()),
+                palette.chrome,
+                palette.emphasis,
+            )))
+            .style(palette.chrome);
             frame.render_widget(label, chunks[0]);
 
-            let gen_label = Paragraph::new(format!(
-                "Gen: {}/{}",
-                self.generation,
-                self.world.config().period - 1,
-            ))
-            .style(style);
+            let gen_label = Paragraph::new(Line::from(metric_spans(
+                "Generation",
+                format!("{}/{}", self.generation, self.world.config().period - 1),
+                palette.chrome,
+                palette.emphasis,
+            )))
+            .style(palette.chrome);
             frame.render_widget(gen_label, chunks[1]);
 
-            let count = Paragraph::new(format!("Solutions: {}", self.solutions.len())).style(style);
+            let count = Paragraph::new(Line::from(metric_spans(
+                "Stored",
+                self.solutions.len(),
+                palette.chrome,
+                palette.emphasis,
+            )))
+            .style(palette.chrome);
             frame.render_widget(count, chunks[2]);
+
+            let badge = Paragraph::new(Line::from(vec![
+                Span::styled("VIEWING ", palette.chrome),
+                Span::styled("SOLUTION", palette.warning.add_modifier(Modifier::BOLD)),
+            ]))
+            .style(palette.chrome_muted);
+            frame.render_widget(badge, chunks[3]);
         } else {
-            let generation =
-                Paragraph::new(format!("Generation: {}", self.generation)).style(style);
+            let generation = Paragraph::new(Line::from(metric_spans(
+                "Generation",
+                self.generation,
+                palette.chrome,
+                palette.emphasis,
+            )))
+            .style(palette.chrome);
             frame.render_widget(generation, chunks[0]);
 
-            let population = Paragraph::new(format!(
-                "Population: {}",
-                self.world.population(self.generation)
-            ))
-            .style(style);
+            let population = Paragraph::new(Line::from(metric_spans(
+                "Population",
+                self.world.population(self.generation),
+                palette.chrome,
+                palette.emphasis,
+            )))
+            .style(palette.chrome);
             frame.render_widget(population, chunks[1]);
 
-            let solution_count =
-                Paragraph::new(format!("Solutions: {}", self.solutions.len())).style(style);
+            let solution_count = Paragraph::new(Line::from(metric_spans(
+                "Solutions",
+                self.solutions.len(),
+                palette.chrome,
+                palette.emphasis,
+            )))
+            .style(palette.chrome);
             frame.render_widget(solution_count, chunks[2]);
 
-            // Only show the elapsed time if the search not running.
-            let elapsed_str = if self.mode == Mode::Running {
-                String::new()
-            } else {
-                format!("Time: {:.3?}", self.elapsed)
+            let status = self.world.status();
+            let status_text = match status {
+                Status::NotStarted => "READY",
+                Status::Running if self.mode == Mode::Running => "RUNNING",
+                Status::Running => "PAUSED",
+                Status::Solved => "SOLVED",
+                Status::NoSolution => "EXHAUSTED",
             };
-            let elapsed = Paragraph::new(elapsed_str).style(style);
-            frame.render_widget(elapsed, chunks[3]);
+            let elapsed = if self.mode == Mode::Running {
+                String::from("live")
+            } else {
+                format!("{:.3?}", self.elapsed)
+            };
+            let badge = Paragraph::new(Line::from(vec![
+                Span::styled("STATE ", palette.chrome),
+                Span::styled(status_text, status_style(status, self.mode, palette)),
+                Span::styled("  TIME ", palette.chrome),
+                Span::styled(elapsed, palette.emphasis),
+            ]))
+            .style(palette.chrome_muted);
+            frame.render_widget(badge, chunks[3]);
         }
     }
 
@@ -103,9 +366,8 @@ impl App {
     ///
     /// This includes the current status, mode, and a short help message.
     fn render_bottom_bar(&self, frame: &mut Frame, area: Rect) {
-        let chunks = Layout::horizontal(Constraint::from_percentages([50, 50])).split(area);
-
-        let style = Style::new().black().on_light_blue();
+        let palette = Palette::new();
+        let chunks = Layout::horizontal([Constraint::Min(24), Constraint::Length(34)]).split(area);
 
         let status_str = self.viewing_solution.map_or_else(
             || match self.world.status() {
@@ -129,55 +391,143 @@ impl App {
             |i| format!("Viewing solution {}/{}", i + 1, self.solutions.len()),
         );
 
-        let status = Paragraph::new(status_str).style(style);
+        let status = Paragraph::new(Line::from(vec![
+            Span::styled("Status: ", palette.chrome),
+            Span::styled(status_str, palette.emphasis),
+        ]))
+        .style(palette.chrome);
         frame.render_widget(status, chunks[0]);
 
-        let help = Paragraph::new("Press [h] for help.").style(style);
+        let help = Paragraph::new("Pan: arrows/PgUp/PgDn  |  [h] help").style(palette.chrome_muted);
         frame.render_widget(help, chunks[1]);
     }
 
     /// Render the main area.
-    fn render_main(&self, frame: &mut Frame, area: Rect) {
+    fn render_main(&mut self, frame: &mut Frame, area: Rect) {
+        let palette = Palette::new();
         if let Some(i) = self.viewing_solution {
             let rle = self.current_rle();
             let title = format!("Solution {}/{}", i + 1, self.solutions.len());
+            let text = Text::from(rle.as_str());
+            let content_width = text.width() as u16;
+            let content_height = text.height() as u16;
+            let block = Block::bordered().border_style(palette.border).title(title);
+            frame.render_widget(block, area);
+
+            let inner = area.inner(Margin {
+                vertical: 1,
+                horizontal: 1,
+            });
+            let scroll = split_scrollable_area(inner, content_width, content_height);
+            let scroll_x = clamp_scroll_offset(
+                self.ui_state.search_viewport.x,
+                content_width,
+                scroll.viewport.width,
+            );
+            let scroll_y = clamp_scroll_offset(
+                self.ui_state.search_viewport.y,
+                content_height,
+                scroll.viewport.height,
+            );
+            self.ui_state.search_viewport = ViewportOffset {
+                x: scroll_x,
+                y: scroll_y,
+            };
+
             let paragraph = Paragraph::new(rle)
-                .style(Style::new().white())
-                .block(Block::bordered().title(title));
-            frame.render_widget(paragraph, area);
+                .style(palette.text)
+                .scroll((scroll_y, scroll_x));
+            frame.render_widget(paragraph, scroll.viewport);
+            render_vertical_scrollbar(
+                frame,
+                scroll.vertical,
+                content_height,
+                scroll.viewport.height,
+                scroll_y,
+                palette,
+            );
+            render_horizontal_scrollbar(
+                frame,
+                scroll.horizontal,
+                content_width,
+                scroll.viewport.width,
+                scroll_x,
+                palette,
+            );
         } else {
-            let rle = Rle::new(self);
-            frame.render_widget(rle, area);
+            let content_width = self.world.config().width as u16;
+            let content_height = self.world.config().height as u16;
+            let scroll = split_grid_scrollable_area(area, content_width, content_height);
+            let viewport_x = clamp_scroll_offset(
+                self.ui_state.search_viewport.x,
+                content_width,
+                scroll.body.width,
+            );
+            let viewport_y = clamp_scroll_offset(
+                self.ui_state.search_viewport.y,
+                content_height,
+                scroll.body.height,
+            );
+            self.ui_state.search_viewport = ViewportOffset {
+                x: viewport_x,
+                y: viewport_y,
+            };
+
+            let rle = Rle {
+                t: self.generation,
+                world: &self.world,
+                viewport_x,
+                viewport_y,
+            };
+            frame.render_widget(rle, scroll.grid);
+            render_vertical_scrollbar(
+                frame,
+                scroll.vertical,
+                content_height,
+                scroll.body.height,
+                viewport_y,
+                palette,
+            );
+            render_horizontal_scrollbar(
+                frame,
+                scroll.horizontal,
+                content_width,
+                scroll.body.width,
+                viewport_x,
+                palette,
+            );
         }
     }
 
     /// Render the legend bar showing cell symbol and color meanings.
     fn render_legend_bar(&self, frame: &mut Frame, area: Rect) {
+        let palette = Palette::new();
         let spans = vec![
-            Span::styled("o ", Style::new().green()),
-            Span::raw("Alive("),
-            Span::styled("K", Style::new().green().add_modifier(Modifier::BOLD)),
+            Span::styled("Alive ", palette.emphasis),
+            Span::styled("o", palette.success),
+            Span::raw(" ("),
+            Span::styled("K", palette.known_alive),
             Span::raw("/"),
-            Span::styled("D", Style::new().yellow()),
+            Span::styled("D", palette.deduced),
             Span::raw("/"),
-            Span::styled("G", Style::new().green()),
-            Span::raw(")  "),
-            Span::styled(". ", Style::new().red()),
-            Span::raw("Dead("),
-            Span::styled("K", Style::new().red().add_modifier(Modifier::BOLD)),
+            Span::styled("G", palette.success),
+            Span::raw(")   "),
+            Span::styled("Dead ", palette.emphasis),
+            Span::styled(".", palette.danger),
+            Span::raw(" ("),
+            Span::styled("K", palette.known_dead),
             Span::raw("/"),
-            Span::styled("D", Style::new().dark_gray()),
+            Span::styled("D", palette.guessed_dead),
             Span::raw("/"),
-            Span::styled("G", Style::new().gray()),
-            Span::raw(")  "),
-            Span::styled("? Unknown", Style::new().cyan()),
-            Span::raw("  "),
-            Span::styled("K", Style::new().green().add_modifier(Modifier::BOLD)),
-            Span::raw("=Known "),
-            Span::styled("D", Style::new().yellow()),
-            Span::raw("=Deduced "),
-            Span::styled("G", Style::new().green()),
-            Span::raw("=Guessed"),
+            Span::styled("G", palette.guessed_dead),
+            Span::raw(")   "),
+            Span::styled("? Unknown   ", palette.unknown),
+            Span::styled("K", palette.known_alive),
+            Span::raw(" known   "),
+            Span::styled("D", palette.deduced),
+            Span::raw(" deduced   "),
+            Span::styled("G", palette.success),
+            Span::raw(" guessed"),
         ];
 
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
@@ -193,40 +543,67 @@ impl App {
         style: Style,
     ) {
         let text = text.into();
-
-        let center_x = area.x + area.width / 2;
-        let center_y = area.y + area.height / 2;
-
-        let width = area.width.min(text.width() as u16 + 2);
-        let height = area.height.min(text.height() as u16 + 2);
-
-        let rect = Rect::new(center_x - width / 2, center_y - height / 2, width, height);
+        let palette = Palette::new();
+        let rect = centered_popup_rect(area, &text);
 
         frame.render_widget(Clear, rect);
 
         let paragraph = Paragraph::new(text)
-            .block(Block::bordered().title(title))
+            .block(Block::bordered().border_style(palette.border).title(title))
             .style(style);
 
         frame.render_widget(paragraph, rect);
     }
 
     /// Render the popup window to show the help message.
-    fn render_help(&self, frame: &mut Frame, area: Rect) {
-        self.render_popup(
+    fn render_help(&mut self, frame: &mut Frame, area: Rect) {
+        let palette = Palette::new();
+        let rect = area.inner(Margin {
+            vertical: if area.height > 4 { 1 } else { 0 },
+            horizontal: if area.width > 6 { 2 } else { 0 },
+        });
+        let rect = if rect.width < 3 || rect.height < 3 {
+            area
+        } else {
+            rect
+        };
+
+        frame.render_widget(Clear, rect);
+        frame.render_widget(
+            Block::bordered().border_style(palette.border).title("Help"),
+            rect,
+        );
+
+        let inner = rect.inner(Margin {
+            vertical: 1,
+            horizontal: 1,
+        });
+        let lines = wrap_text_lines(help_text(), inner.width.max(1));
+        let scroll = split_vertical_scrollable_area(inner, lines.len() as u16);
+        let offset = clamp_scroll_offset(
+            self.ui_state.help_scroll,
+            lines.len() as u16,
+            scroll.viewport.height,
+        ) as usize;
+        self.ui_state.help_scroll = offset as u16;
+        let visible_lines: Vec<Line> = lines
+            .iter()
+            .skip(offset)
+            .take(scroll.viewport.height as usize)
+            .cloned()
+            .collect();
+
+        frame.render_widget(
+            Paragraph::new(Text::from(visible_lines)).style(palette.success),
+            scroll.viewport,
+        );
+        render_vertical_scrollbar(
             frame,
-            area,
-            "[q]/[Esc]       Quit\n\
-             [h]             Show or hide this help message\n\
-             [Space]/[Enter] Start or pause the search\n\
-             [=]             Show the next generation\n\
-             [-]             Show the previous generation\n\
-             [n]             Next solution (when paused)\n\
-             [p]             Previous solution (when paused)\n\
-             [o]             Open configuration (when paused)\n\
-             [c]             Copy RLE to clipboard",
-            "Help",
-            Style::new().green(),
+            scroll.vertical,
+            lines.len() as u16,
+            scroll.viewport.height,
+            offset as u16,
+            palette,
         );
     }
 
@@ -237,7 +614,7 @@ impl App {
             area,
             "Are you sure you want to quit? ([y]/[n])",
             "Quit",
-            Style::new().yellow(),
+            Palette::new().warning,
         );
     }
 
@@ -248,8 +625,21 @@ impl App {
         let Some(ref state) = self.config_state else {
             return;
         };
+        let palette = Palette::new();
+        let block = Block::bordered()
+            .border_style(palette.border)
+            .title("Configuration");
+        frame.render_widget(block, area);
+
+        let inner = area.inner(Margin {
+            vertical: 1,
+            horizontal: 1,
+        });
+        let label_width = config_label_width(inner.width);
+        let label_text_width = label_width.saturating_sub(2) as usize;
 
         let mut lines: Vec<Line> = Vec::new();
+        let mut field_line_indices = vec![0usize; state.fields.len()];
 
         for (i, field) in state.fields.iter().enumerate() {
             let is_focused = i == state.focus_index;
@@ -261,13 +651,14 @@ impl App {
                     _ => unreachable!(),
                 };
                 let style = if is_focused {
-                    Style::new().green().add_modifier(Modifier::BOLD)
+                    palette.emphasis
                 } else {
-                    Style::new().cyan()
+                    palette.accent
                 };
                 if matches!(field, ConfigField::Apply) {
                     lines.push(Line::from(""));
                 }
+                field_line_indices[i] = lines.len();
                 let prefix = if is_focused { "▸ " } else { "  " };
                 lines.push(Line::from(vec![
                     Span::styled(prefix, style),
@@ -278,6 +669,7 @@ impl App {
                     lines.push(Line::from(""));
                 }
             } else {
+                field_line_indices[i] = lines.len();
                 let label = format!("{}:", field.label());
                 let value_str = if is_focused && field.is_text_field() {
                     state.edit_buffer.clone()
@@ -292,17 +684,20 @@ impl App {
                 let prefix = if is_focused { "▸ " } else { "  " };
 
                 let value_style = if is_focused {
-                    Style::new().green()
+                    palette.success
                 } else {
                     match field {
-                        ConfigField::KnownCells => Style::new().gray(),
-                        _ => Style::new().white(),
+                        ConfigField::KnownCells => palette.guessed_dead,
+                        _ => palette.text,
                     }
                 };
 
                 lines.push(Line::from(vec![
                     Span::styled(prefix, value_style),
-                    Span::styled(format!("{label:<18}"), Style::new().white()),
+                    Span::styled(
+                        format!("{label:<width$}", width = label_text_width),
+                        palette.text,
+                    ),
                     Span::styled(display_val, value_style),
                 ]));
             }
@@ -312,7 +707,7 @@ impl App {
         if let Some(ref error) = state.error {
             lines.push(Line::from(Span::styled(
                 format!("! {error}"),
-                Style::new().red(),
+                palette.danger,
             )));
         }
 
@@ -320,21 +715,29 @@ impl App {
         if state.error.is_none() {
             lines.push(Line::from(""));
             lines.push(Line::from(Span::styled(
-                "Tab/Shift+Tab: navigate  |  Enter: apply  |  Esc: cancel",
-                Style::new().gray(),
+                "Tab/Shift+Tab: navigate  |  Enter/Space: use field  |  Left/Right: change  |  Esc: cancel",
+                palette.guessed_dead,
+            )));
+            lines.push(Line::from(Span::styled(
+                config_field_help(state.fields[state.focus_index]),
+                palette.chrome_muted,
             )));
         }
 
         // Auto-scroll: keep the focused field visible in small terminals.
-        let inner_h = area.height.saturating_sub(2) as usize;
         let total = lines.len();
-        if total > inner_h {
-            let max_offset = total.saturating_sub(inner_h);
+        let scroll = split_vertical_scrollable_area(inner, total as u16);
+        let viewport_height = scroll.viewport.height as usize;
+        let focused_line_index = field_line_indices[state.focus_index];
+        if total > viewport_height {
+            let max_offset = total.saturating_sub(viewport_height);
             let cur = state.scroll_offset.get().min(max_offset);
-            let new_offset = if state.focus_index < cur {
-                state.focus_index
-            } else if state.focus_index >= cur + inner_h {
-                state.focus_index.saturating_add(1).saturating_sub(inner_h)
+            let new_offset = if focused_line_index < cur {
+                focused_line_index
+            } else if focused_line_index >= cur + viewport_height {
+                focused_line_index
+                    .saturating_add(1)
+                    .saturating_sub(viewport_height)
             } else {
                 cur
             };
@@ -344,21 +747,33 @@ impl App {
         }
 
         let offset = state.scroll_offset.get();
-        let visible_lines: Vec<Line> = lines.iter().skip(offset).take(inner_h).cloned().collect();
+        let visible_lines: Vec<Line> = lines
+            .iter()
+            .skip(offset)
+            .take(viewport_height)
+            .cloned()
+            .collect();
 
-        let paragraph = Paragraph::new(Text::from(visible_lines))
-            .block(Block::bordered().title("Configuration"))
-            .style(Style::new().white());
+        let paragraph = Paragraph::new(Text::from(visible_lines)).style(palette.text);
 
-        frame.render_widget(paragraph, area);
+        frame.render_widget(paragraph, scroll.viewport);
+        render_vertical_scrollbar(
+            frame,
+            scroll.vertical,
+            total as u16,
+            scroll.viewport.height,
+            offset as u16,
+            palette,
+        );
 
         // Cursor position for text editing.
         if let Some(field) = state.fields.get(state.focus_index)
             && field.is_text_field()
+            && focused_line_index >= offset
+            && focused_line_index < offset.saturating_add(viewport_height)
         {
-            let label_width = 20u16;
-            let inner_x = area.x + 1 + label_width;
-            let inner_y = area.y + 1 + (state.focus_index - offset) as u16;
+            let inner_x = scroll.viewport.x + label_width;
+            let inner_y = scroll.viewport.y + (focused_line_index - offset) as u16;
             let cursor_x = inner_x + state.edit_buffer.len() as u16;
             frame.set_cursor_position((cursor_x, inner_y));
         }
@@ -371,76 +786,111 @@ impl App {
             area,
             "Changing the configuration will reset all search progress.\n\nAre you sure? ([y]/[n])",
             "Confirm",
-            Style::new().yellow(),
+            Palette::new().warning,
         );
     }
 
     /// Render the mark-known-cells view.
-    fn render_mark_view(&self, frame: &mut Frame, area: Rect) {
-        let Some(ref state) = self.mark_state else {
+    fn render_mark_view(&mut self, frame: &mut Frame, area: Rect) {
+        let Some(_) = self.mark_state else {
             return;
         };
-
-        let [top, main, bottom] = Layout::vertical([
-            Constraint::Length(1),
-            Constraint::Min(0),
-            Constraint::Length(1),
-        ])
-        .areas(area);
+        let palette = Palette::new();
+        let layout = split_mark_layout(area);
+        let (w, h, period, rule_str) = self
+            .config_state
+            .as_ref()
+            .map(|state| {
+                (
+                    state.working_config.width as u16,
+                    state.working_config.height as u16,
+                    state.working_config.period,
+                    state.working_config.rule_str.clone(),
+                )
+            })
+            .unwrap_or_else(|| {
+                (
+                    self.world.config().width as u16,
+                    self.world.config().height as u16,
+                    self.world.config().period,
+                    self.world.config().rule_str.clone(),
+                )
+            });
+        let scroll = split_grid_scrollable_area(layout.main, w, h);
+        let (viewport_x, viewport_y) = {
+            let state = self
+                .mark_state
+                .as_ref()
+                .expect("mark state must exist while rendering mark view");
+            (
+                clamp_scroll_offset(state.viewport.x, w, scroll.body.width),
+                clamp_scroll_offset(state.viewport.y, h, scroll.body.height),
+            )
+        };
+        if let Some(state) = &mut self.mark_state {
+            state.viewport = ViewportOffset {
+                x: viewport_x,
+                y: viewport_y,
+            };
+        }
+        let state = self
+            .mark_state
+            .as_ref()
+            .expect("mark state must exist while rendering mark view");
 
         // Top bar: status.
-        let top_style = Style::new().black().on_light_blue();
         let known_count = state.known_cells.len();
-        let gen_str = format!("{}/{}", self.generation, self.world.config().period - 1);
+        let gen_str = format!("{}/{}", self.generation, period.saturating_sub(1));
         let top_text = format!(
             "Known: {} cell(s)  |  Position: ({}, {})  |  Gen: {}",
             known_count, state.cursor_x, state.cursor_y, gen_str,
         );
-        frame.render_widget(Paragraph::new(top_text).style(top_style), top);
+        frame.render_widget(Paragraph::new(top_text).style(palette.chrome), layout.top);
 
         // Bottom bar: keybindings.
-        let bottom_style = Style::new().black().on_light_blue();
         let bottom_text =
-            "[Space] cycle  [a] alive  [d] dead  [u] unset  [Enter] save  [Esc] cancel";
-        frame.render_widget(Paragraph::new(bottom_text).style(bottom_style), bottom);
+            "[Arrows] move  [PgUp/PgDn] page  [=/-] gen  [Space] cycle  [Enter] save  [Esc] cancel";
+        frame.render_widget(
+            Paragraph::new(bottom_text).style(palette.chrome_muted),
+            layout.bottom,
+        );
 
         // Grid.
-        let w = self.world.config().width as u16;
-        let h = self.world.config().height as u16;
         let buf = frame.buffer_mut();
 
         // Header: x = W, y = H, rule = RULE
         let header = Line::from(vec![
-            Span::styled("x", Style::new().magenta()),
+            Span::styled("x", palette.accent),
             Span::raw(" = "),
-            Span::styled(w.to_string(), Style::new().cyan()),
+            Span::styled(w.to_string(), palette.unknown),
             Span::raw(", "),
-            Span::styled("y", Style::new().magenta()),
+            Span::styled("y", palette.accent),
             Span::raw(" = "),
-            Span::styled(h.to_string(), Style::new().cyan()),
+            Span::styled(h.to_string(), palette.unknown),
             Span::raw(", "),
-            Span::styled("rule", Style::new().magenta()),
+            Span::styled("rule", palette.accent),
             Span::raw(" = "),
-            Span::styled(&self.world.config().rule_str, Style::new().cyan()),
+            Span::styled(rule_str, palette.unknown),
         ]);
-        buf.set_line(main.x, main.y, &header, main.width);
+        buf.set_line(scroll.grid.x, scroll.grid.y, &header, scroll.grid.width);
 
-        if main.height > 1 {
-            for y in 0..h.min(main.height - 1) {
-                let buf_y = main.y + y + 1;
-                for x in 0..w.min(main.width) {
-                    let buf_x = main.x + x;
-                    let cursor_here = x as u32 == state.cursor_x && y as u32 == state.cursor_y;
+        if scroll.body.height > 0 {
+            for local_y in 0..h.saturating_sub(viewport_y).min(scroll.body.height) {
+                let buf_y = scroll.body.y + local_y;
+                let world_y = local_y + viewport_y;
+                for local_x in 0..w.saturating_sub(viewport_x).min(scroll.body.width) {
+                    let buf_x = scroll.body.x + local_x;
+                    let world_x = local_x + viewport_x;
+                    let cursor_here =
+                        world_x as u32 == state.cursor_x && world_y as u32 == state.cursor_y;
 
-                    let coord = (x as u32, y as u32, self.generation as u32);
+                    let coord = (world_x as u32, world_y as u32, self.generation as u32);
                     let known = state.known_cells.iter().find(|k| (k.x, k.y, k.t) == coord);
 
                     let (ch, base_style) = match known {
-                        Some(k) if k.state == CellState::Alive => {
-                            ('o', Style::new().green().add_modifier(Modifier::BOLD))
-                        }
-                        Some(_) => ('.', Style::new().red().add_modifier(Modifier::BOLD)),
-                        None => ('?', Style::new().cyan()),
+                        Some(k) if k.state == CellState::Alive => ('o', palette.known_alive),
+                        Some(_) => ('.', palette.known_dead),
+                        None => ('?', palette.unknown),
                     };
 
                     let style = if cursor_here {
@@ -454,15 +904,32 @@ impl App {
                         .set_char(ch)
                         .set_style(style);
                 }
-                if main.width > w + 1 {
-                    let sep_x = main.x + w;
+                if scroll.body.width > w.saturating_sub(viewport_x) + 1 {
+                    let sep_x = scroll.body.x + w.saturating_sub(viewport_x);
                     buf.cell_mut((sep_x, buf_y))
                         .unwrap()
-                        .set_char(if y == h - 1 { '!' } else { '$' })
-                        .set_style(Style::new().dark_gray());
+                        .set_char(if world_y == h - 1 { '!' } else { '$' })
+                        .set_style(palette.guessed_dead);
                 }
             }
         }
+
+        render_vertical_scrollbar(
+            frame,
+            scroll.vertical,
+            h,
+            scroll.body.height,
+            viewport_y,
+            palette,
+        );
+        render_horizontal_scrollbar(
+            frame,
+            scroll.horizontal,
+            w,
+            scroll.body.width,
+            viewport_x,
+            palette,
+        );
     }
 }
 
@@ -473,75 +940,65 @@ struct Rle<'b> {
     t: i32,
     /// A reference to the world.
     world: &'b World,
-}
-
-impl<'b> Rle<'b> {
-    /// Create a new RLE widget from the app.
-    const fn new(app: &'b App) -> Self {
-        Self {
-            t: app.generation,
-            world: &app.world,
-        }
-    }
+    /// Current viewport offset inside the visible world.
+    viewport_x: u16,
+    viewport_y: u16,
 }
 
 impl Widget for Rle<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        let palette = Palette::new();
         let w = self.world.config().width as u16;
         let h = self.world.config().height as u16;
 
         let header = Line::from(vec![
-            Span::styled("x", Style::new().magenta()),
+            Span::styled("x", palette.accent),
             Span::raw(" = "),
-            Span::styled(w.to_string(), Style::new().cyan()),
+            Span::styled(w.to_string(), palette.unknown),
             Span::raw(", "),
-            Span::styled("y", Style::new().magenta()),
+            Span::styled("y", palette.accent),
             Span::raw(" = "),
-            Span::styled(h.to_string(), Style::new().cyan()),
+            Span::styled(h.to_string(), palette.unknown),
             Span::raw(", "),
-            Span::styled("rule", Style::new().magenta()),
+            Span::styled("rule", palette.accent),
             Span::raw(" = "),
-            Span::styled(&self.world.config().rule_str, Style::new().cyan()),
+            Span::styled(&self.world.config().rule_str, palette.unknown),
         ]);
 
         buf.set_line(area.x, area.y, &header, area.width);
 
         if area.height > 1 {
-            for y in 0..h.min(area.height - 1) {
-                let buf_y = area.y + y + 1;
-                for x in 0..w.min(area.width) {
-                    let buf_x = area.x + x;
-                    let coord = (x as i32, y as i32, self.t);
+            for local_y in 0..h.saturating_sub(self.viewport_y).min(area.height - 1) {
+                let buf_y = area.y + local_y + 1;
+                let world_y = local_y + self.viewport_y;
+                for local_x in 0..w.saturating_sub(self.viewport_x).min(area.width) {
+                    let buf_x = area.x + local_x;
+                    let world_x = local_x + self.viewport_x;
+                    let coord = (world_x as i32, world_y as i32, self.t);
                     let state = self.world.get_cell_state(coord);
                     let reason = self.world.get_cell_reason(coord);
                     let (ch, style) = match (state, reason) {
-                        (Some(CellState::Alive), Some(Reason::Known)) => {
-                            ('o', Style::new().green().add_modifier(Modifier::BOLD))
-                        }
-                        (Some(CellState::Alive), Some(Reason::Deduced)) => {
-                            ('o', Style::new().yellow())
-                        }
-                        (Some(CellState::Alive), _) => ('o', Style::new().green()),
-                        (Some(CellState::Dead), Some(Reason::Known)) => {
-                            ('.', Style::new().red().add_modifier(Modifier::BOLD))
-                        }
+                        (Some(CellState::Alive), Some(Reason::Known)) => ('o', palette.known_alive),
+                        (Some(CellState::Alive), Some(Reason::Deduced)) => ('o', palette.deduced),
+                        (Some(CellState::Alive), _) => ('o', palette.success),
+                        (Some(CellState::Dead), Some(Reason::Known)) => ('.', palette.known_dead),
                         (Some(CellState::Dead), Some(Reason::Deduced)) => {
-                            ('.', Style::new().dark_gray())
+                            ('.', palette.guessed_dead)
                         }
-                        (Some(CellState::Dead), _) => ('.', Style::new().gray()),
-                        (None, _) => ('?', Style::new().cyan()),
+                        (Some(CellState::Dead), _) => ('.', palette.guessed_dead),
+                        (None, _) => ('?', palette.unknown),
                     };
                     buf.cell_mut((buf_x, buf_y))
                         .unwrap()
                         .set_char(ch)
                         .set_style(style);
                 }
-                if area.width > w + 1 {
-                    let buf_x: u16 = area.x + w;
+                if area.width > w.saturating_sub(self.viewport_x) + 1 {
+                    let buf_x = area.x + w.saturating_sub(self.viewport_x);
                     buf.cell_mut((buf_x, buf_y))
                         .unwrap()
-                        .set_char(if y == h - 1 { '!' } else { '$' })
-                        .set_style(Style::new().dark_gray());
+                        .set_char(if world_y == h - 1 { '!' } else { '$' })
+                        .set_style(palette.guessed_dead);
                 }
             }
         }

@@ -16,10 +16,10 @@ pub struct AppConfig {
     /// The configuration of the search.
     pub config: Config,
 
-    /// Number of steps between each display of the current partial result.
+    /// Display/update interval in search steps.
     pub step: usize,
 
-    /// Whether to increase the world size when the search fails.
+    /// Restart with a slightly larger world after an exhausted search.
     ///
     /// If the diagonal width exists and is smaller than the width, it will be increased by 1.
     /// Otherwise, if the height is greater than the width, the width will increased by 1.
@@ -32,7 +32,7 @@ pub struct AppConfig {
     /// status will be lost.
     pub increase_world_size: bool,
 
-    /// Do not stop the search when a solution is found.
+    /// Continue searching after the first solution.
     ///
     /// The search will continue until no more solutions exist, or paused by the user.
     pub no_stop: bool,

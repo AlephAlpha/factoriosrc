@@ -155,15 +155,15 @@ pub struct Config {
     #[cfg_attr(feature = "clap", arg(short, long, default_value = "R3,C2,S2,B3,N+"))]
     pub rule_str: String,
 
-    /// Width of the world.
+    /// Width of the search world in cells.
     #[cfg_attr(feature = "clap", arg(default_value_t = 0))]
     pub width: u32,
 
-    /// Height of the world.
+    /// Height of the search world in cells.
     #[cfg_attr(feature = "clap", arg(default_value_t = 0))]
     pub height: u32,
 
-    /// Period of the pattern.
+    /// Number of generations in the repeating cycle.
     #[cfg_attr(feature = "clap", arg(default_value_t = 1))]
     pub period: u32,
 
@@ -244,9 +244,9 @@ pub struct Config {
     #[cfg_attr(feature = "serde", serde(default))]
     pub transformation: Transformation,
 
-    /// Search order.
+    /// Traversal order for unresolved cells.
     ///
-    /// [`None`] means that the search order is automatically determined.
+    /// [`None`] means that the search order is chosen automatically.
     #[cfg_attr(feature = "clap", arg(short = 'o', long, value_enum))]
     #[cfg_attr(feature = "serde", serde(default))]
     pub search_order: Option<SearchOrder>,
@@ -269,8 +269,8 @@ pub struct Config {
 
     /// Cells whose states are fixed before the search starts.
     ///
-    /// The coordinates are absolute coordinates in the search world.
-    /// All known cells must lie inside the world.
+    /// Coordinates are absolute positions in the search world.
+    /// All known cells must lie inside the current world bounds.
     ///
     /// Repeated coordinates with the same state are deduplicated during validation.
     /// Repeated coordinates with different states are rejected.

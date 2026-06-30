@@ -3,6 +3,7 @@
 mod app;
 mod args;
 mod event;
+mod layout;
 mod tui;
 mod ui;
 

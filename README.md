@@ -4,7 +4,7 @@ Search for patterns in [Factorio (R3,C2,S2,B3,N+)](https://conwaylife.com/forums
 
 This program is still work in progress. Many features are still missing.
 
-Now it has a simple text-based UI. A simple GUI is work in progress. A web UI will be added in the future.
+Now it has a text-based UI with scrolling, keyboard navigation, and basic mouse support. A simple GUI is work in progress. A web UI will be added in the future.
 
 Since 2026, most of the development has been done by AI assistants. I don't have time to review all the AI-generated code, so there may be bugs. Please report any issues you find.
 
@@ -20,10 +20,16 @@ cargo build --release
 
 ### Text-based UI
 
-Print the help message:
+Print the top-level help:
 
 ```bash
-cargo run --bin factoriosrc-tui --release -- help
+cargo run --bin factoriosrc-tui --release -- --help
+```
+
+Print command-specific help:
+
+```bash
+cargo run --bin factoriosrc-tui --release -- new --help
 ```
 
 Search for a c/2 spaceship with [D2-](https://conwaylife.com/wiki/Static_symmetry#D2) symmetry in a bounding box of size 30x10:
@@ -45,6 +51,13 @@ cargo run --bin factoriosrc-tui --release -- load save.json
 ```
 
 The program is still work in progress, so the usage may change, and the format of the save file may be incompatible between different versions.
+
+In the TUI:
+
+- Use `o` to open the configuration form.
+- Use arrow keys or PgUp/PgDn to pan or scroll when the current view does not fit.
+- Use the mouse wheel to scroll configuration and help panels, and click in the known-cells editor to set cells.
+- Use `c` to copy the current RLE text.
 
 ### GUI
 
@@ -87,6 +100,7 @@ Features that rlifesrc has but factoriosrc doesn't:
   - [ ] Port the GUI to the web. I'm using the [egui](https://github.com/emilk/egui) library, which has a web backend. I still need to figure out how to use WebWorkers, so that the search can run in the background without blocking the UI.
   - [ ] Better support for mobile devices.
 - [ ] Better documentation.
+  - [ ] Keep lib, TUI, and GUI field descriptions and help text aligned as the interfaces evolve.
 
 Features that rlifesrc doesn't have and factoriosrc may add:
 
