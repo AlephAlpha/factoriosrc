@@ -19,7 +19,7 @@ pub struct Tui {
     /// The application state.
     app: App,
     /// The event handler.
-    event_handler: EventHandler,
+    event_handler: Option<EventHandler>,
 }
 
 impl Tui {
@@ -33,12 +33,10 @@ impl Tui {
             Command::Load(args) => App::load(args)?,
         };
 
-        let event_handler = EventHandler::new();
-
         let mut tui = Self {
             terminal,
             app,
-            event_handler,
+            event_handler: None,
         };
 
         tui.init()?;
@@ -54,6 +52,7 @@ impl Tui {
         self.terminal.hide_cursor()?;
 
         self.draw()?;
+        self.event_handler = Some(EventHandler::new());
         Ok(())
     }
 
@@ -85,11 +84,20 @@ impl Tui {
             // If the application is running, do not block on the event handler.
             if self.app.mode == Mode::Running {
                 self.app.step();
-                if let Some(event) = self.event_handler.try_recv()? {
+                if let Some(event) = self
+                    .event_handler
+                    .as_ref()
+                    .expect("event handler must be initialized before run")
+                    .try_recv()?
+                {
                     self.app.update(event);
                 }
             } else {
-                let event = self.event_handler.recv()?;
+                let event = self
+                    .event_handler
+                    .as_ref()
+                    .expect("event handler must be initialized before run")
+                    .recv()?;
                 self.app.update(event);
             }
 

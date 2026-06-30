@@ -109,19 +109,19 @@ impl EframeApp for App {
     }
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut Frame) {
-        Panel::left("config_panel").show_inside(ui, |ui| {
+        Panel::left("config_panel").show(ui, |ui| {
             self.config_panel(ui);
         });
 
-        Panel::top("control_panel").show_inside(ui, |ui| {
+        Panel::top("control_panel").show(ui, |ui| {
             self.control_panel(ui);
         });
 
-        Panel::bottom("status_panel").show_inside(ui, |ui| {
+        Panel::bottom("status_panel").show(ui, |ui| {
             self.status_panel(ui);
         });
 
-        CentralPanel::default().show_inside(ui, |ui| {
+        CentralPanel::default().show(ui, |ui| {
             self.main_panel(ui);
         });
     }
