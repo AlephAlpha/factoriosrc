@@ -30,7 +30,7 @@ pub enum Reason {
 /// This struct contains raw pointers. It is safe to use as long as the following invariants are
 /// maintained:
 ///
-/// - Raw pointers in the `neighborhood` array are non-null.
+/// - Raw pointers in the `symmetry` vector should be non-null.
 /// - Other raw pointers may be null.
 /// - When a pointer is non-null, it must point to a cell in the same [`World`].
 #[derive(Debug)]

@@ -8,7 +8,7 @@ edition = "2024"
 [dependencies]
 documented = { workspace = true }
 eframe = { workspace = true, features = ["x11"] }
-env_logger = "0.11.10"
+env_logger = "0.11.11"
 egui = { workspace = true }
 factoriosrc-lib = { workspace = true, features = ["documented"] }
 log = { workspace = true }

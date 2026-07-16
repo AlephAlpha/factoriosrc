@@ -113,8 +113,8 @@ Features that rlifesrc doesn't have and factoriosrc may add:
 - [x] A seedable RNG. (https://github.com/AlephAlpha/rlifesrc/issues/183)
   - [x] Use a RNG with `serde` support, so that we can save and load the random state.
 - [ ] More user-friendly UI.
-  - [ ] Add scrollbars in the TUI.
-  - [ ] Support mouse input in the TUI, e.g., to choose a field to edit in the config panel.
+  - [x] Add scrollbars in the TUI.
+  - [x] Support mouse input in the TUI, e.g., to choose a field to edit in the config panel.
   - [ ] Set cells to be known by clicking, in both the TUI and the GUI.
   - [ ] Automatically save the search state in the browser cache. (https://github.com/AlephAlpha/rlifesrc/issues/366)
 - [ ] Set some cells to be known during the search.

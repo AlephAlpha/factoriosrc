@@ -238,6 +238,7 @@ impl ConfigState {
                     self.working_config.width = v;
                 } else {
                     self.error = Some("width must be a positive integer".to_string());
+                    return;
                 }
             }
             ConfigField::Height => {
@@ -247,6 +248,7 @@ impl ConfigState {
                     self.working_config.height = v;
                 } else {
                     self.error = Some("height must be a positive integer".to_string());
+                    return;
                 }
             }
             ConfigField::Period => {
@@ -256,6 +258,7 @@ impl ConfigState {
                     self.working_config.period = v;
                 } else {
                     self.error = Some("period must be a positive integer".to_string());
+                    return;
                 }
             }
             ConfigField::Dx => {
