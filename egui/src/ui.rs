@@ -1,6 +1,12 @@
-use crate::app::{App, AppConfig, Mode};
+use crate::{
+    app::{App, AppConfig, Mode},
+    help,
+    theme::{Palette, badge_text, muted, rle_layout_job, section_title},
+};
 use documented::{Documented, DocumentedFields};
-use egui::{Color32, ComboBox, DragValue, Grid, Label, RichText, ScrollArea, Slider, Ui};
+use egui::{
+    Color32, ComboBox, Context, DragValue, Grid, Label, RichText, ScrollArea, Slider, Ui, Window,
+};
 use factoriosrc_lib::{
     Config, NewState, SearchOrder, Status, Symmetry, Transformation, TranslationCondition,
 };
@@ -8,9 +14,161 @@ use factoriosrc_lib::{
 use rfd::FileDialog;
 
 impl App {
+    /// The setup sidebar shell.
+    pub fn setup_panel(&mut self, ui: &mut Ui) {
+        let palette = Palette::new();
+
+        ui.heading(section_title("Config"));
+        ui.horizontal_wrapped(|ui| {
+            ui.label(RichText::new("Mode").strong().color(palette.accent));
+            let badge = match self.mode {
+                Mode::Configuring => badge_text("SETUP", palette.accent),
+                Mode::Running => badge_text("RUNNING", palette.warning),
+                Mode::Paused => badge_text("PAUSED", palette.subtle_text),
+            };
+            ui.label(badge);
+            ui.separator();
+            ui.label(format!(
+                "{} x {}  p{}",
+                self.config.config.width, self.config.config.height, self.config.config.period,
+            ));
+        });
+        ui.separator();
+
+        ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                self.config_panel(ui);
+            });
+    }
+
+    /// The top command bar shell.
+    pub fn command_bar(&mut self, ui: &mut Ui) {
+        let palette = Palette::new();
+
+        ui.horizontal_wrapped(|ui| {
+            ui.heading(section_title("factoriosrc"));
+            ui.separator();
+
+            let badge = match self.mode {
+                Mode::Configuring => badge_text("SETUP", palette.accent),
+                Mode::Running => badge_text("RUNNING", palette.warning),
+                Mode::Paused => match self.status {
+                    Status::Solved => badge_text("SOLVED", palette.success),
+                    Status::NoSolution => badge_text("EXHAUSTED", palette.danger),
+                    _ => badge_text("PAUSED", palette.subtle_text),
+                },
+            };
+            ui.label(badge);
+
+            ui.separator();
+            self.control_panel(ui);
+
+            ui.separator();
+            ui.add_enabled_ui(self.current_rle().is_some(), |ui| {
+                if ui.button("Copy RLE").clicked() {
+                    self.copy_current_rle(ui.ctx());
+                }
+            });
+
+            let details_label = if self.chrome.show_details {
+                "Hide Details"
+            } else {
+                "Details"
+            };
+            if ui.button(details_label).clicked() {
+                self.chrome.show_details = !self.chrome.show_details;
+            }
+
+            if ui.button("Help").clicked() {
+                self.chrome.show_help = true;
+            }
+        });
+    }
+
+    /// The optional details panel.
+    pub fn inspector_panel(&self, ui: &mut Ui) {
+        let palette = Palette::new();
+
+        ui.heading(section_title("Details"));
+        ui.separator();
+
+        Grid::new("details_grid").num_columns(2).show(ui, |ui| {
+            ui.label(RichText::new("Status").strong().color(palette.accent));
+            ui.label(self.status.to_string());
+            ui.end_row();
+
+            ui.label(RichText::new("Mode").strong().color(palette.accent));
+            ui.label(self.mode_label());
+            ui.end_row();
+
+            ui.label(RichText::new("Rule").strong().color(palette.accent));
+            ui.label(&self.config.config.rule_str);
+            ui.end_row();
+
+            ui.label(RichText::new("World").strong().color(palette.accent));
+            ui.label(format!(
+                "{} x {}  p{}",
+                self.config.config.width, self.config.config.height, self.config.config.period,
+            ));
+            ui.end_row();
+
+            ui.label(RichText::new("Generation").strong().color(palette.accent));
+            ui.label(self.generation.to_string());
+            ui.end_row();
+
+            ui.label(RichText::new("Solutions").strong().color(palette.accent));
+            ui.label(self.solutions.len().to_string());
+            ui.end_row();
+
+            if let Some(population) = self.current_population() {
+                ui.label(RichText::new("Population").strong().color(palette.accent));
+                ui.label(population.to_string());
+                ui.end_row();
+            }
+
+            ui.label(RichText::new("Checked").strong().color(palette.accent));
+            ui.label(self.cells_checked.to_string());
+            ui.end_row();
+
+            ui.label(RichText::new("Elapsed").strong().color(palette.accent));
+            ui.label(format!("{:?}", self.elapsed));
+            ui.end_row();
+        });
+    }
+
+    /// The main results workspace shell.
+    pub fn workspace_panel(&self, ui: &mut Ui) {
+        let palette = Palette::new();
+
+        ui.horizontal_wrapped(|ui| {
+            ui.heading(section_title("Results"));
+            ui.separator();
+            ui.label(RichText::new("Gen").strong().color(palette.accent));
+            ui.label(format!(
+                "{} / {}",
+                self.generation,
+                self.config.config.period - 1
+            ));
+            ui.separator();
+            ui.label(RichText::new("Solutions").strong().color(palette.accent));
+            ui.label(self.solutions.len().to_string());
+            if let Some(population) = self.current_population() {
+                ui.separator();
+                ui.label(RichText::new("Pop").strong().color(palette.accent));
+                ui.label(population.to_string());
+            }
+        });
+
+        ui.add_space(6.0);
+        self.main_panel(ui);
+    }
+
     /// The configuration panel.
     pub fn config_panel(&mut self, ui: &mut Ui) {
-        ui.heading("Configuration").on_hover_text(Config::DOCS);
+        ui.heading(section_title("Configuration"))
+            .on_hover_text(Config::DOCS);
+        ui.separator();
 
         ui.add_enabled_ui(self.mode == Mode::Configuring, |ui| {
             Grid::new("config_panel")
@@ -313,95 +471,95 @@ impl App {
 
     /// The control panel.
     pub fn control_panel(&mut self, ui: &mut Ui) {
-        ui.horizontal(|ui| {
-            if self.mode == Mode::Configuring {
-                if ui
-                    .button("New")
-                    .on_hover_text("Start a new search with the current configuration.")
-                    .clicked()
-                {
-                    self.new_search();
-                }
-
-                #[cfg(feature = "save")]
-                if ui
-                    .button("Load")
-                    .on_hover_text("Load a search from a save file.")
-                    .clicked()
-                    && let Some(path) = FileDialog::new().pick_file()
-                {
-                    log::info!("Loading search from {}", path.display());
-                    self.load_search(&path);
-                }
-            } else {
-                ui.add_enabled_ui(self.mode == Mode::Paused, |ui| {
-                    let text = match self.status {
-                        Status::NotStarted => "Start",
-                        Status::Running => "Resume",
-                        _ => "Next",
-                    };
-
-                    let hover_text = match self.status {
-                        Status::NotStarted => "Start the search.",
-                        Status::Running => "Resume the search.",
-                        _ => "Find the next solution.",
-                    };
-
-                    if ui.button(text).on_hover_text(hover_text).clicked() {
-                        self.start();
-                    }
-                });
-
-                ui.add_enabled_ui(self.mode == Mode::Running, |ui| {
-                    if ui
-                        .button("Pause")
-                        .on_hover_text("Pause the search.")
-                        .clicked()
-                    {
-                        self.pause();
-                    }
-                });
-
-                if ui
-                    .button("Stop")
-                    .on_hover_text(
-                        "Stop the search and reset the application to the configuring mode.\n\
-                        This will discard the current search and any partial results.\
-                        Please save the search before stopping if you want to keep it.",
-                    )
-                    .clicked()
-                {
-                    self.stop();
-                }
-
-                #[cfg(feature = "save")]
-                ui.add_enabled_ui(self.mode == Mode::Paused, |ui| {
-                    if ui
-                        .button("Save")
-                        .on_hover_text("Save the current search state to a file.")
-                        .clicked()
-                        && let Some(path) = FileDialog::new().set_file_name("save.json").save_file()
-                    {
-                        log::info!("Saving search to {}", path.display());
-                        self.save = Some(path);
-                        self.save();
-                    }
-                });
-
-                ui.separator();
-
-                ui.label("generation")
-                    .on_hover_text(Self::get_field_docs("generation").unwrap());
-                ui.add(Slider::new(
-                    &mut self.generation,
-                    0..=self.config.config.period as i32 - 1,
-                ));
+        if self.mode == Mode::Configuring {
+            if ui
+                .button("New")
+                .on_hover_text("Start a new search with the current configuration.")
+                .clicked()
+            {
+                self.new_search();
             }
-        });
+
+            #[cfg(feature = "save")]
+            if ui
+                .button("Load")
+                .on_hover_text("Load a search from a save file.")
+                .clicked()
+                && let Some(path) = FileDialog::new().pick_file()
+            {
+                log::info!("Loading search from {}", path.display());
+                self.load_search(&path);
+            }
+        } else {
+            ui.add_enabled_ui(self.mode == Mode::Paused, |ui| {
+                let text = match self.status {
+                    Status::NotStarted => "Start",
+                    Status::Running => "Resume",
+                    _ => "Next",
+                };
+
+                let hover_text = match self.status {
+                    Status::NotStarted => "Start the search.",
+                    Status::Running => "Resume the search.",
+                    _ => "Find the next solution.",
+                };
+
+                if ui.button(text).on_hover_text(hover_text).clicked() {
+                    self.start();
+                }
+            });
+
+            ui.add_enabled_ui(self.mode == Mode::Running, |ui| {
+                if ui
+                    .button("Pause")
+                    .on_hover_text("Pause the search.")
+                    .clicked()
+                {
+                    self.pause();
+                }
+            });
+
+            if ui
+                .button("Stop")
+                .on_hover_text(
+                    "Stop the search and reset the application to the configuring mode.\n\
+                    This will discard the current search and any partial results.\
+                    Please save the search before stopping if you want to keep it.",
+                )
+                .clicked()
+            {
+                self.stop();
+            }
+
+            #[cfg(feature = "save")]
+            ui.add_enabled_ui(self.mode == Mode::Paused, |ui| {
+                if ui
+                    .button("Save")
+                    .on_hover_text("Save the current search state to a file.")
+                    .clicked()
+                    && let Some(path) = FileDialog::new().set_file_name("save.json").save_file()
+                {
+                    log::info!("Saving search to {}", path.display());
+                    self.save = Some(path);
+                    self.save();
+                }
+            });
+
+            ui.separator();
+
+            ui.label("generation")
+                .on_hover_text(Self::get_field_docs("generation").unwrap());
+            ui.add(Slider::new(
+                &mut self.generation,
+                0..=self.config.config.period as i32 - 1,
+            ));
+        }
     }
 
     /// The status panel.
     pub fn status_panel(&self, ui: &mut Ui) {
+        let palette = Palette::new();
+
         ui.horizontal(|ui| {
             if let Some(err) = &self.error {
                 ui.label(RichText::new(err.to_string()).color(Color32::RED));
@@ -412,20 +570,20 @@ impl App {
                     Status::get_field_docs(self.status.to_string()).unwrap()
                 };
 
-                ui.label(status)
+                ui.label(RichText::new(status).strong().color(palette.text))
                     .on_hover_text(Self::get_field_docs("status").unwrap());
             }
 
             ui.separator();
 
-            ui.label("Solution count:")
+            ui.label("Solutions:")
                 .on_hover_text("The number of solutions found so far.");
             ui.label(self.solutions.len().to_string());
 
             if !self.populations.is_empty() {
                 ui.separator();
 
-                ui.label("Population:")
+                ui.label("Pop:")
                     .on_hover_text("Populations of the current partial result.");
                 ui.label(self.populations[self.generation as usize].to_string());
             }
@@ -433,9 +591,15 @@ impl App {
             if self.mode == Mode::Paused {
                 ui.separator();
 
-                ui.label("Search time:")
+                ui.label("Time:")
                     .on_hover_text(Self::get_field_docs("elapsed").unwrap());
                 ui.label(format!("{:?}", self.elapsed));
+
+                ui.separator();
+
+                ui.label("Checked:")
+                    .on_hover_text("The number of state assignments made by the search so far.");
+                ui.label(self.cells_checked.to_string());
             }
         });
     }
@@ -444,23 +608,81 @@ impl App {
     pub fn main_panel(&self, ui: &mut Ui) {
         match self.mode {
             Mode::Configuring => {
-                ScrollArea::both().auto_shrink(false).show(ui, |ui| {
-                    for view in self.solutions.iter().rev() {
-                        ui.add(Label::new(view.clone()).extend());
-                    }
-                });
+                if self.solutions.is_empty() {
+                    ui.add_space(18.0);
+                    ui.label(muted("No stored solutions."));
+                } else {
+                    ScrollArea::both().auto_shrink(false).show(ui, |ui| {
+                        for view in self.solutions.iter().rev() {
+                            ui.add(Label::new(rle_layout_job(view)).extend());
+                        }
+                    });
+                }
             }
             _ => {
                 if !self.view.is_empty() {
                     ScrollArea::both().auto_shrink(false).show(ui, |ui| {
-                        ui.add(Label::new(self.view[self.generation as usize].clone()).extend());
+                        ui.add(
+                            Label::new(rle_layout_job(&self.view[self.generation as usize]))
+                                .extend(),
+                        );
                     });
 
                     if self.mode == Mode::Running {
                         ui.ctx().request_repaint();
                     }
+                } else {
+                    ui.add_space(18.0);
+                    ui.label(muted("No snapshot yet."));
                 }
             }
         }
+    }
+
+    /// The on-demand help window.
+    pub fn help_window(&mut self, ctx: &Context) {
+        let mut open = self.chrome.show_help;
+
+        Window::new("Help")
+            .open(&mut open)
+            .resizable(true)
+            .default_width(560.0)
+            .show(ctx, |ui| {
+                ui.label(muted(
+                    "Hover config labels for field-level docs from factoriosrc-lib.",
+                ));
+                ui.separator();
+
+                ui.label(RichText::new("Actions").strong());
+                Grid::new("help_actions").num_columns(2).show(ui, |ui| {
+                    for (label, description) in help::SEARCH_ACTIONS {
+                        ui.label(RichText::new(label).strong());
+                        ui.label(description);
+                        ui.end_row();
+                    }
+                });
+
+                ui.separator();
+                ui.label(RichText::new("Results").strong());
+                Grid::new("help_results").num_columns(2).show(ui, |ui| {
+                    for (label, description) in help::RESULT_NOTES {
+                        ui.label(RichText::new(label).strong());
+                        ui.label(description);
+                        ui.end_row();
+                    }
+                });
+
+                ui.separator();
+                ui.label(RichText::new("Config").strong());
+                Grid::new("help_config").num_columns(2).show(ui, |ui| {
+                    for (label, description) in help::CONFIG_NOTES {
+                        ui.label(RichText::new(label).strong());
+                        ui.label(description);
+                        ui.end_row();
+                    }
+                });
+            });
+
+        self.chrome.show_help = open;
     }
 }

@@ -1,7 +1,8 @@
 use crate::search::{Event, Message, SearchThread};
+use crate::theme;
 use documented::{Documented, DocumentedFields};
 use eframe::{App as EframeApp, Frame, glow::Context as GlowContext};
-use egui::{CentralPanel, Context, Panel, Ui, text::LayoutJob};
+use egui::{CentralPanel, Context, Panel, Ui};
 use factoriosrc_lib::{Config, Status};
 #[cfg(feature = "save")]
 use serde::{Deserialize, Serialize};
@@ -50,6 +51,15 @@ pub enum Mode {
     Paused,
 }
 
+/// Visibility state for optional UI chrome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ChromeState {
+    /// Whether the details panel is visible.
+    pub show_details: bool,
+    /// Whether the help window is visible.
+    pub show_help: bool,
+}
+
 /// The main struct of the application.
 #[derive(Debug, DocumentedFields)]
 pub struct App {
@@ -57,22 +67,26 @@ pub struct App {
     pub config: AppConfig,
     /// Current mode of the application.
     pub mode: Mode,
+    /// Visibility state for optional panels and overlays.
+    pub chrome: ChromeState,
     /// A thread to run the search algorithm.
     pub search: Option<SearchThread>,
     /// The current generation to display.
     pub generation: i32,
     /// The current partial result.
-    pub view: Vec<LayoutJob>,
+    pub view: Vec<String>,
     /// Populations of each generation of the current partial result.
     pub populations: Vec<usize>,
     /// Found solutions.
-    pub solutions: Vec<LayoutJob>,
+    pub solutions: Vec<String>,
     /// An error message to display.
     pub error: Option<String>,
     /// Search status.
     pub status: Status,
     /// Time elapsed since the start of the search.
     pub elapsed: Duration,
+    /// A proxy metric for search progress.
+    pub cells_checked: usize,
     /// A path to save the search state.
     #[cfg(feature = "save")]
     pub save: Option<PathBuf>,
@@ -89,6 +103,7 @@ impl Default for App {
         Self {
             config,
             mode: Mode::Configuring,
+            chrome: ChromeState::default(),
             search: None,
             generation: 0,
             view: Vec::new(),
@@ -97,6 +112,7 @@ impl Default for App {
             error: None,
             status: Status::NotStarted,
             elapsed: Duration::default(),
+            cells_checked: 0,
             #[cfg(feature = "save")]
             save: None,
         }
@@ -109,21 +125,31 @@ impl EframeApp for App {
     }
 
     fn ui(&mut self, ui: &mut Ui, _frame: &mut Frame) {
-        Panel::left("config_panel").show(ui, |ui| {
-            self.config_panel(ui);
+        theme::apply_theme(ui.ctx());
+
+        Panel::top("command_bar").show(ui, |ui| {
+            self.command_bar(ui);
         });
 
-        Panel::top("control_panel").show(ui, |ui| {
-            self.control_panel(ui);
+        Panel::left("setup_sidebar").show(ui, |ui| {
+            self.setup_panel(ui);
         });
+
+        if self.chrome.show_details {
+            Panel::right("inspector_panel").show(ui, |ui| {
+                self.inspector_panel(ui);
+            });
+        }
 
         Panel::bottom("status_panel").show(ui, |ui| {
             self.status_panel(ui);
         });
 
         CentralPanel::default().show(ui, |ui| {
-            self.main_panel(ui);
+            self.workspace_panel(ui);
         });
+
+        self.help_window(ui.ctx());
     }
 
     fn on_exit(&mut self, _gl: Option<&GlowContext>) {
@@ -202,6 +228,7 @@ impl App {
         self.mode = Mode::Configuring;
         self.status = Status::NotStarted;
         self.generation = 0;
+        self.cells_checked = 0;
     }
 
     /// Send an event to the search thread to save the current state.
@@ -217,26 +244,28 @@ impl App {
     /// Handle a message from the search thread and update the application state.
     pub fn handle(&mut self, message: Message) {
         match message {
-            Message::Frame(frame) => {
-                self.status = frame.status;
-                self.view = frame.view;
-                self.populations = frame.populations;
-                self.elapsed = frame.elapsed;
-                if frame.status == Status::Solved {
+            Message::Snapshot(snapshot) => {
+                self.status = snapshot.status;
+                self.view = snapshot
+                    .generations
+                    .iter()
+                    .map(|generation| generation.rle.clone())
+                    .collect();
+                self.populations = snapshot
+                    .generations
+                    .iter()
+                    .map(|generation| generation.population)
+                    .collect();
+                self.elapsed = snapshot.elapsed;
+                self.cells_checked = snapshot.cells_checked;
+                if snapshot.status == Status::Solved {
                     // Choose the generation with the smallest population.
-                    let solution = self
-                        .view
-                        .iter()
-                        .zip(&self.populations)
-                        .min_by_key(|item| item.1)
-                        .unwrap()
-                        .0
-                        .clone();
-
-                    self.solutions.push(solution);
+                    if let Some(solution) = snapshot.smallest_population() {
+                        self.solutions.push(solution.rle.clone());
+                    }
                 }
 
-                if frame.running {
+                if snapshot.running {
                     self.mode = Mode::Running;
                 } else {
                     log::debug!("Search paused.");
@@ -263,6 +292,35 @@ impl App {
             && let Some(message) = search.try_recv()
         {
             self.handle(message);
+        }
+    }
+
+    /// A short label for the current mode.
+    pub const fn mode_label(&self) -> &'static str {
+        match self.mode {
+            Mode::Configuring => "Setup",
+            Mode::Running => "Running",
+            Mode::Paused => "Paused",
+        }
+    }
+
+    /// Return the population on the currently displayed generation.
+    pub fn current_population(&self) -> Option<usize> {
+        self.populations.get(self.generation as usize).copied()
+    }
+
+    /// Return the RLE currently shown in the workspace.
+    pub fn current_rle(&self) -> Option<&str> {
+        match self.mode {
+            Mode::Configuring => self.solutions.last().map(String::as_str),
+            _ => self.view.get(self.generation as usize).map(String::as_str),
+        }
+    }
+
+    /// Copy the currently displayed RLE text to the clipboard.
+    pub fn copy_current_rle(&self, ctx: &Context) {
+        if let Some(rle) = self.current_rle() {
+            ctx.copy_text(rle.to_owned());
         }
     }
 }

@@ -1,7 +1,6 @@
-use crate::app::AppConfig;
-use egui::{
-    Color32, FontId,
-    text::{LayoutJob, TextFormat},
+use crate::{
+    app::AppConfig,
+    snapshot::{GenerationSnapshot, SearchSnapshot},
 };
 use factoriosrc_lib::{Status, World};
 #[cfg(feature = "save")]
@@ -31,39 +30,24 @@ pub enum Event {
 /// Messages that the search thread can send to the main thread.
 #[derive(Debug, Clone)]
 pub enum Message {
-    /// A frame to display the current partial result.
-    Frame(Frame),
+    /// A snapshot to display the current partial result.
+    Snapshot(SearchSnapshot),
 
     /// A JSON string to save the search state.
     #[cfg(feature = "save")]
     Save(String),
 }
 
-/// A frame to display the current partial result.
-#[derive(Debug, Clone)]
-pub struct Frame {
-    /// Search status.
-    pub status: Status,
-    /// Whether the search is running.
-    pub running: bool,
-    /// Time elapsed since the start of the search.
-    pub elapsed: Duration,
-    /// The current partial result.
-    pub view: Vec<LayoutJob>,
-    /// Populations of each generation of the current partial result.
-    pub populations: Vec<usize>,
-}
-
-impl From<Frame> for Message {
-    fn from(frame: Frame) -> Self {
-        Self::Frame(frame)
+impl From<SearchSnapshot> for Message {
+    fn from(snapshot: SearchSnapshot) -> Self {
+        Self::Snapshot(snapshot)
     }
 }
 
 impl Message {
     /// Whether the message is a frame.
     pub const fn is_frame(&self) -> bool {
-        matches!(self, Self::Frame(_))
+        matches!(self, Self::Snapshot(_))
     }
 }
 
@@ -155,98 +139,22 @@ impl Search {
         }
     }
 
-    /// Generate a list of egui [`LayoutJob`]s to display each generation
-    /// of the world.
-    fn render(&self) -> Vec<LayoutJob> {
-        let w = self.world.config().width as i32;
-        let h = self.world.config().height as i32;
-        let p = self.world.config().period as i32;
-        let rule_str = &self.world.config().rule_str;
-
-        let mut jobs = Vec::with_capacity(p as usize);
-
-        for t in 0..p {
-            let mut job = LayoutJob::default();
-
-            let header = format!("x = {w}, y = {h}, rule = {rule_str}\n");
-            job.append(
-                &header,
-                0.0,
-                TextFormat {
-                    color: Color32::from_rgb(153, 153, 153),
-                    font_id: FontId::monospace(14.0),
-                    ..Default::default()
-                },
-            );
-
-            for y in 0..h {
-                for x in 0..w {
-                    let state = self.world.get_cell_state((x, y, t));
-                    match state {
-                        Some(factoriosrc_lib::CellState::Alive) => {
-                            job.append(
-                                "o",
-                                0.0,
-                                TextFormat {
-                                    color: Color32::from_rgb(113, 140, 0),
-                                    font_id: FontId::monospace(14.0),
-                                    ..Default::default()
-                                },
-                            );
-                        }
-                        Some(factoriosrc_lib::CellState::Dead) => {
-                            job.append(
-                                ".",
-                                0.0,
-                                TextFormat {
-                                    color: Color32::from_rgb(200, 40, 41),
-                                    font_id: FontId::monospace(14.0),
-                                    ..Default::default()
-                                },
-                            );
-                        }
-                        None => {
-                            job.append(
-                                "?",
-                                0.0,
-                                TextFormat {
-                                    color: Color32::from_rgb(137, 89, 168),
-                                    font_id: FontId::monospace(14.0),
-                                    ..Default::default()
-                                },
-                            );
-                        }
-                    }
-                }
-                job.append(
-                    if y == h - 1 { "!\n" } else { "$\n" },
-                    0.0,
-                    TextFormat {
-                        color: Color32::from_rgb(142, 144, 140),
-                        font_id: FontId::monospace(14.0),
-                        ..Default::default()
-                    },
-                );
-            }
-
-            jobs.push(job);
-        }
-
-        jobs
-    }
-
-    /// Create a [`Frame`] to send to the main thread.
-    fn frame(&self) -> Frame {
-        let view = self.render();
-        let populations = (0..self.world.config().period)
-            .map(|t| self.world.population(t as i32))
+    /// Create a UI-neutral snapshot to send to the main thread.
+    fn snapshot(&self) -> SearchSnapshot {
+        let generations = (0..self.world.config().period as i32)
+            .map(|generation| GenerationSnapshot {
+                generation,
+                population: self.world.population(generation),
+                rle: self.world.rle(generation, false),
+            })
             .collect();
-        Frame {
+
+        SearchSnapshot {
             status: self.status,
             running: self.running,
             elapsed: self.elapsed,
-            view,
-            populations,
+            generations,
+            cells_checked: self.world.cells_checked(),
         }
     }
 
@@ -263,12 +171,12 @@ impl Search {
             #[cfg(feature = "save")]
             Event::Save => return Message::Save(self.save()),
         }
-        self.frame().into()
+        self.snapshot().into()
     }
 
     /// The main loop of the search thread.
     fn run(&mut self, rx: Receiver<Event>, tx: Sender<Message>) {
-        tx.send(self.frame().into()).unwrap();
+        tx.send(self.snapshot().into()).unwrap();
 
         while !self.should_quit {
             // If the search is running, do not block on the event receiver.
@@ -276,7 +184,7 @@ impl Search {
                 self.step();
                 let message = match rx.try_recv() {
                     Ok(event) => self.handle_event(event),
-                    Err(TryRecvError::Empty) => self.frame().into(),
+                    Err(TryRecvError::Empty) => self.snapshot().into(),
                     Err(TryRecvError::Disconnected) => {
                         log::error!("The main thread has disconnected.");
                         break;
