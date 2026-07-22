@@ -3,7 +3,7 @@ use crate::theme;
 use documented::{Documented, DocumentedFields};
 use eframe::{App as EframeApp, Frame, glow::Context as GlowContext};
 use egui::{CentralPanel, Context, Panel, Ui};
-use factoriosrc_lib::{Config, Status};
+use factoriosrc_lib::{CellState, Config, KnownCell, Status};
 #[cfg(feature = "save")]
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "save")]
@@ -60,6 +60,21 @@ pub struct ChromeState {
     pub show_help: bool,
 }
 
+/// Working state for the known-cells editor.
+#[derive(Debug, Clone, Default)]
+pub struct KnownCellsEditor {
+    /// The generation currently shown in the editor.
+    pub generation: u32,
+    /// Working copy of known cells.
+    pub known_cells: Vec<KnownCell>,
+    /// The drag target currently being painted.
+    pub drag_target: Option<Option<CellState>>,
+    /// The last cell touched while dragging.
+    pub last_drag_cell: Option<(u32, u32, u32)>,
+    /// Number of cells trimmed on the last synchronization.
+    pub last_trimmed: usize,
+}
+
 /// The main struct of the application.
 #[derive(Debug, DocumentedFields)]
 pub struct App {
@@ -69,6 +84,8 @@ pub struct App {
     pub mode: Mode,
     /// Visibility state for optional panels and overlays.
     pub chrome: ChromeState,
+    /// Working state for the known-cells editor.
+    pub known_cells_editor: Option<KnownCellsEditor>,
     /// A thread to run the search algorithm.
     pub search: Option<SearchThread>,
     /// The current generation to display.
@@ -104,6 +121,7 @@ impl Default for App {
             config,
             mode: Mode::Configuring,
             chrome: ChromeState::default(),
+            known_cells_editor: None,
             search: None,
             generation: 0,
             view: Vec::new(),
@@ -150,6 +168,7 @@ impl EframeApp for App {
         });
 
         self.help_window(ui.ctx());
+        self.known_cells_window(ui.ctx());
     }
 
     fn on_exit(&mut self, _gl: Option<&GlowContext>) {
@@ -163,6 +182,7 @@ impl App {
     /// Create a new search thread from the current configuration.
     pub fn new_search(&mut self) {
         assert!(self.mode == Mode::Configuring);
+        self.known_cells_editor = None;
         let mut config = self.config.clone();
         if let Err(e) = config.config.check() {
             self.error = Some(e.to_string());
@@ -180,6 +200,7 @@ impl App {
     #[cfg(feature = "save")]
     pub fn load_search(&mut self, path: impl AsRef<Path>) {
         assert!(self.mode == Mode::Configuring);
+        self.known_cells_editor = None;
 
         if let Ok(string) = std::fs::read_to_string(path) {
             if let Ok((search, config)) = SearchThread::load(&string) {
@@ -321,6 +342,57 @@ impl App {
     pub fn copy_current_rle(&self, ctx: &Context) {
         if let Some(rle) = self.current_rle() {
             ctx.copy_text(rle.to_owned());
+        }
+    }
+
+    /// Open the known-cells editor.
+    pub fn open_known_cells_editor(&mut self) {
+        let period = self.config.config.period.max(1);
+        self.known_cells_editor = Some(KnownCellsEditor {
+            generation: (self.generation.max(0) as u32).min(period - 1),
+            known_cells: self.config.config.known_cells.clone(),
+            drag_target: None,
+            last_drag_cell: None,
+            last_trimmed: 0,
+        });
+    }
+
+    /// Remove out-of-bounds known cells from the live configuration.
+    pub fn trim_config_known_cells_to_world(&mut self) -> usize {
+        let width = self.config.config.width;
+        let height = self.config.config.height;
+        let period = self.config.config.period;
+        let before = self.config.config.known_cells.len();
+        self.config
+            .config
+            .known_cells
+            .retain(|cell| cell.x < width && cell.y < height && cell.t < period);
+        before.saturating_sub(self.config.config.known_cells.len())
+    }
+
+    /// Remove out-of-bounds known cells from the editor working copy.
+    pub fn trim_editor_known_cells_to_world(&mut self) -> usize {
+        let Some(editor) = &mut self.known_cells_editor else {
+            return 0;
+        };
+        let width = self.config.config.width;
+        let height = self.config.config.height;
+        let period = self.config.config.period;
+        let before = editor.known_cells.len();
+        editor
+            .known_cells
+            .retain(|cell| cell.x < width && cell.y < height && cell.t < period);
+        editor.generation = editor.generation.min(period.saturating_sub(1));
+        let trimmed = before.saturating_sub(editor.known_cells.len());
+        editor.last_trimmed = trimmed;
+        trimmed
+    }
+
+    /// Save editor changes back to the live configuration.
+    pub fn apply_known_cells_editor(&mut self) {
+        if let Some(editor) = self.known_cells_editor.take() {
+            self.config.config.known_cells = editor.known_cells;
+            self.trim_config_known_cells_to_world();
         }
     }
 }

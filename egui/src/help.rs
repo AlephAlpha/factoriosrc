@@ -45,6 +45,6 @@ pub const CONFIG_NOTES: [(&str, &str); 4] = [
     ),
     (
         "Known cells",
-        "A dedicated known-cells editor will be added in the next milestone.",
+        "Open the known-cells editor from the Known Cells section to pin alive and dead cells per generation.",
     ),
 ];
