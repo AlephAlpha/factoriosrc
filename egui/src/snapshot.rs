@@ -28,6 +28,22 @@ pub struct SearchSnapshot {
 }
 
 impl SearchSnapshot {
+    /// Number of available generations.
+    pub fn generation_count(&self) -> usize {
+        self.generations.len()
+    }
+
+    /// Return the generation at the given index, clamped to the available range.
+    pub fn generation(&self, generation: i32) -> Option<&GenerationSnapshot> {
+        if self.generations.is_empty() {
+            return None;
+        }
+
+        let index = generation.max(0) as usize;
+        self.generations
+            .get(index.min(self.generations.len().saturating_sub(1)))
+    }
+
     /// Return the generation with the smallest population.
     pub fn smallest_population(&self) -> Option<&GenerationSnapshot> {
         self.generations

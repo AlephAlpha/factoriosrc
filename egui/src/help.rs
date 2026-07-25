@@ -22,11 +22,11 @@ pub const RESULT_NOTES: [(&str, &str); 4] = [
     ),
     (
         "Generation",
-        "The slider selects which generation is shown in the result view.",
+        "The result header slider selects which generation is shown in the active result source.",
     ),
     (
-        "Metrics",
-        "Population, solutions, elapsed time, and cells checked update from search snapshots.",
+        "History",
+        "Stored solutions can be revisited from the history column while the live snapshot remains available.",
     ),
 ];
 

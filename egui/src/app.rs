@@ -1,5 +1,8 @@
-use crate::search::{Event, Message, SearchThread};
 use crate::theme;
+use crate::{
+    search::{Event, Message, SearchThread},
+    snapshot::{GenerationSnapshot, SearchSnapshot},
+};
 use documented::{Documented, DocumentedFields};
 use eframe::{App as EframeApp, Frame, glow::Context as GlowContext};
 use egui::{CentralPanel, Context, Panel, Ui};
@@ -56,6 +59,8 @@ pub enum Mode {
 pub struct ChromeState {
     /// Whether the details panel is visible.
     pub show_details: bool,
+    /// Whether the result history panel is visible.
+    pub show_history: bool,
     /// Whether the help window is visible.
     pub show_help: bool,
 }
@@ -90,12 +95,12 @@ pub struct App {
     pub search: Option<SearchThread>,
     /// The current generation to display.
     pub generation: i32,
-    /// The current partial result.
-    pub view: Vec<String>,
-    /// Populations of each generation of the current partial result.
-    pub populations: Vec<usize>,
+    /// The latest live snapshot from the search thread.
+    pub live_snapshot: Option<SearchSnapshot>,
     /// Found solutions.
-    pub solutions: Vec<String>,
+    pub solutions: Vec<SearchSnapshot>,
+    /// The solution currently selected in the workspace, if any.
+    pub viewing_solution: Option<usize>,
     /// An error message to display.
     pub error: Option<String>,
     /// Search status.
@@ -124,9 +129,9 @@ impl Default for App {
             known_cells_editor: None,
             search: None,
             generation: 0,
-            view: Vec::new(),
-            populations: Vec::new(),
+            live_snapshot: None,
             solutions: Vec::new(),
+            viewing_solution: None,
             error: None,
             status: Status::NotStarted,
             elapsed: Duration::default(),
@@ -188,9 +193,9 @@ impl App {
             self.error = Some(e.to_string());
         } else {
             self.error = None;
-            self.view.clear();
-            self.populations.clear();
+            self.live_snapshot = None;
             self.solutions.clear();
+            self.viewing_solution = None;
             self.search = Some(SearchThread::new(config));
             self.mode = Mode::Paused;
         }
@@ -206,9 +211,9 @@ impl App {
             if let Ok((search, config)) = SearchThread::load(&string) {
                 self.config = config;
                 self.error = None;
-                self.view.clear();
-                self.populations.clear();
+                self.live_snapshot = None;
                 self.solutions.clear();
+                self.viewing_solution = None;
                 self.search = Some(search);
                 self.mode = Mode::Paused;
             } else {
@@ -248,6 +253,16 @@ impl App {
 
         self.mode = Mode::Configuring;
         self.status = Status::NotStarted;
+        self.live_snapshot = None;
+        if self.viewing_solution.is_none()
+            && let Some(last) = self
+                .solutions
+                .last()
+                .and_then(SearchSnapshot::smallest_population)
+        {
+            self.generation = last.generation;
+        }
+        self.clamp_generation_to_active();
         self.generation = 0;
         self.cells_checked = 0;
     }
@@ -266,27 +281,28 @@ impl App {
     pub fn handle(&mut self, message: Message) {
         match message {
             Message::Snapshot(snapshot) => {
+                let solved_snapshot = if snapshot.status == Status::Solved {
+                    Some(snapshot.clone())
+                } else {
+                    None
+                };
+
                 self.status = snapshot.status;
-                self.view = snapshot
-                    .generations
-                    .iter()
-                    .map(|generation| generation.rle.clone())
-                    .collect();
-                self.populations = snapshot
-                    .generations
-                    .iter()
-                    .map(|generation| generation.population)
-                    .collect();
                 self.elapsed = snapshot.elapsed;
                 self.cells_checked = snapshot.cells_checked;
-                if snapshot.status == Status::Solved {
-                    // Choose the generation with the smallest population.
-                    if let Some(solution) = snapshot.smallest_population() {
-                        self.solutions.push(solution.rle.clone());
-                    }
+                self.live_snapshot = Some(snapshot);
+
+                if let Some(solution) = solved_snapshot {
+                    self.solutions.push(solution);
                 }
 
-                if snapshot.running {
+                self.clamp_generation_to_active();
+
+                if self
+                    .live_snapshot
+                    .as_ref()
+                    .is_some_and(|snapshot| snapshot.running)
+                {
                     self.mode = Mode::Running;
                 } else {
                     log::debug!("Search paused.");
@@ -325,23 +341,102 @@ impl App {
         }
     }
 
+    /// Whether the workspace is currently showing the live snapshot.
+    pub fn current_view_is_live(&self) -> bool {
+        self.viewing_solution.is_none() && self.live_snapshot.is_some()
+    }
+
+    /// Whether a live snapshot is currently available.
+    pub fn has_live_snapshot(&self) -> bool {
+        self.live_snapshot.is_some()
+    }
+
+    /// Index of the solution currently active in the workspace.
+    pub fn active_solution_index(&self) -> Option<usize> {
+        self.viewing_solution.or_else(|| {
+            if self.live_snapshot.is_none() {
+                self.solutions.len().checked_sub(1)
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Return the snapshot currently active in the workspace.
+    pub fn active_snapshot(&self) -> Option<&SearchSnapshot> {
+        if let Some(index) = self.active_solution_index() {
+            self.solutions.get(index)
+        } else {
+            self.live_snapshot.as_ref()
+        }
+    }
+
+    /// Return the generation currently shown in the workspace.
+    pub fn current_generation_snapshot(&self) -> Option<&GenerationSnapshot> {
+        self.active_snapshot()?.generation(self.generation)
+    }
+
+    /// Number of generations currently available in the workspace.
+    pub fn active_generation_count(&self) -> usize {
+        self.active_snapshot()
+            .map_or(0, SearchSnapshot::generation_count)
+    }
+
+    /// Clamp the selected generation to the active snapshot.
+    pub fn clamp_generation_to_active(&mut self) {
+        let generation_count = self.active_generation_count();
+        if generation_count == 0 {
+            self.generation = 0;
+        } else {
+            let max_generation = generation_count.saturating_sub(1) as i32;
+            self.generation = self.generation.clamp(0, max_generation);
+        }
+    }
+
     /// Return the population on the currently displayed generation.
     pub fn current_population(&self) -> Option<usize> {
-        self.populations.get(self.generation as usize).copied()
+        self.current_generation_snapshot()
+            .map(|generation| generation.population)
     }
 
     /// Return the RLE currently shown in the workspace.
     pub fn current_rle(&self) -> Option<&str> {
-        match self.mode {
-            Mode::Configuring => self.solutions.last().map(String::as_str),
-            _ => self.view.get(self.generation as usize).map(String::as_str),
-        }
+        self.current_generation_snapshot()
+            .map(|generation| generation.rle.as_str())
     }
 
     /// Copy the currently displayed RLE text to the clipboard.
     pub fn copy_current_rle(&self, ctx: &Context) {
         if let Some(rle) = self.current_rle() {
             ctx.copy_text(rle.to_owned());
+        }
+    }
+
+    /// Select a stored solution in the workspace.
+    pub fn select_solution(&mut self, index: usize) {
+        if let Some(solution) = self.solutions.get(index) {
+            self.viewing_solution = Some(index);
+            if let Some(generation) = solution.smallest_population() {
+                self.generation = generation.generation;
+            }
+            self.clamp_generation_to_active();
+        }
+    }
+
+    /// Return the workspace to the live snapshot.
+    pub fn show_live_view(&mut self) {
+        self.viewing_solution = None;
+        self.clamp_generation_to_active();
+    }
+
+    /// A compact label for the current result source.
+    pub fn current_result_source_label(&self) -> String {
+        if self.current_view_is_live() {
+            "Live".to_string()
+        } else if let Some(index) = self.active_solution_index() {
+            format!("Solution {}/{}", index + 1, self.solutions.len())
+        } else {
+            "No data".to_string()
         }
     }
 

@@ -218,18 +218,50 @@ impl App {
     }
 
     /// The main results workspace shell.
-    pub fn workspace_panel(&self, ui: &mut Ui) {
+    pub fn workspace_panel(&mut self, ui: &mut Ui) {
         let palette = Palette::new();
+        let generation_count = self.active_generation_count();
+        let active_solution = self.active_solution_index();
 
         ui.horizontal_wrapped(|ui| {
             ui.heading(section_title("Results"));
             ui.separator();
-            ui.label(RichText::new("Gen").strong().color(palette.accent));
-            ui.label(format!(
-                "{} / {}",
-                self.generation,
-                self.config.config.period - 1
-            ));
+            let source_badge = if self.current_view_is_live() {
+                badge_text("LIVE", palette.accent)
+            } else if active_solution.is_some() {
+                badge_text("STORED", palette.success)
+            } else {
+                badge_text("EMPTY", palette.subtle_text)
+            };
+            ui.label(source_badge);
+            ui.label(RichText::new(self.current_result_source_label()).color(palette.subtle_text));
+
+            if self.has_live_snapshot() {
+                ui.separator();
+                ui.add_enabled_ui(!self.current_view_is_live(), |ui| {
+                    if ui.button("Live").clicked() {
+                        self.show_live_view();
+                    }
+                });
+            }
+
+            if generation_count > 0 {
+                ui.separator();
+                ui.label(RichText::new("Gen").strong().color(palette.accent));
+                ui.add(
+                    Slider::new(
+                        &mut self.generation,
+                        0..=generation_count.saturating_sub(1) as i32,
+                    )
+                    .show_value(false),
+                );
+                ui.label(format!(
+                    "{} / {}",
+                    self.generation,
+                    generation_count.saturating_sub(1)
+                ));
+            }
+
             ui.separator();
             ui.label(RichText::new("Solutions").strong().color(palette.accent));
             ui.label(self.solutions.len().to_string());
@@ -238,10 +270,74 @@ impl App {
                 ui.label(RichText::new("Pop").strong().color(palette.accent));
                 ui.label(population.to_string());
             }
+
+            ui.separator();
+            let history_label = if self.chrome.show_history {
+                "Hide History"
+            } else {
+                "History"
+            };
+            if ui.button(history_label).clicked() {
+                self.chrome.show_history = !self.chrome.show_history;
+            }
         });
 
         ui.add_space(6.0);
-        self.main_panel(ui);
+        if self.chrome.show_history {
+            ui.columns(2, |columns| {
+                columns[0].vertical(|ui| {
+                    self.main_panel(ui);
+                });
+
+                columns[1].group(|ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(section_title("History"));
+                    ui.add_space(4.0);
+
+                    if self.has_live_snapshot() {
+                        let live_selected = self.current_view_is_live();
+                        if ui
+                            .selectable_label(live_selected, "Live snapshot")
+                            .clicked()
+                        {
+                            self.show_live_view();
+                        }
+                        ui.separator();
+                    }
+
+                    if self.solutions.is_empty() {
+                        ui.label(muted("No stored solutions."));
+                    } else {
+                        let rows: Vec<_> = self
+                            .solutions
+                            .iter()
+                            .enumerate()
+                            .map(|(index, solution)| {
+                                let best = solution.smallest_population();
+                                let generation = best.map_or(0, |generation| generation.generation);
+                                let population = best.map_or(0, |generation| generation.population);
+                                (index, generation, population)
+                            })
+                            .collect();
+                        let selected_solution = self.active_solution_index();
+
+                        ScrollArea::vertical().show(ui, |ui| {
+                            for (index, generation, population) in rows.into_iter().rev() {
+                                let selected = !self.current_view_is_live()
+                                    && selected_solution == Some(index);
+                                let label =
+                                    format!("S{}  g{}  pop {}", index + 1, generation, population);
+                                if ui.selectable_label(selected, label).clicked() {
+                                    self.select_solution(index);
+                                }
+                            }
+                        });
+                    }
+                });
+            });
+        } else {
+            self.main_panel(ui);
+        }
     }
 
     /// The configuration panel.
@@ -828,16 +924,21 @@ impl App {
 
             ui.separator();
 
+            ui.label("View:");
+            ui.label(self.current_result_source_label());
+
+            ui.separator();
+
             ui.label("Solutions:")
                 .on_hover_text("The number of solutions found so far.");
             ui.label(self.solutions.len().to_string());
 
-            if !self.populations.is_empty() {
+            if let Some(population) = self.current_population() {
                 ui.separator();
 
                 ui.label("Pop:")
                     .on_hover_text("Populations of the current partial result.");
-                ui.label(self.populations[self.generation as usize].to_string());
+                ui.label(population.to_string());
             }
 
             if self.mode == Mode::Paused {
@@ -858,37 +959,48 @@ impl App {
 
     /// The main panel.
     pub fn main_panel(&self, ui: &mut Ui) {
-        match self.mode {
-            Mode::Configuring => {
-                if self.solutions.is_empty() {
-                    ui.add_space(18.0);
-                    ui.label(muted("No stored solutions."));
-                } else {
-                    ScrollArea::both().auto_shrink(false).show(ui, |ui| {
-                        for view in self.solutions.iter().rev() {
-                            ui.add(Label::new(rle_layout_job(view)).extend());
-                        }
-                    });
-                }
-            }
-            _ => {
-                if !self.view.is_empty() {
-                    ScrollArea::both().auto_shrink(false).show(ui, |ui| {
-                        ui.add(
-                            Label::new(rle_layout_job(&self.view[self.generation as usize]))
-                                .extend(),
-                        );
-                    });
+        let palette = Palette::new();
 
-                    if self.mode == Mode::Running {
-                        ui.ctx().request_repaint();
-                    }
-                } else {
-                    ui.add_space(18.0);
-                    ui.label(muted("No snapshot yet."));
+        ui.group(|ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal_wrapped(|ui| {
+                ui.label(
+                    RichText::new(self.current_result_source_label())
+                        .strong()
+                        .color(palette.accent),
+                );
+
+                if let Some(index) = self.active_solution_index()
+                    && let Some(solution) = self.solutions.get(index)
+                    && let Some(best) = solution.smallest_population()
+                {
+                    ui.separator();
+                    ui.label(
+                        RichText::new(format!("best g{} pop {}", best.generation, best.population))
+                            .color(palette.subtle_text),
+                    );
                 }
+            });
+            ui.separator();
+
+            if let Some(rle) = self.current_rle() {
+                ScrollArea::both().auto_shrink(false).show(ui, |ui| {
+                    ui.add(Label::new(rle_layout_job(rle)).extend());
+                });
+
+                if self.mode == Mode::Running && self.current_view_is_live() {
+                    ui.ctx().request_repaint();
+                }
+            } else {
+                ui.add_space(18.0);
+                ui.label(muted("No snapshot yet."));
             }
-        }
+        });
+    }
+
+    /// Ensure generation stays within bounds when workspace controls mutate it.
+    pub fn clamp_workspace_generation(&mut self) {
+        self.clamp_generation_to_active();
     }
 
     /// The on-demand help window.
