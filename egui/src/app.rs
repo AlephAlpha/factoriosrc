@@ -57,6 +57,8 @@ pub enum Mode {
 /// Visibility state for optional UI chrome.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ChromeState {
+    /// Whether the configuration sidebar is visible outside setup mode.
+    pub show_config: bool,
     /// Whether the details panel is visible.
     pub show_details: bool,
     /// Whether the result history panel is visible.
@@ -154,9 +156,11 @@ impl EframeApp for App {
             self.command_bar(ui);
         });
 
-        Panel::left("setup_sidebar").show(ui, |ui| {
-            self.setup_panel(ui);
-        });
+        if self.mode == Mode::Configuring || self.chrome.show_config {
+            Panel::left("setup_sidebar").show(ui, |ui| {
+                self.setup_panel(ui);
+            });
+        }
 
         if self.chrome.show_details {
             Panel::right("inspector_panel").show(ui, |ui| {
@@ -198,6 +202,7 @@ impl App {
             self.viewing_solution = None;
             self.search = Some(SearchThread::new(config));
             self.mode = Mode::Paused;
+            self.chrome.show_config = false;
         }
     }
 
@@ -216,6 +221,7 @@ impl App {
                 self.viewing_solution = None;
                 self.search = Some(search);
                 self.mode = Mode::Paused;
+                self.chrome.show_config = false;
             } else {
                 self.error = Some("Failed to load the search state.".to_string());
             }
@@ -252,6 +258,7 @@ impl App {
         }
 
         self.mode = Mode::Configuring;
+        self.chrome.show_config = true;
         self.status = Status::NotStarted;
         self.live_snapshot = None;
         if self.viewing_solution.is_none()

@@ -151,6 +151,17 @@ impl App {
                 }
             });
 
+            if self.mode != Mode::Configuring {
+                let config_label = if self.chrome.show_config {
+                    "Hide Config"
+                } else {
+                    "Config"
+                };
+                if ui.button(config_label).clicked() {
+                    self.chrome.show_config = !self.chrome.show_config;
+                }
+            }
+
             let details_label = if self.chrome.show_details {
                 "Hide Details"
             } else {
@@ -892,15 +903,6 @@ impl App {
                     self.save();
                 }
             });
-
-            ui.separator();
-
-            ui.label("generation")
-                .on_hover_text(Self::get_field_docs("generation").unwrap());
-            ui.add(Slider::new(
-                &mut self.generation,
-                0..=self.config.config.period as i32 - 1,
-            ));
         }
     }
 
