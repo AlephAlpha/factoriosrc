@@ -1,6 +1,6 @@
 use crate::{
     app::{App, AppConfig, Mode},
-    help,
+    help, platform,
     theme::{Palette, badge_text, muted, rle_layout_job, section_title},
 };
 use egui::{
@@ -11,8 +11,6 @@ use factoriosrc_lib::{
     CellState, Config, ConfigHelpField, KnownCell, NewState, SearchControlHelpField, SearchOrder,
     Status, Symmetry, Transformation, TranslationCondition,
 };
-#[cfg(feature = "save")]
-use rfd::FileDialog;
 
 #[derive(Debug, Clone, Default)]
 struct ConfigPreview {
@@ -908,7 +906,7 @@ impl App {
                 .button("Load")
                 .on_hover_text(help::SEARCH_ACTIONS[1].1)
                 .clicked()
-                && let Some(path) = FileDialog::new().pick_file()
+                && let Some(path) = platform::pick_load_path()
             {
                 log::info!("Loading search from {}", path.display());
                 self.load_search(&path);
@@ -956,7 +954,7 @@ impl App {
                     .button("Save")
                     .on_hover_text(help::SEARCH_ACTIONS[5].1)
                     .clicked()
-                    && let Some(path) = FileDialog::new().set_file_name("save.json").save_file()
+                    && let Some(path) = platform::pick_save_path("save.json")
                 {
                     log::info!("Saving search to {}", path.display());
                     self.save = Some(path);

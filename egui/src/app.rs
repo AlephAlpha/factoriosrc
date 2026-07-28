@@ -1,7 +1,8 @@
-use crate::theme;
 use crate::{
+    platform,
     search::{Event, Message, SearchThread},
     snapshot::{GenerationSnapshot, SearchSnapshot},
+    theme,
 };
 use documented::{Documented, DocumentedFields};
 use eframe::{App as EframeApp, Frame, glow::Context as GlowContext};
@@ -212,7 +213,7 @@ impl App {
         assert!(self.mode == Mode::Configuring);
         self.known_cells_editor = None;
 
-        if let Ok(string) = std::fs::read_to_string(path) {
+        if let Ok(string) = platform::read_search_state(path) {
             if let Ok((search, config)) = SearchThread::load(&string) {
                 self.config = config;
                 self.error = None;
@@ -319,7 +320,7 @@ impl App {
             #[cfg(feature = "save")]
             Message::Save(string) => {
                 if let Some(path) = &self.save.take() {
-                    if let Err(e) = std::fs::write(path, string) {
+                    if let Err(e) = platform::write_search_state(path, &string) {
                         log::error!("Failed to save the search state: {e}");
                         self.error = Some("Failed to save the search state.".to_string());
                     } else {
