@@ -3,14 +3,13 @@ use crate::{
     help,
     theme::{Palette, badge_text, muted, rle_layout_job, section_title},
 };
-use documented::{Documented, DocumentedFields};
 use egui::{
-    Button, Color32, ComboBox, Context, DragValue, Grid, Label, RichText, ScrollArea, Sense,
-    Slider, Stroke, StrokeKind, TextEdit, Ui, Window, vec2,
+    Button, CollapsingHeader, Color32, ComboBox, Context, DragValue, Grid, Label, RichText,
+    ScrollArea, Sense, Slider, Stroke, StrokeKind, TextEdit, Ui, Window, vec2,
 };
 use factoriosrc_lib::{
-    CellState, Config, KnownCell, NewState, SearchOrder, Status, Symmetry, Transformation,
-    TranslationCondition,
+    CellState, Config, ConfigHelpField, KnownCell, NewState, SearchControlHelpField, SearchOrder,
+    Status, Symmetry, Transformation, TranslationCondition,
 };
 #[cfg(feature = "save")]
 use rfd::FileDialog;
@@ -93,12 +92,48 @@ fn cycle_known_cell(known_cells: &mut Vec<KnownCell>, x: u32, y: u32, t: u32) ->
     next
 }
 
+fn normalize_help_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        match ch {
+            '`' => {}
+            '[' => {
+                let mut label = String::new();
+                for next in chars.by_ref() {
+                    if next == ']' {
+                        break;
+                    }
+                    if next != '`' {
+                        label.push(next);
+                    }
+                }
+                out.push_str(&label);
+
+                if chars.peek() == Some(&'(') {
+                    chars.next();
+                    for next in chars.by_ref() {
+                        if next == ')' {
+                            break;
+                        }
+                    }
+                }
+            }
+            _ => out.push(ch),
+        }
+    }
+
+    out.replace("<sub>", "").replace("</sub>", "")
+}
+
 impl App {
     /// The setup sidebar shell.
     pub fn setup_panel(&mut self, ui: &mut Ui) {
         let palette = Palette::new();
 
-        ui.heading(section_title("Config"));
+        ui.heading(section_title("Config"))
+            .on_hover_text(help::CONFIG_PANEL_TOOLTIP);
         ui.horizontal_wrapped(|ui| {
             ui.label(RichText::new("Mode").strong().color(palette.accent));
             let badge = match self.mode {
@@ -146,7 +181,11 @@ impl App {
 
             ui.separator();
             ui.add_enabled_ui(self.current_rle().is_some(), |ui| {
-                if ui.button("Copy RLE").clicked() {
+                if ui
+                    .button("Copy RLE")
+                    .on_hover_text(help::COPY_RLE_TOOLTIP)
+                    .clicked()
+                {
                     self.copy_current_rle(ui.ctx());
                 }
             });
@@ -157,7 +196,11 @@ impl App {
                 } else {
                     "Config"
                 };
-                if ui.button(config_label).clicked() {
+                if ui
+                    .button(config_label)
+                    .on_hover_text(help::CONFIG_TOGGLE_TOOLTIP)
+                    .clicked()
+                {
                     self.chrome.show_config = !self.chrome.show_config;
                 }
             }
@@ -167,11 +210,19 @@ impl App {
             } else {
                 "Details"
             };
-            if ui.button(details_label).clicked() {
+            if ui
+                .button(details_label)
+                .on_hover_text(help::DETAILS_TOGGLE_TOOLTIP)
+                .clicked()
+            {
                 self.chrome.show_details = !self.chrome.show_details;
             }
 
-            if ui.button("Help").clicked() {
+            if ui
+                .button("Help")
+                .on_hover_text(help::HELP_TOOLTIP)
+                .clicked()
+            {
                 self.chrome.show_help = true;
             }
         });
@@ -250,7 +301,11 @@ impl App {
             if self.has_live_snapshot() {
                 ui.separator();
                 ui.add_enabled_ui(!self.current_view_is_live(), |ui| {
-                    if ui.button("Live").clicked() {
+                    if ui
+                        .button("Live")
+                        .on_hover_text(help::LIVE_VIEW_TOOLTIP)
+                        .clicked()
+                    {
                         self.show_live_view();
                     }
                 });
@@ -258,13 +313,15 @@ impl App {
 
             if generation_count > 0 {
                 ui.separator();
-                ui.label(RichText::new("Gen").strong().color(palette.accent));
+                ui.label(RichText::new("Gen").strong().color(palette.accent))
+                    .on_hover_text(help::GENERATION_TOOLTIP);
                 ui.add(
                     Slider::new(
                         &mut self.generation,
                         0..=generation_count.saturating_sub(1) as i32,
                     )
-                    .show_value(false),
+                    .show_value(false)
+                    .text("generation"),
                 );
                 ui.label(format!(
                     "{} / {}",
@@ -288,7 +345,11 @@ impl App {
             } else {
                 "History"
             };
-            if ui.button(history_label).clicked() {
+            if ui
+                .button(history_label)
+                .on_hover_text(help::HISTORY_TOGGLE_TOOLTIP)
+                .clicked()
+            {
                 self.chrome.show_history = !self.chrome.show_history;
             }
         });
@@ -309,6 +370,7 @@ impl App {
                         let live_selected = self.current_view_is_live();
                         if ui
                             .selectable_label(live_selected, "Live snapshot")
+                            .on_hover_text(help::LIVE_HISTORY_TOOLTIP)
                             .clicked()
                         {
                             self.show_live_view();
@@ -338,7 +400,11 @@ impl App {
                                     && selected_solution == Some(index);
                                 let label =
                                     format!("S{}  g{}  pop {}", index + 1, generation, population);
-                                if ui.selectable_label(selected, label).clicked() {
+                                if ui
+                                    .selectable_label(selected, label)
+                                    .on_hover_text(help::HISTORY_ENTRY_TOOLTIP)
+                                    .clicked()
+                                {
                                     self.select_solution(index);
                                 }
                             }
@@ -359,7 +425,7 @@ impl App {
         let preview = preview_config(&self.config.config);
 
         ui.heading(section_title("Configuration"))
-            .on_hover_text(Config::DOCS);
+            .on_hover_text(help::CONFIG_PANEL_TOOLTIP);
 
         ui.horizontal_wrapped(|ui| {
             let rule_badge = if preview.rule_error.is_none() {
@@ -425,7 +491,7 @@ impl App {
                             .num_columns(2)
                             .show(ui, |ui| {
                                 ui.label("rule")
-                                    .on_hover_text(Config::get_field_docs("rule_str").unwrap());
+                                    .on_hover_text(ConfigHelpField::RuleString.short_help());
                                 ui.horizontal(|ui| {
                                     if let Some(error) = &preview.rule_error {
                                         ui.label(RichText::new("ERR").color(Color32::RED))
@@ -452,14 +518,14 @@ impl App {
                                     let mut size = config.width;
 
                                     ui.label("width")
-                                        .on_hover_text(Config::get_field_docs("width").unwrap());
+                                        .on_hover_text(ConfigHelpField::Width.short_help());
                                     ui.add(
                                         DragValue::new(&mut size).speed(0.1).range(1..=u16::MAX),
                                     );
                                     ui.end_row();
 
                                     ui.label("height")
-                                        .on_hover_text(Config::get_field_docs("height").unwrap());
+                                        .on_hover_text(ConfigHelpField::Height.short_help());
                                     ui.add(
                                         DragValue::new(&mut size).speed(0.1).range(1..=u16::MAX),
                                     );
@@ -469,7 +535,7 @@ impl App {
                                     config.height = size;
                                 } else {
                                     ui.label("width")
-                                        .on_hover_text(Config::get_field_docs("width").unwrap());
+                                        .on_hover_text(ConfigHelpField::Width.short_help());
                                     ui.add(
                                         DragValue::new(&mut config.width)
                                             .speed(0.1)
@@ -478,7 +544,7 @@ impl App {
                                     ui.end_row();
 
                                     ui.label("height")
-                                        .on_hover_text(Config::get_field_docs("height").unwrap());
+                                        .on_hover_text(ConfigHelpField::Height.short_help());
                                     ui.add(
                                         DragValue::new(&mut config.height)
                                             .speed(0.1)
@@ -488,7 +554,7 @@ impl App {
                                 }
 
                                 ui.label("period")
-                                    .on_hover_text(Config::get_field_docs("period").unwrap());
+                                    .on_hover_text(ConfigHelpField::Period.short_help());
                                 ui.add(
                                     DragValue::new(&mut config.period)
                                         .speed(0.1)
@@ -512,36 +578,33 @@ impl App {
                             .num_columns(2)
                             .show(ui, |ui| {
                                 ui.label("symmetry")
-                                    .on_hover_text(Config::get_field_docs("symmetry").unwrap());
+                                    .on_hover_text(ConfigHelpField::Symmetry.short_help());
                                 ComboBox::from_id_salt("symmetry")
                                     .selected_text(config.symmetry.to_string())
                                     .show_ui(ui, |ui| {
-                                        for (index, symmetry) in Symmetry::iter().enumerate() {
+                                        for symmetry in Symmetry::iter() {
                                             ui.selectable_value(
                                                 &mut config.symmetry,
                                                 symmetry,
                                                 symmetry.to_string(),
                                             )
-                                            .on_hover_text(Symmetry::FIELD_DOCS[index]);
+                                            .on_hover_text(symmetry.short_help());
                                         }
                                     });
                                 ui.end_row();
 
-                                ui.label("transformation").on_hover_text(
-                                    Config::get_field_docs("transformation").unwrap(),
-                                );
+                                ui.label("transformation")
+                                    .on_hover_text(ConfigHelpField::Transformation.short_help());
                                 ComboBox::from_id_salt("transformation")
                                     .selected_text(config.transformation.to_string())
                                     .show_ui(ui, |ui| {
-                                        for (index, transformation) in
-                                            Transformation::iter().enumerate()
-                                        {
+                                        for transformation in Transformation::iter() {
                                             ui.selectable_value(
                                                 &mut config.transformation,
                                                 transformation,
                                                 transformation.to_string(),
                                             )
-                                            .on_hover_text(Transformation::FIELD_DOCS[index]);
+                                            .on_hover_text(transformation.short_help());
                                         }
                                     });
                                 ui.end_row();
@@ -552,7 +615,7 @@ impl App {
                                     | TranslationCondition::NoVertical
                                     | TranslationCondition::NoTranslation => {
                                         ui.label("dx")
-                                            .on_hover_text(Config::get_field_docs("dx").unwrap());
+                                            .on_hover_text(ConfigHelpField::Dx.short_help());
                                         ui.add_enabled(
                                             matches!(
                                                 translation_condition,
@@ -566,7 +629,7 @@ impl App {
                                         ui.end_row();
 
                                         ui.label("dy")
-                                            .on_hover_text(Config::get_field_docs("dy").unwrap());
+                                            .on_hover_text(ConfigHelpField::Dy.short_help());
                                         ui.add_enabled(
                                             matches!(
                                                 translation_condition,
@@ -583,12 +646,12 @@ impl App {
                                         let mut translation = config.dx;
 
                                         ui.label("dx")
-                                            .on_hover_text(Config::get_field_docs("dx").unwrap());
+                                            .on_hover_text(ConfigHelpField::Dx.short_help());
                                         ui.add(DragValue::new(&mut translation).speed(0.1));
                                         ui.end_row();
 
                                         ui.label("dy")
-                                            .on_hover_text(Config::get_field_docs("dy").unwrap());
+                                            .on_hover_text(ConfigHelpField::Dy.short_help());
                                         ui.add(DragValue::new(&mut translation).speed(0.1));
                                         ui.end_row();
 
@@ -600,12 +663,12 @@ impl App {
                                         let mut dy: i32 = config.dy;
 
                                         ui.label("dx")
-                                            .on_hover_text(Config::get_field_docs("dx").unwrap());
+                                            .on_hover_text(ConfigHelpField::Dx.short_help());
                                         ui.add(DragValue::new(&mut dx).speed(0.1));
                                         ui.end_row();
 
                                         ui.label("dy")
-                                            .on_hover_text(Config::get_field_docs("dy").unwrap());
+                                            .on_hover_text(ConfigHelpField::Dy.short_help());
                                         ui.add(DragValue::new(&mut dy).speed(0.1));
                                         ui.end_row();
 
@@ -631,7 +694,7 @@ impl App {
                             .num_columns(2)
                             .show(ui, |ui| {
                                 ui.label("search order")
-                                    .on_hover_text(Config::get_field_docs("search_order").unwrap());
+                                    .on_hover_text(ConfigHelpField::SearchOrder.short_help());
                                 ComboBox::from_id_salt("search_order")
                                     .selected_text(config.search_order.map_or_else(
                                         || "auto".to_owned(),
@@ -642,36 +705,35 @@ impl App {
                                             .on_hover_text(
                                                 "The search order is automatically determined.",
                                             );
-                                        for (index, search_order) in SearchOrder::iter().enumerate()
-                                        {
+                                        for search_order in SearchOrder::iter() {
                                             ui.selectable_value(
                                                 &mut config.search_order,
                                                 Some(search_order),
                                                 search_order.to_string(),
                                             )
-                                            .on_hover_text(SearchOrder::FIELD_DOCS[index]);
+                                            .on_hover_text(search_order.short_help());
                                         }
                                     });
                                 ui.end_row();
 
                                 ui.label("new state")
-                                    .on_hover_text(Config::get_field_docs("new_state").unwrap());
+                                    .on_hover_text(ConfigHelpField::NewState.short_help());
                                 ComboBox::from_id_salt("new_state")
                                     .selected_text(config.new_state.to_string())
                                     .show_ui(ui, |ui| {
-                                        for (index, new_state) in NewState::iter().enumerate() {
+                                        for new_state in NewState::iter() {
                                             ui.selectable_value(
                                                 &mut config.new_state,
                                                 new_state,
                                                 new_state.to_string(),
                                             )
-                                            .on_hover_text(NewState::FIELD_DOCS[index]);
+                                            .on_hover_text(new_state.short_help());
                                         }
                                     });
                                 ui.end_row();
 
                                 ui.label("seed")
-                                    .on_hover_text(Config::get_field_docs("seed").unwrap());
+                                    .on_hover_text(ConfigHelpField::Seed.short_help());
                                 ui.add_enabled_ui(config.new_state == NewState::Random, |ui| {
                                     ui.horizontal(|ui| {
                                         let mut checked = config.seed.is_some();
@@ -711,9 +773,8 @@ impl App {
                             .striped(true)
                             .num_columns(2)
                             .show(ui, |ui| {
-                                ui.label("diagonal width").on_hover_text(
-                                    Config::get_field_docs("diagonal_width").unwrap(),
-                                );
+                                ui.label("diagonal width")
+                                    .on_hover_text(ConfigHelpField::DiagonalWidth.short_help());
                                 ui.add_enabled_ui(!config.requires_no_diagonal_width(), |ui| {
                                     ui.horizontal(|ui| {
                                         let mut checked = config.diagonal_width.is_some();
@@ -738,9 +799,8 @@ impl App {
                                 });
                                 ui.end_row();
 
-                                ui.label("max population").on_hover_text(
-                                    Config::get_field_docs("max_population").unwrap(),
-                                );
+                                ui.label("max population")
+                                    .on_hover_text(ConfigHelpField::MaxPopulation.short_help());
                                 ui.horizontal(|ui| {
                                     let mut checked = config.max_population.is_some();
                                     ui.checkbox(&mut checked, "");
@@ -760,7 +820,7 @@ impl App {
                                 ui.end_row();
 
                                 ui.label("reduce max").on_hover_text(
-                                    Config::get_field_docs("reduce_max_population").unwrap(),
+                                    ConfigHelpField::ReduceMaxPopulation.short_help(),
                                 );
                                 ui.checkbox(&mut config.reduce_max_population, "");
                                 ui.end_row();
@@ -779,12 +839,16 @@ impl App {
                             .num_columns(2)
                             .show(ui, |ui| {
                                 ui.label("known cells")
-                                    .on_hover_text(Config::get_field_docs("known_cells").unwrap());
+                                    .on_hover_text(ConfigHelpField::KnownCells.short_help());
                                 ui.label(config.known_cells.len().to_string());
                                 ui.end_row();
                             });
 
-                        if ui.button("Edit known cells").clicked() {
+                        if ui
+                            .button("Edit known cells")
+                            .on_hover_text(help::KNOWN_CELLS_EDIT_TOOLTIP)
+                            .clicked()
+                        {
                             should_open_known_cells_editor = true;
                         }
 
@@ -799,18 +863,18 @@ impl App {
                             .num_columns(2)
                             .show(ui, |ui| {
                                 ui.label("increase size").on_hover_text(
-                                    AppConfig::get_field_docs("increase_world_size").unwrap(),
+                                    SearchControlHelpField::IncreaseWorldSize.short_help(),
                                 );
                                 ui.checkbox(increase_world_size, "");
                                 ui.end_row();
 
                                 ui.label("no stop")
-                                    .on_hover_text(AppConfig::get_field_docs("no_stop").unwrap());
+                                    .on_hover_text(SearchControlHelpField::NoStop.short_help());
                                 ui.checkbox(no_stop, "");
                                 ui.end_row();
 
                                 ui.label("step")
-                                    .on_hover_text(AppConfig::get_field_docs("step").unwrap());
+                                    .on_hover_text(SearchControlHelpField::Step.short_help());
                                 ui.add(DragValue::new(step).speed(1.0));
                                 ui.end_row();
                             });
@@ -833,7 +897,7 @@ impl App {
         if self.mode == Mode::Configuring {
             if ui
                 .button("New")
-                .on_hover_text("Start a new search with the current configuration.")
+                .on_hover_text(help::SEARCH_ACTIONS[0].1)
                 .clicked()
             {
                 self.new_search();
@@ -842,7 +906,7 @@ impl App {
             #[cfg(feature = "save")]
             if ui
                 .button("Load")
-                .on_hover_text("Load a search from a save file.")
+                .on_hover_text(help::SEARCH_ACTIONS[1].1)
                 .clicked()
                 && let Some(path) = FileDialog::new().pick_file()
             {
@@ -858,9 +922,9 @@ impl App {
                 };
 
                 let hover_text = match self.status {
-                    Status::NotStarted => "Start the search.",
-                    Status::Running => "Resume the search.",
-                    _ => "Find the next solution.",
+                    Status::NotStarted => help::SEARCH_ACTIONS[2].1,
+                    Status::Running => help::SEARCH_ACTIONS[2].1,
+                    _ => help::SEARCH_ACTIONS[3].1,
                 };
 
                 if ui.button(text).on_hover_text(hover_text).clicked() {
@@ -871,7 +935,7 @@ impl App {
             ui.add_enabled_ui(self.mode == Mode::Running, |ui| {
                 if ui
                     .button("Pause")
-                    .on_hover_text("Pause the search.")
+                    .on_hover_text(help::SEARCH_ACTIONS[4].1)
                     .clicked()
                 {
                     self.pause();
@@ -880,11 +944,7 @@ impl App {
 
             if ui
                 .button("Stop")
-                .on_hover_text(
-                    "Stop the search and reset the application to the configuring mode.\n\
-                    This will discard the current search and any partial results.\
-                    Please save the search before stopping if you want to keep it.",
-                )
+                .on_hover_text(help::SEARCH_ACTIONS[6].1)
                 .clicked()
             {
                 self.stop();
@@ -894,7 +954,7 @@ impl App {
             ui.add_enabled_ui(self.mode == Mode::Paused, |ui| {
                 if ui
                     .button("Save")
-                    .on_hover_text("Save the current search state to a file.")
+                    .on_hover_text(help::SEARCH_ACTIONS[5].1)
                     .clicked()
                     && let Some(path) = FileDialog::new().set_file_name("save.json").save_file()
                 {
@@ -917,11 +977,11 @@ impl App {
                 let status = if self.status == Status::Running && self.mode == Mode::Paused {
                     "Paused."
                 } else {
-                    Status::get_field_docs(self.status.to_string()).unwrap()
+                    self.status.short_help()
                 };
 
                 ui.label(RichText::new(status).strong().color(palette.text))
-                    .on_hover_text(Self::get_field_docs("status").unwrap());
+                    .on_hover_text(help::STATUS_TOOLTIP);
             }
 
             ui.separator();
@@ -932,28 +992,25 @@ impl App {
             ui.separator();
 
             ui.label("Solutions:")
-                .on_hover_text("The number of solutions found so far.");
+                .on_hover_text(help::SOLUTIONS_TOOLTIP);
             ui.label(self.solutions.len().to_string());
 
             if let Some(population) = self.current_population() {
                 ui.separator();
 
-                ui.label("Pop:")
-                    .on_hover_text("Populations of the current partial result.");
+                ui.label("Pop:").on_hover_text(help::POPULATION_TOOLTIP);
                 ui.label(population.to_string());
             }
 
             if self.mode == Mode::Paused {
                 ui.separator();
 
-                ui.label("Time:")
-                    .on_hover_text(Self::get_field_docs("elapsed").unwrap());
+                ui.label("Time:").on_hover_text(help::ELAPSED_TOOLTIP);
                 ui.label(format!("{:?}", self.elapsed));
 
                 ui.separator();
 
-                ui.label("Checked:")
-                    .on_hover_text("The number of state assignments made by the search so far.");
+                ui.label("Checked:").on_hover_text(help::CHECKED_TOOLTIP);
                 ui.label(self.cells_checked.to_string());
             }
         });
@@ -1015,37 +1072,73 @@ impl App {
             .default_width(560.0)
             .show(ctx, |ui| {
                 ui.label(muted(
-                    "Hover config labels for field-level docs from factoriosrc-lib.",
+                    "Short tooltips stay compact. Field reference below shows longer help sourced from factoriosrc-lib.",
                 ));
                 ui.separator();
 
-                ui.label(RichText::new("Actions").strong());
-                Grid::new("help_actions").num_columns(2).show(ui, |ui| {
-                    for (label, description) in help::SEARCH_ACTIONS {
-                        ui.label(RichText::new(label).strong());
-                        ui.label(description);
-                        ui.end_row();
-                    }
-                });
+                ScrollArea::vertical().show(ui, |ui| {
+                    ui.label(RichText::new("Search actions").strong());
+                    Grid::new("help_actions").num_columns(2).show(ui, |ui| {
+                        for (label, description) in help::SEARCH_ACTIONS {
+                            ui.label(RichText::new(label).strong());
+                            ui.label(description);
+                            ui.end_row();
+                        }
+                    });
 
-                ui.separator();
-                ui.label(RichText::new("Results").strong());
-                Grid::new("help_results").num_columns(2).show(ui, |ui| {
-                    for (label, description) in help::RESULT_NOTES {
-                        ui.label(RichText::new(label).strong());
-                        ui.label(description);
-                        ui.end_row();
-                    }
-                });
+                    ui.separator();
+                    ui.label(RichText::new("Workspace").strong());
+                    Grid::new("help_workspace").num_columns(2).show(ui, |ui| {
+                        for (label, description) in help::WORKSPACE_ACTIONS {
+                            ui.label(RichText::new(label).strong());
+                            ui.label(description);
+                            ui.end_row();
+                        }
+                    });
 
-                ui.separator();
-                ui.label(RichText::new("Config").strong());
-                Grid::new("help_config").num_columns(2).show(ui, |ui| {
-                    for (label, description) in help::CONFIG_NOTES {
-                        ui.label(RichText::new(label).strong());
-                        ui.label(description);
-                        ui.end_row();
+                    ui.separator();
+                    ui.label(RichText::new("Known cells").strong());
+                    Grid::new("help_known_cells").num_columns(2).show(ui, |ui| {
+                        for (label, description) in help::KNOWN_CELLS_ACTIONS {
+                            ui.label(RichText::new(label).strong());
+                            ui.label(description);
+                            ui.end_row();
+                        }
+                    });
+
+                    ui.separator();
+                    ui.label(RichText::new("Config notes").strong());
+                    Grid::new("help_config").num_columns(2).show(ui, |ui| {
+                        for (label, description) in help::CONFIG_NOTES {
+                            ui.label(RichText::new(label).strong());
+                            ui.label(description);
+                            ui.end_row();
+                        }
+                    });
+
+                    ui.separator();
+                    ui.label(RichText::new("Config field reference").strong());
+                    for field in ConfigHelpField::iter() {
+                        CollapsingHeader::new(field.label()).show(ui, |ui| {
+                            ui.label(normalize_help_text(field.long_help()));
+                        });
                     }
+
+                    ui.separator();
+                    ui.label(RichText::new("Runtime options").strong());
+                    Grid::new("help_runtime_options")
+                        .num_columns(2)
+                        .show(ui, |ui| {
+                            for field in [
+                                SearchControlHelpField::IncreaseWorldSize,
+                                SearchControlHelpField::NoStop,
+                                SearchControlHelpField::Step,
+                            ] {
+                                ui.label(RichText::new(field.label()).strong());
+                                ui.label(field.short_help());
+                                ui.end_row();
+                            }
+                        });
                 });
             });
 
@@ -1118,10 +1211,18 @@ impl App {
                             ui.label(muted(
                                 "Click cycles ? -> o -> . -> ?  |  drag paints the same result across cells",
                             ));
-                            if ui.button("Clear Gen").clicked() {
+                            if ui
+                                .button("Clear Gen")
+                                .on_hover_text(help::KNOWN_CELLS_CLEAR_GEN_TOOLTIP)
+                                .clicked()
+                            {
                                 editor.known_cells.retain(|cell| cell.t != editor.generation);
                             }
-                            if ui.button("Clear All").clicked() {
+                            if ui
+                                .button("Clear All")
+                                .on_hover_text(help::KNOWN_CELLS_CLEAR_ALL_TOOLTIP)
+                                .clicked()
+                            {
                                 editor.known_cells.clear();
                             }
                         });
@@ -1269,10 +1370,18 @@ impl App {
 
                 ui.separator();
                 ui.horizontal(|ui| {
-                    if ui.button("Apply").clicked() {
+                    if ui
+                        .button("Apply")
+                        .on_hover_text(help::KNOWN_CELLS_APPLY_TOOLTIP)
+                        .clicked()
+                    {
                         should_apply = true;
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui
+                        .button("Cancel")
+                        .on_hover_text(help::KNOWN_CELLS_CANCEL_TOOLTIP)
+                        .clicked()
+                    {
                         should_cancel = true;
                     }
                 });

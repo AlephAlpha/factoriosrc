@@ -3,7 +3,7 @@ use crate::layout::{
     centered_popup_rect, clamp_scroll_offset, split_grid_scrollable_area, split_main_layout,
     split_mark_layout, split_scrollable_area, split_vertical_scrollable_area,
 };
-use factoriosrc_lib::{CellState, Reason, Status, World};
+use factoriosrc_lib::{CellState, ConfigHelpField, Reason, SearchControlHelpField, Status, World};
 use ratatui::{
     Frame,
     buffer::Buffer,
@@ -114,35 +114,23 @@ const fn help_text() -> &'static str {
 
 const fn config_field_help(field: ConfigField) -> &'static str {
     match field {
-        ConfigField::RuleString => {
-            "Cellular automaton rule. Use Life-like or higher-range totalistic syntax."
-        }
-        ConfigField::Width => {
-            "Width of the search world in cells. In interactive TUI mode you can leave it small and adjust later."
-        }
-        ConfigField::Height => "Height of the search world in cells.",
-        ConfigField::Period => "Number of generations in the repeating cycle.",
-        ConfigField::Dx => "Horizontal translation applied over one full period.",
-        ConfigField::Dy => "Vertical translation applied over one full period.",
-        ConfigField::DiagonalWidth => "Optional diagonal band for diagonal spaceship searches.",
-        ConfigField::Symmetry => "Required symmetry of the searched pattern.",
-        ConfigField::Transformation => "Transformation applied before translation each period.",
-        ConfigField::SearchOrder => {
-            "Traversal order for unresolved cells. Auto usually picks a sensible default."
-        }
-        ConfigField::NewState => "How unknown cells are guessed during search.",
-        ConfigField::Seed => "Random seed used only when New state is random.",
-        ConfigField::MaxPopulation => "Optional upper bound on the population.",
-        ConfigField::ReduceMaxPopulation => {
-            "Tighten the population bound whenever a smaller solution is found."
-        }
-        ConfigField::KnownCells => {
-            "Open the known-cells editor to pin specific cells before search starts. All known cells must stay inside the current world bounds."
-        }
-        ConfigField::IncreaseWorldSize => {
-            "Restart with a slightly larger world after an exhausted search."
-        }
-        ConfigField::NoStop => "Keep searching after the first solution instead of pausing.",
+        ConfigField::RuleString => ConfigHelpField::RuleString.short_help(),
+        ConfigField::Width => ConfigHelpField::Width.short_help(),
+        ConfigField::Height => ConfigHelpField::Height.short_help(),
+        ConfigField::Period => ConfigHelpField::Period.short_help(),
+        ConfigField::Dx => ConfigHelpField::Dx.short_help(),
+        ConfigField::Dy => ConfigHelpField::Dy.short_help(),
+        ConfigField::DiagonalWidth => ConfigHelpField::DiagonalWidth.short_help(),
+        ConfigField::Symmetry => ConfigHelpField::Symmetry.short_help(),
+        ConfigField::Transformation => ConfigHelpField::Transformation.short_help(),
+        ConfigField::SearchOrder => ConfigHelpField::SearchOrder.short_help(),
+        ConfigField::NewState => ConfigHelpField::NewState.short_help(),
+        ConfigField::Seed => ConfigHelpField::Seed.short_help(),
+        ConfigField::MaxPopulation => ConfigHelpField::MaxPopulation.short_help(),
+        ConfigField::ReduceMaxPopulation => ConfigHelpField::ReduceMaxPopulation.short_help(),
+        ConfigField::KnownCells => ConfigHelpField::KnownCells.short_help(),
+        ConfigField::IncreaseWorldSize => SearchControlHelpField::IncreaseWorldSize.short_help(),
+        ConfigField::NoStop => SearchControlHelpField::NoStop.short_help(),
         ConfigField::Apply => "Validate the current settings and rebuild the search world.",
         ConfigField::Cancel => "Discard configuration edits and return to the search view.",
     }

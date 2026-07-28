@@ -4,7 +4,7 @@ Search for patterns in [Factorio (R3,C2,S2,B3,N+)](https://conwaylife.com/forums
 
 This program is still work in progress. Many features are still missing.
 
-Now it has a text-based UI with scrolling, keyboard navigation, and basic mouse support. A simple GUI is work in progress. A web UI will be added in the future.
+Now it has a text-based UI with scrolling, keyboard navigation, and basic mouse support, plus an egui desktop GUI with search controls, known-cells editing, and integrated help. A web UI will be added in the future.
 
 Since 2026, most of the development has been done by AI assistants. I don't have time to review all the AI-generated code, so there may be bugs. Please report any issues you find.
 
@@ -67,7 +67,7 @@ The GUI is still work in progress. I have only tested it on Linux. I'm not sure 
 cargo run --bin factoriosrc-egui --release
 ```
 
-Hover the mouse over the labels in the configuration panel to see the help messages.
+Hover controls for concise help text, and use the Help window for longer field reference. Open Known Cells from the configuration sidebar to pin alive and dead cells per generation.
 
 On X11, for HiDPI displays, you may need to set the `WINIT_X11_SCALE_FACTOR` environment variable to 2.
 
@@ -91,7 +91,7 @@ Features that rlifesrc has but factoriosrc doesn't:
 - [ ] Set some cells to be known in the configuration.
   - [x] Support setting known cells in the lib.
   - [x] Support setting known cells in the CLI and the TUI.
-  - [ ] Support setting known cells in the GUI.
+  - [x] Support setting known cells in the GUI.
 - [ ] Fully custom search order, where the user specifies the exact cell-by-cell traversal (for example, serpentine rows or a spiral from the center).
 - [x] Save and load the search state.
 - [x] GUI.
@@ -100,7 +100,7 @@ Features that rlifesrc has but factoriosrc doesn't:
   - [ ] Port the GUI to the web. I'm using the [egui](https://github.com/emilk/egui) library, which has a web backend. I still need to figure out how to use WebWorkers, so that the search can run in the background without blocking the UI.
   - [ ] Better support for mobile devices.
 - [ ] Better documentation.
-  - [ ] Keep lib, TUI, and GUI field descriptions and help text aligned as the interfaces evolve.
+  - [x] Keep lib, TUI, and GUI field descriptions and help text aligned as the interfaces evolve.
 
 Features that rlifesrc doesn't have and factoriosrc may add:
 
@@ -115,7 +115,7 @@ Features that rlifesrc doesn't have and factoriosrc may add:
 - [ ] More user-friendly UI.
   - [x] Add scrollbars in the TUI.
   - [x] Support mouse input in the TUI, e.g., to choose a field to edit in the config panel.
-  - [ ] Set cells to be known by clicking, in both the TUI and the GUI.
+  - [x] Set cells to be known by clicking, in both the TUI and the GUI.
   - [ ] Automatically save the search state in the browser cache. (https://github.com/AlephAlpha/rlifesrc/issues/366)
 - [ ] Set some cells to be known during the search.
 - [ ] More. See rlifesrc's issues.
