@@ -1,9 +1,9 @@
 use crate::{
     error::ConfigError,
     rule::{CellState, MAX_NEIGHBORHOOD_SIZE},
-    symmetry::{Symmetry, Transformation},
 };
 use ca_rules2::{Neighborhood, NeighborhoodType, Rule};
+use ca_symmetry::{Symmetry, Transformation};
 #[cfg(feature = "clap")]
 use clap::{Args, ValueEnum};
 #[cfg(feature = "documented")]
@@ -145,7 +145,7 @@ pub struct Config {
     ///   Both Moore and von Neumann neighborhoods are supported.
     ///
     /// - [Higher-range outer-totalistic Life-like rules](https://conwaylife.com/wiki/Higher-range_outer-totalistic_cellular_automaton).
-    ///   Currently, the program only supports Moore, von Neumann, and cross neighborhoods.
+    ///   Currently, the program only supports Moore, von Neumann, cross, and hash neighborhoods.
     ///   The size of the neighborhood must be at most 24.
     ///   Rules with more than 2 states are not supported.
     ///
@@ -460,7 +460,7 @@ impl Config {
     /// - [Outer-totalistic Life-like rules](https://conwaylife.com/wiki/Life-like_cellular_automaton).
     ///   Both Moore and von Neumann neighborhoods are supported.
     /// - [Higher-range outer-totalistic Life-like rules](https://conwaylife.com/wiki/Higher-range_outer-totalistic_cellular_automaton).
-    ///   Currently, the program only supports Moore, von Neumann, and cross neighborhoods.
+    ///   Currently, the program only supports Moore, von Neumann, cross, and hash neighborhoods.
     ///   The size of the neighborhood must be at most 24.
     ///   Rules with more than 2 states are not supported.
     ///
@@ -491,7 +491,8 @@ impl Config {
     /// find a search order if it is not specified,
     /// and remove duplicate known cells.
     pub fn check(&mut self) -> Result<(), ConfigError> {
-        self.parse_rule()?;
+        let rule = self.parse_rule()?;
+        check_rule_symmetry(&rule, self.symmetry, self.transformation)?;
 
         if self.width == 0
             || self.height == 0
@@ -594,6 +595,32 @@ impl Config {
     }
 }
 
+/// Check that the symmetry and the transformation are compatible with the rule.
+///
+/// The symmetry and the transformation must be subgroups (elements) of the symmetry
+/// group of the rule. Otherwise, the search may find patterns that do not actually
+/// satisfy the rule.
+fn check_rule_symmetry(
+    rule: &Rule,
+    symmetry: Symmetry,
+    transformation: Transformation,
+) -> Result<(), ConfigError> {
+    let rule_symmetry = rule.symmetry_elements();
+
+    if !rule_symmetry.contains(&transformation) {
+        return Err(ConfigError::TransformationIncompatibleWithRule);
+    }
+
+    if !symmetry
+        .transformations()
+        .all(|t| rule_symmetry.contains(&t))
+    {
+        return Err(ConfigError::SymmetryIncompatibleWithRule);
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -620,6 +647,36 @@ mod tests {
                 Err(ConfigError::UnsupportedRule)
             ));
         }
+    }
+
+    #[test]
+    fn test_check_rule_symmetry() {
+        // A rule that is invariant under all 8 transformations.
+        let life = Rule {
+            states: 2,
+            neighborhood: Neighborhood::Totalistic(NeighborhoodType::Moore, 1),
+            birth: vec![3],
+            survival: vec![2, 3],
+        };
+        assert!(check_rule_symmetry(&life, Symmetry::D8, Transformation::R1).is_ok());
+        assert!(check_rule_symmetry(&life, Symmetry::C1, Transformation::R0).is_ok());
+
+        // A rule that is invariant only under the identity and the diagonal reflection.
+        let only_nw = Rule {
+            states: 2,
+            neighborhood: Neighborhood::Nontotalistic(NeighborhoodType::Moore, 1),
+            birth: vec![1],
+            survival: Vec::new(),
+        };
+        assert!(check_rule_symmetry(&only_nw, Symmetry::D2D, Transformation::S1).is_ok());
+        assert!(matches!(
+            check_rule_symmetry(&only_nw, Symmetry::D2H, Transformation::R0),
+            Err(ConfigError::SymmetryIncompatibleWithRule)
+        ));
+        assert!(matches!(
+            check_rule_symmetry(&only_nw, Symmetry::C1, Transformation::S0),
+            Err(ConfigError::TransformationIncompatibleWithRule)
+        ));
     }
 
     #[test]

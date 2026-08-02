@@ -1,3 +1,15 @@
+//! Symmetries and transformations of patterns on the square grid.
+//!
+//! This crate provides the 8 elements of the dihedral group `D8` as
+//! [`Transformation`]s, and the 10 subgroups of `D8` as [`Symmetry`]s.
+//! It is shared by `ca-rules2` (for checking the symmetry of a rule) and
+//! `factoriosrc-lib` (for describing the symmetry of a searched pattern).
+
+#![warn(missing_docs)]
+#![warn(clippy::nursery)]
+#![warn(clippy::unnested_or_patterns)]
+#![warn(clippy::uninlined_format_args)]
+
 #[cfg(feature = "clap")]
 use clap::ValueEnum;
 #[cfg(feature = "documented")]
@@ -422,6 +434,76 @@ impl Symmetry {
     #[inline]
     pub fn transformations(self) -> impl Iterator<Item = Transformation> {
         Transformation::iter().filter(move |&t| t.is_element_of(self))
+    }
+}
+
+impl Symmetry {
+    /// A tooltip-safe short help string.
+    #[inline]
+    pub const fn short_help(self) -> &'static str {
+        match self {
+            Self::C1 => "No symmetry.",
+            Self::C2 => "180-degree rotational symmetry.",
+            Self::C4 => "90-degree rotational symmetry.",
+            Self::D2H => "Horizontal reflection symmetry.",
+            Self::D2V => "Vertical reflection symmetry.",
+            Self::D2D => "Diagonal reflection symmetry.",
+            Self::D2A => "Antidiagonal reflection symmetry.",
+            Self::D4O => "Horizontal and vertical reflection symmetry.",
+            Self::D4X => "Diagonal and antidiagonal reflection symmetry.",
+            Self::D8 => "All supported rotations and reflections.",
+        }
+    }
+
+    /// The long help sourced from the documented variant docs.
+    #[cfg(feature = "documented")]
+    #[inline]
+    pub const fn long_help(self) -> &'static str {
+        match self {
+            Self::C1 => Self::FIELD_DOCS[0],
+            Self::C2 => Self::FIELD_DOCS[1],
+            Self::C4 => Self::FIELD_DOCS[2],
+            Self::D2H => Self::FIELD_DOCS[3],
+            Self::D2V => Self::FIELD_DOCS[4],
+            Self::D2D => Self::FIELD_DOCS[5],
+            Self::D2A => Self::FIELD_DOCS[6],
+            Self::D4O => Self::FIELD_DOCS[7],
+            Self::D4X => Self::FIELD_DOCS[8],
+            Self::D8 => Self::FIELD_DOCS[9],
+        }
+    }
+}
+
+impl Transformation {
+    /// A tooltip-safe short help string.
+    #[inline]
+    pub const fn short_help(self) -> &'static str {
+        match self {
+            Self::R0 => "Identity transformation.",
+            Self::R1 => "90-degree clockwise rotation.",
+            Self::R2 => "180-degree rotation.",
+            Self::R3 => "270-degree clockwise rotation.",
+            Self::S0 => "Vertical reflection.",
+            Self::S1 => "Diagonal reflection.",
+            Self::S2 => "Horizontal reflection.",
+            Self::S3 => "Antidiagonal reflection.",
+        }
+    }
+
+    /// The long help sourced from the documented variant docs.
+    #[cfg(feature = "documented")]
+    #[inline]
+    pub const fn long_help(self) -> &'static str {
+        match self {
+            Self::R0 => Self::FIELD_DOCS[0],
+            Self::R1 => Self::FIELD_DOCS[1],
+            Self::R2 => Self::FIELD_DOCS[2],
+            Self::R3 => Self::FIELD_DOCS[3],
+            Self::S0 => Self::FIELD_DOCS[4],
+            Self::S1 => Self::FIELD_DOCS[5],
+            Self::S2 => Self::FIELD_DOCS[6],
+            Self::S3 => Self::FIELD_DOCS[7],
+        }
     }
 }
 

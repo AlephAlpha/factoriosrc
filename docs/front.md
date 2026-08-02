@@ -137,6 +137,25 @@ rules or fully asymmetric rules, rule symmetry becomes another part of the front
 world, front pruning can no longer assume that every reflection or rotation used by the current
 argument preserves the rule itself.
 
+The groundwork for this is already in place:
+
+- `ca-rules2` computes the symmetry group of a rule via `Rule::symmetry_elements()`.
+- `Config::check()` rejects configurations whose pattern symmetry or transformation is not a
+  subgroup (element) of the rule's symmetry group. This guarantees that any reflection or
+  rotation used by the search is compatible with the rule.
+- `init_front()` additionally checks the rule's symmetry group directly, so that a `World`
+  built with a rule of smaller symmetry falls back to the weaker front definition instead of
+  relying on an argument that does not hold:
+  - the row-first halved front (used when `dx == 0`) requires the rule to be invariant under
+    the horizontal reflection `S2`,
+  - the column-first halved front (used when `dy == 0`) requires the rule to be invariant under
+    the vertical reflection `S0`,
+  - the diagonal front with `dx == dy` requires the rule to be invariant under the diagonal
+    reflection `S1`.
+
+Since every rule currently accepted by `Config::parse_rule()` is invariant under the whole of
+`D8`, these conditions never disable the front optimization for the currently supported rules.
+
 ### Custom symmetries, transformations, and search orders
 
 Any extension in these areas should avoid adding more ad hoc cases directly into `init_front()`.

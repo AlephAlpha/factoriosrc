@@ -31,6 +31,14 @@ pub enum ConfigError {
     #[error("The translations do not satisfy the symmetry")]
     InvalidTranslation,
 
+    /// The symmetry is not compatible with the rule.
+    #[error("The symmetry is not compatible with the rule")]
+    SymmetryIncompatibleWithRule,
+
+    /// The transformation is not compatible with the rule.
+    #[error("The transformation is not compatible with the rule")]
+    TransformationIncompatibleWithRule,
+
     /// A known cell is outside the world.
     #[error("A known cell is outside the world")]
     InvalidKnownCell,

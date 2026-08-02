@@ -5,8 +5,8 @@ use crate::{
     config::{Config, KnownCell, SearchOrder},
     error::ConfigError,
     rule::{CellState, RuleTable},
-    symmetry::Symmetry,
 };
+use ca_symmetry::{Symmetry, Transformation};
 #[cfg(feature = "documented")]
 use documented::{Documented, DocumentedFields};
 use rand::SeedableRng;
@@ -134,7 +134,9 @@ impl World {
         let mut config = config;
         config.check()?;
 
-        let rule = RuleTable::new(&config.parse_rule()?)?;
+        let parsed_rule = config.parse_rule()?;
+        let rule_symmetry = parsed_rule.symmetry_elements();
+        let rule = RuleTable::new(&parsed_rule)?;
         let max_population = config.max_population;
 
         let (w, h, p) = (
@@ -172,14 +174,14 @@ impl World {
             start: std::ptr::null(),
             status: Status::NotStarted,
         };
-        world.init()?;
+        world.init(&rule_symmetry)?;
 
         Ok(world)
     }
 
     /// Initialize the world.
-    fn init(&mut self) -> Result<(), ConfigError> {
-        self.init_front();
+    fn init(&mut self, rule_symmetry: &[Transformation]) -> Result<(), ConfigError> {
+        self.init_front(rule_symmetry);
         self.init_neighborhood();
         self.init_predecessor_successor();
         self.init_symmetry();
@@ -191,7 +193,11 @@ impl World {
     /// For each cell, check if it is on the front.
     ///
     /// See [this GitHub issue](https://github.com/AlephAlpha/rlifesrc/issues/81) for the detailed reasoning.
-    fn init_front(&mut self) {
+    ///
+    /// The `rule_symmetry` argument is the symmetry group of the rule. The front
+    /// optimization is only sound if the rule is invariant under the reflections
+    /// used by the arguments below. See `docs/front.md` for more information.
+    fn init_front(&mut self, rule_symmetry: &[Transformation]) {
         let mut use_front = false;
 
         if self.config.known_cells.is_empty() {
@@ -201,6 +207,11 @@ impl World {
                     if self.config.symmetry.is_subgroup_of(Symmetry::D2H)
                         && self.config.transformation.is_element_of(Symmetry::D2H)
                         && self.config.diagonal_width.is_none()
+                        // If `dx` is zero, the front is halved, which relies on
+                        // the rule being invariant under the horizontal
+                        // reflection `S2`.
+                        && (self.config.dx != 0
+                            || rule_symmetry.contains(&Transformation::S2))
                     {
                         use_front = true;
 
@@ -242,6 +253,11 @@ impl World {
                     if self.config.symmetry.is_subgroup_of(Symmetry::D2V)
                         && self.config.transformation.is_element_of(Symmetry::D2V)
                         && self.config.diagonal_width.is_none()
+                        // If `dy` is zero, the front is halved, which relies on
+                        // the rule being invariant under the vertical
+                        // reflection `S0`.
+                        && (self.config.dy != 0
+                            || rule_symmetry.contains(&Transformation::S0))
                     {
                         use_front = true;
 
@@ -282,6 +298,12 @@ impl World {
                 SearchOrder::Diagonal => {
                     if self.config.symmetry.is_subgroup_of(Symmetry::D2D)
                         && self.config.transformation.is_element_of(Symmetry::D2D)
+                        // If `dx` equals `dy`, the front is only the first row,
+                        // which relies on the rule being invariant under the
+                        // diagonal reflection `S1`.
+                        && (self.config.dx != self.config.dy
+                            || self.config.dx < 0
+                            || rule_symmetry.contains(&Transformation::S1))
                     {
                         use_front = true;
 

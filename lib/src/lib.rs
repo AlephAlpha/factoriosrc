@@ -13,13 +13,12 @@ mod error;
 mod help;
 mod rule;
 mod search;
-mod symmetry;
 mod world;
 
+pub use ca_symmetry::{Symmetry, Transformation, TranslationCondition};
 pub use cell::Reason;
 pub use config::{Config, KnownCell, NewState, SearchOrder};
 pub use error::ConfigError;
 pub use help::{ConfigHelpField, SearchControlHelpField};
 pub use rule::{CellState, RuleTable};
-pub use symmetry::{Symmetry, Transformation, TranslationCondition};
 pub use world::{Coord, Status, World};

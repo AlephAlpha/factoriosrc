@@ -1,10 +1,11 @@
 [workspace]
-members = ["ca-rules2", "egui", "lib", "tui"]
+members = ["ca-rules2", "egui", "lib", "symmetry", "tui"]
 resolver = "2"
 
 [workspace.dependencies]
 ca-rules2 = { path = "ca-rules2", version = "0.1.0" }
-clap = { version = "4.6.4", features = ["derive"] }
+ca-symmetry = { path = "symmetry", version = "0.1.0" }
+clap = { version = "4.6.5", features = ["derive"] }
 color-eyre = "0.6.5"
 documented = "0.10.0"
 eframe = { version = "0.35.0", default-features = false, features = [

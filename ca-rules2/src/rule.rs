@@ -1,5 +1,6 @@
 use crate::{NeighborError, ParseRuleError, parse_rule};
-use std::str::FromStr;
+use ca_symmetry::Transformation;
+use std::{collections::HashMap, str::FromStr};
 
 /// The coordinates of a neighbor and its weight.
 ///
@@ -588,6 +589,110 @@ impl Rule {
         self.birth.iter().all(|&n| n <= max_condition)
             && self.survival.iter().all(|&n| n <= max_condition)
     }
+
+    /// The transformations under which the rule is invariant.
+    ///
+    /// A transformation is a geometric transformation of the square grid, such as a rotation
+    /// or a reflection. The rule is invariant under the transformation if the transformation
+    /// maps the neighborhood to itself and the birth and survival conditions are preserved.
+    ///
+    /// See [`Rule::is_invariant_under`] for the precise definition.
+    pub fn symmetry_elements(&self) -> Vec<Transformation> {
+        Transformation::iter()
+            .filter(|&t| self.is_invariant_under(t))
+            .collect()
+    }
+
+    /// Whether the rule is invariant under the given transformation.
+    ///
+    /// The transformation is applied to the coordinates of the neighbors, using `(0, 0)` as
+    /// the center. The rule is invariant under the transformation if:
+    ///
+    /// - The transformation maps the multiset of the neighbor coordinates to itself.
+    /// - For non-totalistic rules, the permutation of the neighbors induced by the
+    ///   transformation must also preserve the sets of birth and survival conditions.
+    /// - For weighted rules, each neighbor must additionally be mapped to a neighbor with
+    ///   the same weight. This condition is sufficient but not necessary for the sums of
+    ///   weights to be preserved. It is always safe to use, in the sense that the rule is
+    ///   invariant under the returned transformations, but some invariant transformations
+    ///   may be missed.
+    pub fn is_invariant_under(&self, t: Transformation) -> bool {
+        let neighbors = match self.neighborhood.neighbors() {
+            Ok(neighbors) => neighbors,
+            Err(_) => return false,
+        };
+
+        // The multiset of neighbor coordinates must be invariant under the transformation.
+        let mut coords: Vec<(i32, i32)> = neighbors.iter().map(|n| n.coord).collect();
+        let transformed_coords: Vec<(i32, i32)> = neighbors
+            .iter()
+            .map(|n| t.apply(n.coord.0, n.coord.1))
+            .collect();
+        let mut sorted_transformed_coords = transformed_coords.clone();
+        coords.sort_unstable();
+        sorted_transformed_coords.sort_unstable();
+        if coords != sorted_transformed_coords {
+            return false;
+        }
+
+        match self.neighborhood {
+            Neighborhood::CustomWeighted(_) => {
+                // The multiset of `(coord, weight)` pairs must be invariant.
+                // This is sufficient for the sums of weights of live neighbors
+                // to be preserved, hence for the conditions to be preserved.
+                let mut pairs: Vec<_> = neighbors.iter().map(|n| (n.coord, n.weight)).collect();
+                let mut transformed_pairs: Vec<_> = neighbors
+                    .iter()
+                    .map(|n| (t.apply(n.coord.0, n.coord.1), n.weight))
+                    .collect();
+                pairs.sort_unstable();
+                transformed_pairs.sort_unstable();
+                pairs == transformed_pairs
+            }
+            Neighborhood::Nontotalistic(_, _) | Neighborhood::CustomNontotalistic(_) => {
+                // For non-totalistic rules, the conditions are bitmasks, so the
+                // permutation of the neighbors induced by the transformation must
+                // preserve the sets of conditions.
+                //
+                // If some coordinate appears more than once, the induced
+                // permutation is ambiguous, so we conservatively report that the
+                // rule is not invariant.
+                let size = neighbors.len();
+                let index_of: HashMap<(i32, i32), usize> = neighbors
+                    .iter()
+                    .enumerate()
+                    .map(|(i, n)| (n.coord, i))
+                    .collect();
+                if index_of.len() != size {
+                    return false;
+                }
+
+                let permutation: Vec<usize> = transformed_coords
+                    .iter()
+                    .map(|coord| index_of[coord])
+                    .collect();
+
+                let conditions_are_invariant = |conditions: &[u64]| {
+                    conditions.iter().all(|&condition| {
+                        let mut permuted = 0u64;
+                        for (i, &mapped) in permutation.iter().enumerate() {
+                            if condition & (1 << i) != 0 {
+                                permuted |= 1 << mapped;
+                            }
+                        }
+                        conditions.contains(&permuted)
+                    })
+                };
+
+                conditions_are_invariant(&self.birth) && conditions_are_invariant(&self.survival)
+            }
+            _ => {
+                // For totalistic rules, the conditions are numbers of live neighbors,
+                // which are preserved by any permutation of the neighbors.
+                true
+            }
+        }
+    }
 }
 
 impl FromStr for Rule {
@@ -694,5 +799,124 @@ mod tests {
                 assert_eq!(custom.radius(), r);
             }
         }
+    }
+
+    #[test]
+    fn test_symmetry_elements_totalistic() {
+        // Conway's Game of Life is invariant under all 8 transformations.
+        let life = Rule {
+            states: 2,
+            neighborhood: Neighborhood::Totalistic(NeighborhoodType::Moore, 1),
+            birth: vec![3],
+            survival: vec![2, 3],
+        };
+        assert_eq!(life.symmetry_elements().len(), 8);
+
+        // The von Neumann neighborhood is also invariant under all 8 transformations.
+        let von_neumann = Rule {
+            states: 2,
+            neighborhood: Neighborhood::Totalistic(NeighborhoodType::VonNeumann, 1),
+            birth: vec![1],
+            survival: Vec::new(),
+        };
+        assert_eq!(von_neumann.symmetry_elements().len(), 8);
+
+        // A rule with an asymmetric neighborhood is invariant only under the
+        // identity and the horizontal reflection.
+        let asymmetric = Rule {
+            states: 2,
+            neighborhood: Neighborhood::CustomTotalistic(vec![(1, 0), (-1, 0), (0, 1)]),
+            birth: vec![3],
+            survival: Vec::new(),
+        };
+        assert_eq!(
+            asymmetric.symmetry_elements(),
+            vec![Transformation::R0, Transformation::S2]
+        );
+    }
+
+    #[test]
+    fn test_symmetry_elements_nontotalistic() {
+        // Only the neighbor at `(-1, -1)` matters for birth. This neighbor lies
+        // on the main diagonal, so the rule is invariant under the identity and
+        // the diagonal reflection `S1`.
+        let only_nw = Rule {
+            states: 2,
+            neighborhood: Neighborhood::Nontotalistic(NeighborhoodType::Moore, 1),
+            birth: vec![1],
+            survival: Vec::new(),
+        };
+        assert_eq!(
+            only_nw.symmetry_elements(),
+            vec![Transformation::R0, Transformation::S1]
+        );
+
+        // The neighbors at `(-1, -1)` and `(-1, 1)` matter for birth, and they
+        // are swapped by the vertical reflection `S0`.
+        let nw_ne = Rule {
+            states: 2,
+            neighborhood: Neighborhood::Nontotalistic(NeighborhoodType::Moore, 1),
+            birth: vec![1, 4],
+            survival: Vec::new(),
+        };
+        assert_eq!(
+            nw_ne.symmetry_elements(),
+            vec![Transformation::R0, Transformation::S0]
+        );
+    }
+
+    #[test]
+    fn test_symmetry_elements_hexagonal() {
+        // The hexagonal neighborhood of radius 1 is invariant under `R0`, `R2`,
+        // `S1`, and `S3`.
+        let hexagonal = Rule {
+            states: 2,
+            neighborhood: Neighborhood::Totalistic(NeighborhoodType::Hexagonal, 1),
+            birth: vec![1],
+            survival: Vec::new(),
+        };
+        assert_eq!(
+            hexagonal.symmetry_elements(),
+            vec![
+                Transformation::R0,
+                Transformation::R2,
+                Transformation::S1,
+                Transformation::S3,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_symmetry_elements_weighted() {
+        // Two pairs of symmetric neighbors with matching weights, plus two
+        // fixed neighbors with different weights. The rule is invariant under
+        // the identity and the horizontal reflection.
+        let symmetric = Rule {
+            states: 2,
+            neighborhood: Neighborhood::CustomWeighted(vec![
+                Neighbor::new((1, 0), 2),
+                Neighbor::new((-1, 0), 2),
+                Neighbor::new((0, 1), 3),
+                Neighbor::new((0, -1), 5),
+            ]),
+            birth: vec![5],
+            survival: Vec::new(),
+        };
+        assert_eq!(
+            symmetric.symmetry_elements(),
+            vec![Transformation::R0, Transformation::S2]
+        );
+
+        // The weights are not preserved by any non-identity transformation.
+        let asymmetric = Rule {
+            states: 2,
+            neighborhood: Neighborhood::CustomWeighted(vec![
+                Neighbor::new((1, 0), 1),
+                Neighbor::new((0, 1), 2),
+            ]),
+            birth: vec![1, 2, 3],
+            survival: Vec::new(),
+        };
+        assert_eq!(asymmetric.symmetry_elements(), vec![Transformation::R0]);
     }
 }

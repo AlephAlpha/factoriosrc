@@ -1,6 +1,6 @@
 #[cfg(feature = "documented")]
 use crate::Config;
-use crate::{NewState, SearchOrder, Status, Symmetry, Transformation};
+use crate::{NewState, SearchOrder, Status};
 #[cfg(feature = "documented")]
 use documented::DocumentedFields;
 
@@ -236,76 +236,6 @@ impl NewState {
             Self::Alive => Self::FIELD_DOCS[0],
             Self::Dead => Self::FIELD_DOCS[1],
             Self::Random => Self::FIELD_DOCS[2],
-        }
-    }
-}
-
-impl Symmetry {
-    /// A tooltip-safe short help string.
-    #[inline]
-    pub const fn short_help(self) -> &'static str {
-        match self {
-            Self::C1 => "No symmetry.",
-            Self::C2 => "180-degree rotational symmetry.",
-            Self::C4 => "90-degree rotational symmetry.",
-            Self::D2H => "Horizontal reflection symmetry.",
-            Self::D2V => "Vertical reflection symmetry.",
-            Self::D2D => "Diagonal reflection symmetry.",
-            Self::D2A => "Antidiagonal reflection symmetry.",
-            Self::D4O => "Horizontal and vertical reflection symmetry.",
-            Self::D4X => "Diagonal and antidiagonal reflection symmetry.",
-            Self::D8 => "All supported rotations and reflections.",
-        }
-    }
-
-    /// The long help sourced from the documented variant docs.
-    #[cfg(feature = "documented")]
-    #[inline]
-    pub const fn long_help(self) -> &'static str {
-        match self {
-            Self::C1 => Self::FIELD_DOCS[0],
-            Self::C2 => Self::FIELD_DOCS[1],
-            Self::C4 => Self::FIELD_DOCS[2],
-            Self::D2H => Self::FIELD_DOCS[3],
-            Self::D2V => Self::FIELD_DOCS[4],
-            Self::D2D => Self::FIELD_DOCS[5],
-            Self::D2A => Self::FIELD_DOCS[6],
-            Self::D4O => Self::FIELD_DOCS[7],
-            Self::D4X => Self::FIELD_DOCS[8],
-            Self::D8 => Self::FIELD_DOCS[9],
-        }
-    }
-}
-
-impl Transformation {
-    /// A tooltip-safe short help string.
-    #[inline]
-    pub const fn short_help(self) -> &'static str {
-        match self {
-            Self::R0 => "Identity transformation.",
-            Self::R1 => "90-degree clockwise rotation.",
-            Self::R2 => "180-degree rotation.",
-            Self::R3 => "270-degree clockwise rotation.",
-            Self::S0 => "Vertical reflection.",
-            Self::S1 => "Diagonal reflection.",
-            Self::S2 => "Horizontal reflection.",
-            Self::S3 => "Antidiagonal reflection.",
-        }
-    }
-
-    /// The long help sourced from the documented variant docs.
-    #[cfg(feature = "documented")]
-    #[inline]
-    pub const fn long_help(self) -> &'static str {
-        match self {
-            Self::R0 => Self::FIELD_DOCS[0],
-            Self::R1 => Self::FIELD_DOCS[1],
-            Self::R2 => Self::FIELD_DOCS[2],
-            Self::R3 => Self::FIELD_DOCS[3],
-            Self::S0 => Self::FIELD_DOCS[4],
-            Self::S1 => Self::FIELD_DOCS[5],
-            Self::S2 => Self::FIELD_DOCS[6],
-            Self::S3 => Self::FIELD_DOCS[7],
         }
     }
 }
