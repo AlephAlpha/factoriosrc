@@ -1,4 +1,7 @@
-use crate::{Neighborhood, NeighborhoodType, ParseRuleError, Rule};
+use crate::{
+    Neighborhood, NeighborhoodType, ParseRuleError, Rule,
+    int::{INT_HEX_TABLE, INT_LIFE_TABLE},
+};
 use std::{
     num::ParseIntError,
     ops::{Range, RangeInclusive},
@@ -303,6 +306,190 @@ impl<'a> Parser<'a> {
     fn parse_life_like(&mut self) -> Option<Result<Rule, ParseRuleError>> {
         self.try_parse(Parser::parse_life_like_bs)
             .or_else(|| self.try_parse(Parser::parse_life_like_sb))
+    }
+
+    /// Parse a sequence of counts and class letters for an isotropic
+    /// non-totalistic rule.
+    ///
+    /// A count may be followed by a list of class letters, or by `-` and a
+    /// list of class letters to exclude. If a count is not followed by any
+    /// letter, all classes of that count are used.
+    ///
+    /// The `i`-th bit of a pattern in the result corresponds to the `i`-th
+    /// neighbor in [`Neighborhood::neighbor_coords`](crate::Neighborhood::neighbor_coords).
+    ///
+    /// Returns `None` if the input cannot be parsed, e.g. if a count is too
+    /// large for the neighborhood. An invalid class letter is left in the
+    /// input, and causes the caller to fail.
+    fn parse_int_bs(&mut self, table: &[&[(u8, &[u8])]]) -> Option<Vec<u64>> {
+        let mut conditions = Vec::new();
+        while let Some(digit) = self.try_parse(Parser::parse_digit) {
+            let classes = *table.get(digit as usize)?;
+            let letters = match self.peek() {
+                Some(b'-') => {
+                    self.read();
+                    let mut excluded = Vec::new();
+                    while let Some(letter) = self.peek() {
+                        if letter.is_ascii_lowercase()
+                            && classes.iter().any(|&(key, _)| key == letter)
+                        {
+                            self.read();
+                            excluded.push(letter);
+                        } else {
+                            break;
+                        }
+                    }
+                    classes
+                        .iter()
+                        .map(|&(letter, _)| letter)
+                        .filter(|letter| !excluded.contains(letter))
+                        .collect()
+                }
+                Some(letter) if letter.is_ascii_lowercase() => {
+                    let mut letters = Vec::new();
+                    while let Some(letter) = self.peek() {
+                        if classes.iter().any(|&(key, _)| key == letter) {
+                            self.read();
+                            letters.push(letter);
+                        } else {
+                            break;
+                        }
+                    }
+                    if letters.is_empty() {
+                        // The letter is not a valid class letter for this count.
+                        // Use all classes of this count, and leave the letter
+                        // for the caller to reject.
+                        classes.iter().map(|&(letter, _)| letter).collect()
+                    } else {
+                        letters
+                    }
+                }
+                _ => classes.iter().map(|&(letter, _)| letter).collect(),
+            };
+
+            for letter in letters {
+                let &(_, masks) = classes
+                    .iter()
+                    .find(|&&(key, _)| key == letter)
+                    .expect("the letter is a valid class letter");
+                conditions.extend(masks.iter().map(|&mask| mask as u64));
+            }
+        }
+        Some(conditions)
+    }
+
+    /// Parse an isotropic non-totalistic rule string with B/S notation or
+    /// Catagolue notation.
+    ///
+    /// Returns `None` if this rule string is not using these notations.
+    ///
+    /// See [`parse_int_life`] and [`parse_int_hex`] for more details.
+    fn parse_int_bs_notation(
+        &mut self,
+        table: &[&[(u8, &[u8])]],
+        hex: bool,
+    ) -> Option<Result<Rule, ParseRuleError>> {
+        // Parse the birth sequence.
+        self.read_matches(b"Bb")?;
+        let birth = self.parse_int_bs(table)?;
+
+        // Parse the slash. This is optional.
+        // If there is no slash, this is a Catagolue rule string.
+        self.read_matches(b'/');
+
+        // Parse the survival sequence.
+        self.read_matches(b"Ss")?;
+        let survival = self.parse_int_bs(table)?;
+
+        // Parse the neighborhood type. The hexagonal neighborhood is indicated
+        // by the suffix `H`.
+        if hex {
+            self.read_matches(b"Hh")?;
+        }
+
+        // Check that there is no more input.
+        if self.peek().is_some() {
+            return None;
+        }
+
+        let neighborhood = if hex {
+            Neighborhood::Nontotalistic(NeighborhoodType::Hexagonal, 1)
+        } else {
+            Neighborhood::Nontotalistic(NeighborhoodType::Moore, 1)
+        };
+        Some(Ok(Rule {
+            states: 2,
+            neighborhood,
+            birth,
+            survival,
+        }))
+    }
+
+    /// Parse an isotropic non-totalistic rule string with S/B notation.
+    ///
+    /// Returns `None` if this rule string is not using S/B notation.
+    ///
+    /// See [`parse_int_life`] and [`parse_int_hex`] for more details.
+    fn parse_int_sb_notation(
+        &mut self,
+        table: &[&[(u8, &[u8])]],
+        hex: bool,
+    ) -> Option<Result<Rule, ParseRuleError>> {
+        // Parse the survival sequence.
+        let survival = self.parse_int_bs(table)?;
+
+        // Parse the slash.
+        self.read_matches(b'/')?;
+
+        // Parse the birth sequence.
+        let birth = self.parse_int_bs(table)?;
+
+        // Parse the neighborhood type. The hexagonal neighborhood is indicated
+        // by the suffix `H`.
+        if hex {
+            self.read_matches(b"Hh")?;
+        }
+
+        // Check that there is no more input.
+        if self.peek().is_some() {
+            return None;
+        }
+
+        let neighborhood = if hex {
+            Neighborhood::Nontotalistic(NeighborhoodType::Hexagonal, 1)
+        } else {
+            Neighborhood::Nontotalistic(NeighborhoodType::Moore, 1)
+        };
+        Some(Ok(Rule {
+            states: 2,
+            neighborhood,
+            birth,
+            survival,
+        }))
+    }
+
+    /// Parse an isotropic non-totalistic rule string.
+    ///
+    /// Returns `None` if this is not a valid isotropic non-totalistic rule
+    /// string.
+    ///
+    /// See [`parse_int_life`] and [`parse_int_hex`] for more details.
+    fn parse_int_life(&mut self) -> Option<Result<Rule, ParseRuleError>> {
+        self.try_parse(|parser| parser.parse_int_bs_notation(&INT_LIFE_TABLE, false))
+            .or_else(|| {
+                self.try_parse(|parser| parser.parse_int_sb_notation(&INT_LIFE_TABLE, false))
+            })
+    }
+
+    /// Parse a hexagonal isotropic non-totalistic rule string.
+    ///
+    /// Returns `None` if this is not a valid hexagonal isotropic
+    /// non-totalistic rule string.
+    ///
+    /// See [`parse_int_hex`] for more details.
+    fn parse_int_hex(&mut self) -> Option<Result<Rule, ParseRuleError>> {
+        self.try_parse(|parser| parser.parse_int_bs_notation(&INT_HEX_TABLE, true))
+            .or_else(|| self.try_parse(|parser| parser.parse_int_sb_notation(&INT_HEX_TABLE, true)))
     }
 
     /// Parse a Generations rule string with B/S/C notation.
@@ -770,10 +957,15 @@ impl<'a> Parser<'a> {
     ///
     /// This function supports the following kinds of rule strings:
     /// - Life-like rule, see [`parse_life_like`](Self::parse_life_like).
+    /// - Isotropic non-totalistic rule, see
+    ///   [`parse_int_life`](Self::parse_int_life) and
+    ///   [`parse_int_hex`](Self::parse_int_hex).
     /// - Generations rule, see [`parse_generations`](Self::parse_generations).
     /// - HROT rule, see [`parse_hrot`](Self::parse_hrot).
     fn parse_rule(&mut self) -> Option<Result<Rule, ParseRuleError>> {
         self.parse_life_like()
+            .or_else(|| self.parse_int_life())
+            .or_else(|| self.parse_int_hex())
             .or_else(|| self.parse_generations())
             .or_else(|| self.parse_hrot())
     }
@@ -825,6 +1017,133 @@ pub fn parse_life_like(rule_string: &str) -> Result<Rule, ParseRuleError> {
 
     parser
         .parse_life_like()
+        .unwrap_or(Err(ParseRuleError::InvalidSyntax))
+}
+
+/// Parse an [isotropic non-totalistic rule](https://conwaylife.com/wiki/Isotropic_non-totalistic_rule)
+/// (also known as an "INT rule") with the range-1 Moore neighborhood.
+///
+/// An isotropic non-totalistic rule is similar to a Life-like rule, but the
+/// birth and survival conditions may depend on the arrangement of the living
+/// neighbors, not just their number.
+///
+/// Three notations are supported: B/S notation, S/B notation, and the notation
+/// used by Catagolue.
+///
+/// The rule string is case-insensitive.
+///
+/// # B/S notation
+///
+/// The rule string is in the form `B{birth}/S{survival}`, where:
+///
+/// - `{birth}` is a sequence of counts and class letters. These are the
+///   numbers of living neighbors, and the classes of their arrangements, that
+///   cause a dead cell to become alive.
+/// - `{survival}` is a sequence of counts and class letters. These are the
+///   numbers of living neighbors, and the classes of their arrangements, that
+///   cause a live cell to survive.
+///
+/// These sequences may be empty.
+///
+/// # S/B notation
+///
+/// The rule string is in the form `{survival}/{birth}`, where `{birth}` and
+/// `{survival}` are the same as in the B/S notation.
+///
+/// # Catagolue notation
+///
+/// The rule string is in the form `b{birth}s{survival}`, where `{birth}` and
+/// `{survival}` are the same as in the B/S notation.
+///
+/// Since this parser is case-insensitive, the only difference between this
+/// notation and the B/S notation is the lack of a slash.
+///
+/// This notation is used by [Catagolue](https://catagolue.hatsya.com/).
+///
+/// # Class letters
+///
+/// A count may be followed by a list of class letters in
+/// [Hensel notation](https://conwaylife.com/wiki/Hensel_notation), e.g.
+/// `B35y/S1e2-ci3-a5i`. A count that is not followed by any letter means that
+/// all classes of that count are used. A `-` followed by a list of letters
+/// means that all classes of that count except the listed ones are used.
+///
+/// The returned rule has a [`Neighborhood::Nontotalistic`] neighborhood with
+/// the [Moore](NeighborhoodType::Moore) neighborhood type and radius 1. The
+/// `i`-th bit of a condition corresponds to the `i`-th neighbor in
+/// [`Neighborhood::neighbor_coords`], in the order of the range-1 Moore
+/// neighborhood.
+pub fn parse_int_life(rule_string: &str) -> Result<Rule, ParseRuleError> {
+    let mut parser = Parser::new(rule_string);
+
+    parser
+        .parse_int_life()
+        .unwrap_or(Err(ParseRuleError::InvalidSyntax))
+}
+
+/// Parse an [isotropic non-totalistic rule](https://conwaylife.com/wiki/Isotropic_non-totalistic_rule)
+/// (also known as an "INT rule") with the range-1 hexagonal neighborhood.
+///
+/// An isotropic non-totalistic rule is similar to a Life-like rule, but the
+/// birth and survival conditions may depend on the arrangement of the living
+/// neighbors, not just their number.
+///
+/// Three notations are supported: B/S notation, S/B notation, and the notation
+/// used by Catagolue.
+///
+/// The rule string is case-insensitive.
+///
+/// # B/S notation
+///
+/// The rule string is in the form `B{birth}/S{survival}H`, where:
+///
+/// - `{birth}` is a sequence of counts and class letters. These are the
+///   numbers of living neighbors, and the classes of their arrangements, that
+///   cause a dead cell to become alive.
+/// - `{survival}` is a sequence of counts and class letters. These are the
+///   numbers of living neighbors, and the classes of their arrangements, that
+///   cause a live cell to survive.
+///
+/// These sequences may be empty.
+///
+/// # S/B notation
+///
+/// The rule string is in the form `{survival}/{birth}H`, where `{birth}` and
+/// `{survival}` are the same as in the B/S notation.
+///
+/// # Catagolue notation
+///
+/// The rule string is in the form `b{birth}s{survival}h`, where `{birth}` and
+/// `{survival}` are the same as in the B/S notation.
+///
+/// Since this parser is case-insensitive, the only difference between this
+/// notation and the B/S notation is the lack of a slash.
+///
+/// This notation is used by [Catagolue](https://catagolue.hatsya.com/).
+///
+/// # Class letters
+///
+/// A count may be followed by a list of class letters in
+/// [Callahan notation](https://conwaylife.com/wiki/Isotropic_non-totalistic_rule#Hexagonal_grid).
+/// A count that is not followed by any letter means that
+/// all classes of that count are used. A `-` followed by a list of letters
+/// means that all classes of that count except the listed ones are used.
+///
+/// # Suffixes
+///
+/// The rule string must have a suffix `H`, which indicates the hexagonal
+/// neighborhood.
+///
+/// The returned rule has a [`Neighborhood::Nontotalistic`] neighborhood with
+/// the [hexagonal](NeighborhoodType::Hexagonal) neighborhood type and radius 1.
+/// The `i`-th bit of a condition corresponds to the `i`-th neighbor in
+/// [`Neighborhood::neighbor_coords`], in the order of the range-1 hexagonal
+/// neighborhood.
+pub fn parse_int_hex(rule_string: &str) -> Result<Rule, ParseRuleError> {
+    let mut parser = Parser::new(rule_string);
+
+    parser
+        .parse_int_hex()
         .unwrap_or(Err(ParseRuleError::InvalidSyntax))
 }
 
@@ -945,8 +1264,13 @@ pub fn parse_hrot(rule_string: &str) -> Result<Rule, ParseRuleError> {
 /// This function supports the following kinds of rule strings:
 ///
 /// - Life-like rule, see [`parse_life_like`].
+/// - Isotropic non-totalistic rule, see [`parse_int_life`] and [`parse_int_hex`].
 /// - Generations rule, see [`parse_generations`].
 /// - HROT rule, see [`parse_hrot`].
+///
+/// The kind of rule is determined by the syntax of the rule string. For
+/// example, `B3/S23` is a Life-like rule, and `B2e/S23` is an isotropic
+/// non-totalistic rule.
 ///
 /// See the documentation of each function for more details.
 ///
@@ -963,6 +1287,154 @@ pub fn parse_rule(rule_string: &str) -> Result<Rule, ParseRuleError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ca_symmetry::Transformation;
+
+    fn class(
+        table: &'static [&'static [(u8, &'static [u8])]],
+        digit: usize,
+        letter: u8,
+    ) -> &'static [u8] {
+        table[digit]
+            .iter()
+            .find(|&&(key, _)| key == letter)
+            .expect("the class exists")
+            .1
+    }
+
+    #[test]
+    fn test_parse_int_life() {
+        // "B3/S23" as an INT rule: all masks with the corresponding popcounts.
+        let rule = parse_int_life("B3/S23").unwrap();
+        assert_eq!(
+            rule.neighborhood,
+            Neighborhood::Nontotalistic(NeighborhoodType::Moore, 1)
+        );
+        for mask in 0..=0xffu8 {
+            assert_eq!(rule.birth.contains(&(mask as u64)), mask.count_ones() == 3);
+            assert_eq!(
+                rule.survival.contains(&(mask as u64)),
+                [2, 3].contains(&mask.count_ones())
+            );
+        }
+
+        // The three notations are equivalent.
+        let rule1 = parse_int_life("B35y/S1e2-ci3-a5i").unwrap();
+        let rule2 = parse_int_life("1e2-ci3-a5i/35y").unwrap();
+        let rule3 = parse_int_life("b35ys1e2-ci3-a5i").unwrap();
+        assert_eq!(rule1, rule2);
+        assert_eq!(rule1, rule3);
+        assert_eq!(rule1.birth.len(), 60);
+        assert_eq!(rule1.survival.len(), 82);
+        assert!(rule1.survival.contains(&0x2a));
+
+        // The `-` notation excludes the listed classes.
+        let rule = parse_int_life("B2a3-a/S23").unwrap();
+        let class_2a = class(&INT_LIFE_TABLE, 2, b'a');
+        let class_3a = class(&INT_LIFE_TABLE, 3, b'a');
+        for mask in 0..=0xffu8 {
+            let expected = if mask.count_ones() == 2 {
+                class_2a.contains(&mask)
+            } else if mask.count_ones() == 3 {
+                !class_3a.contains(&mask)
+            } else {
+                false
+            };
+            assert_eq!(rule.birth.contains(&(mask as u64)), expected);
+        }
+
+        // Examples from the `ca-rules` crate.
+        assert!(parse_int_life("B2ci3ai4c8/S02ae3eijkq4iz5ar6i7e").is_ok());
+        assert!(parse_int_life("B2i34cj6a7c8/S2-i3-a4ceit6in").is_ok());
+        assert!(parse_int_life("1e2cik3ejqry4anrwz5a6k/2c3aenq4aijryz5cikqr6ac8").is_ok());
+
+        // Invalid rules.
+        assert!(parse_int_life("B35y/1e2-ci3-a5i").is_err());
+        assert!(parse_int_life("12-a3/B2e3-anq").is_err());
+        assert!(parse_int_life("B2x/S23").is_err());
+    }
+
+    #[test]
+    fn test_parse_int_hex() {
+        // "B2/S34H" as an INT rule: all masks with the corresponding popcounts.
+        let rule = parse_int_hex("B2/S34H").unwrap();
+        assert_eq!(
+            rule.neighborhood,
+            Neighborhood::Nontotalistic(NeighborhoodType::Hexagonal, 1)
+        );
+        for mask in 0..0x40u8 {
+            assert_eq!(rule.birth.contains(&(mask as u64)), mask.count_ones() == 2);
+            assert_eq!(
+                rule.survival.contains(&(mask as u64)),
+                [3, 4].contains(&mask.count_ones())
+            );
+        }
+
+        // The three notations are equivalent.
+        let rule1 = parse_int_hex("B2o3-o4m/S12m3o4m5H").unwrap();
+        let rule2 = parse_int_hex("12m3o4m5/2o3-o4mH").unwrap();
+        let rule3 = parse_int_hex("b2o3-o4ms12m3o4m5h").unwrap();
+        assert_eq!(rule1, rule2);
+        assert_eq!(rule1, rule3);
+        assert_eq!(rule1.birth.len(), 26);
+        assert_eq!(rule1.survival.len(), 30);
+
+        // Examples from the `ca-rules` crate.
+        assert!(parse_int_hex("B2o3p4-o5/S2-p3p45H").is_ok());
+
+        // Invalid rules.
+        assert!(parse_int_hex("B2o/S23").is_err());
+        assert!(parse_int_hex("B2q/S23H").is_err());
+    }
+
+    #[test]
+    fn test_parse_rule_dispatches_int() {
+        // Pure-digit strings are parsed as Life-like rules.
+        assert!(matches!(
+            parse_rule("B3/S23").unwrap().neighborhood,
+            Neighborhood::Totalistic(NeighborhoodType::Moore, _)
+        ));
+        assert!(matches!(
+            parse_rule("B2/S34H").unwrap().neighborhood,
+            Neighborhood::Totalistic(NeighborhoodType::Hexagonal, _)
+        ));
+
+        // Strings with class letters are parsed as INT rules.
+        assert!(matches!(
+            parse_rule("B2e/S23").unwrap().neighborhood,
+            Neighborhood::Nontotalistic(NeighborhoodType::Moore, _)
+        ));
+        assert!(matches!(
+            parse_rule("B2o/S23H").unwrap().neighborhood,
+            Neighborhood::Nontotalistic(NeighborhoodType::Hexagonal, _)
+        ));
+
+        // Generations and HROT strings are still parsed correctly.
+        assert_eq!(parse_rule("B3/S23/4").unwrap().states, 4);
+        assert_eq!(parse_rule("R3,C2,S2,B3,N+").unwrap().radius(), 3);
+
+        // Invalid strings are rejected.
+        assert!(parse_rule("B2x/S23").is_err());
+        assert!(parse_rule("B2o/S23").is_err());
+    }
+
+    #[test]
+    fn test_int_rule_symmetry() {
+        // Any INT rule on the Moore neighborhood is invariant under all 8 transformations.
+        let life = parse_int_life("B2a/S23").unwrap();
+        assert_eq!(life.symmetry_elements().len(), 8);
+
+        // A hexagonal INT rule is invariant under exactly R0, R2, S1, and S3.
+        let hex = parse_int_hex("B2o/S12H").unwrap();
+        assert_eq!(
+            hex.symmetry_elements(),
+            vec![
+                Transformation::R0,
+                Transformation::R2,
+                Transformation::S1,
+                Transformation::S3,
+            ]
+        );
+    }
 
     #[test]
     fn test_parse_life_like_bs() {
