@@ -1,8 +1,8 @@
 use crate::{
     error::ConfigError,
-    rule::{CellState, MAX_NEIGHBORHOOD_SIZE},
+    rule::{CellState, INT_MAX_NEIGHBORHOOD_SIZE, MAX_NEIGHBORHOOD_SIZE},
 };
-use ca_rules2::{Neighborhood, NeighborhoodType, Rule};
+use ca_rules2::{Neighborhood, Rule};
 use ca_symmetry::{Symmetry, Transformation};
 #[cfg(feature = "clap")]
 use clap::{Args, ValueEnum};
@@ -142,12 +142,20 @@ pub struct Config {
     /// Currently, the program supports the following rules:
     ///
     /// - [Outer-totalistic Life-like rules](https://conwaylife.com/wiki/Life-like_cellular_automaton).
-    ///   Both Moore and von Neumann neighborhoods are supported.
+    ///   Moore, von Neumann, and hexagonal neighborhoods are supported.
     ///
     /// - [Higher-range outer-totalistic Life-like rules](https://conwaylife.com/wiki/Higher-range_outer-totalistic_cellular_automaton).
-    ///   Currently, the program only supports Moore, von Neumann, cross, and hash neighborhoods.
+    ///   Currently, the program only supports Moore, von Neumann, cross, hash, and hexagonal
+    ///   neighborhoods.
     ///   The size of the neighborhood must be at most 24.
     ///   Rules with more than 2 states are not supported.
+    ///
+    /// - [Isotropic non-totalistic rules](https://conwaylife.com/wiki/Isotropic_non-totalistic_rule).
+    ///   Both the range-1 Moore neighborhood and the range-1 hexagonal neighborhood
+    ///   (emulated on a square grid) are supported. Hexagonal isotropic non-totalistic
+    ///   rules must be written with the class letters `o`, `m`, and `p`, so that they
+    ///   are recognized as isotropic non-totalistic rules. Hexagonal rules written
+    ///   without class letters are treated as (outer-)totalistic rules.
     ///
     /// Rules whose birth conditions contain `0` are not supported.
     ///
@@ -458,11 +466,15 @@ impl Config {
     ///
     /// Currently, the program supports the following rules:
     /// - [Outer-totalistic Life-like rules](https://conwaylife.com/wiki/Life-like_cellular_automaton).
-    ///   Both Moore and von Neumann neighborhoods are supported.
+    ///   Moore, von Neumann, and hexagonal neighborhoods are supported.
     /// - [Higher-range outer-totalistic Life-like rules](https://conwaylife.com/wiki/Higher-range_outer-totalistic_cellular_automaton).
-    ///   Currently, the program only supports Moore, von Neumann, cross, and hash neighborhoods.
+    ///   Currently, the program only supports Moore, von Neumann, cross, hash, and hexagonal
+    ///   neighborhoods.
     ///   The size of the neighborhood must be at most 24.
     ///   Rules with more than 2 states are not supported.
+    /// - [Isotropic non-totalistic rules](https://conwaylife.com/wiki/Isotropic_non-totalistic_rule).
+    ///   Both the range-1 Moore neighborhood and the range-1 hexagonal neighborhood
+    ///   (emulated on a square grid) are supported.
     ///
     /// Rules whose birth conditions contain `0` are not supported.
     #[inline]
@@ -473,15 +485,12 @@ impl Config {
             return Err(ConfigError::UnsupportedRule);
         }
 
-        if !matches!(rule.neighborhood, Neighborhood::Totalistic(neighborhood_type, _) if neighborhood_type != NeighborhoodType::Hexagonal)
-        {
-            return Err(ConfigError::UnsupportedRule);
-        }
-
-        let neighborhood_size = rule.neighborhood_size();
-
-        if neighborhood_size > MAX_NEIGHBORHOOD_SIZE {
-            return Err(ConfigError::UnsupportedRule);
+        match &rule.neighborhood {
+            Neighborhood::Totalistic(_, _) if rule.neighborhood_size() <= MAX_NEIGHBORHOOD_SIZE => {
+            }
+            Neighborhood::Nontotalistic(_, _)
+                if rule.neighborhood_size() <= INT_MAX_NEIGHBORHOOD_SIZE => {}
+            _ => return Err(ConfigError::UnsupportedRule),
         }
 
         Ok(rule)
@@ -624,11 +633,16 @@ fn check_rule_symmetry(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ca_rules2::NeighborhoodType;
 
     #[test]
     fn test_parse_rule_accepts_supported_rules() {
         assert!(Config::new("B3/S23", 3, 3, 1).parse_rule().is_ok());
         assert!(Config::new("R3,C2,S2,B3,N+", 5, 5, 1).parse_rule().is_ok());
+        assert!(Config::new("B2a/S12", 3, 3, 1).parse_rule().is_ok());
+        assert!(Config::new("B2o/S12oH", 3, 3, 1).parse_rule().is_ok());
+        assert!(Config::new("B2/S34H", 3, 2, 2).parse_rule().is_ok());
+        assert!(Config::new("B245/S3H", 3, 3, 1).parse_rule().is_ok());
     }
 
     #[test]
@@ -641,7 +655,7 @@ mod tests {
 
     #[test]
     fn test_parse_rule_rejects_unsupported_rules() {
-        for rule in ["B03/S23", "B2/S/3", "B245/S3H", "R3,C2,S2,B3"] {
+        for rule in ["B03/S23", "B2/S/3", "R3,C2,S2,B3"] {
             assert!(matches!(
                 Config::new(rule, 3, 3, 1).parse_rule(),
                 Err(ConfigError::UnsupportedRule)

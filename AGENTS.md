@@ -5,7 +5,7 @@
 - Most behavior changes belong in `factoriosrc-lib`. `World` in `lib/src/world.rs` owns the search state and unsafe cell graph; both frontends wrap it.
 - The non-empty front optimization in `lib/src/world.rs` depends on translation/reflection invariants and on the current 2-state non-`B0` rule subset. Read `docs/front.md` before changing `init_front()`, `front_count`, supported rule families, known-cell constraints, symmetry, transformations, or search-order logic.
 - `Config::check()` and `Config::parse_rule()` in `lib/src/config.rs` are the source of truth for validation, supported rules, and automatic search-order selection. Update UI/docs after changing them, not the other way around.
-- App-level rule support is narrower than `ca-rules2`: the search app currently accepts only 2-state, non-`B0`, totalistic, non-hexagonal rules with neighborhood size `<= 24`.
+- App-level rule support is narrower than `ca-rules2`: the search app currently accepts only 2-state, non-`B0` rules with neighborhood size `<= 24`. Isotropic non-totalistic rules must have a range-1 Moore or hexagonal neighborhood (size `<= 8`).
 
 ## Verify
 - Normal CI uses stable Rust. Only Miri setup/tests need nightly.

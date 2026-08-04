@@ -19,7 +19,8 @@ At the app level, `Config::parse_rule()` currently accepts only:
 
 - 2-state rules
 - non-`B0` rules
-- totalistic, non-hexagonal neighborhoods
+- totalistic neighborhoods with size at most 24
+- isotropic non-totalistic rules with a range-1 Moore or hexagonal neighborhood (size at most 8)
 
 Within that subset, a front cell is empty exactly when it is dead. That lets the current code use
 one simple counter: `front_count` is the number of front cells that are still unknown or alive.
@@ -127,15 +128,16 @@ If factoriosrc starts supporting `B0`, Generations, or other multi-state rule fa
 of an empty front cell stops being equivalent to dead. At that point, `front_count` will need to
 track emptiness, not just dead-vs-non-dead.
 
-There is also a rule-symmetry assumption in the current implementation. The rules that factoriosrc
-currently supports are fully symmetric on the square grid, so their symmetry can be described by
-the dihedral group `D8`. That is why `init_front()` only has to reason about the pattern's
-symmetry and transformation, not the rule's own symmetry.
+There is also a rule-symmetry assumption in the current implementation. Most rules that
+factoriosrc currently supports are fully symmetric on the square grid, so their symmetry can be
+described by the dihedral group `D8`. That is why `init_front()` only has to reason about the
+pattern's symmetry and transformation, not the rule's own symmetry.
 
-If future support includes rule families whose symmetry is smaller than `D8`, such as hexagonal
-rules or fully asymmetric rules, rule symmetry becomes another part of the front proof. In that
-world, front pruning can no longer assume that every reflection or rotation used by the current
-argument preserves the rule itself.
+However, isotropic non-totalistic rules may have a smaller symmetry group than `D8` (for example,
+a rule with a single anisotropic birth class), and hexagonal rules are invariant only under `R0`,
+`R2`, `S1`, and `S3`. For such rules, rule symmetry is part of the front proof. The front pruning
+cannot assume that every reflection or rotation used by the current argument preserves the rule
+itself.
 
 The groundwork for this is already in place:
 
@@ -154,7 +156,9 @@ The groundwork for this is already in place:
     reflection `S1`.
 
 Since every rule currently accepted by `Config::parse_rule()` is invariant under the whole of
-`D8`, these conditions never disable the front optimization for the currently supported rules.
+`D8` (or, for hexagonal rules, under the symmetries of the hexagonal grid), these conditions only
+disable the front optimization when the user chooses a pattern symmetry or transformation that is
+not compatible with the rule.
 
 ### Custom symmetries, transformations, and search orders
 

@@ -103,34 +103,6 @@ impl LifeCell {
         self.descriptor.get()
     }
 
-    /// Update the neighborhood descriptor to increment the number of dead neighbors.
-    pub(crate) fn increment_dead(&self) {
-        let mut descriptor = self.descriptor.get();
-        descriptor.increment_dead();
-        self.descriptor.set(descriptor);
-    }
-
-    /// Update the neighborhood descriptor to increment the number of living neighbors.
-    pub(crate) fn increment_alive(&self) {
-        let mut descriptor = self.descriptor.get();
-        descriptor.increment_alive();
-        self.descriptor.set(descriptor);
-    }
-
-    /// Update the neighborhood descriptor to decrement the number of dead neighbors.
-    pub(crate) fn decrement_dead(&self) {
-        let mut descriptor = self.descriptor.get();
-        descriptor.decrement_dead();
-        self.descriptor.set(descriptor);
-    }
-
-    /// Update the neighborhood descriptor to decrement the number of living neighbors.
-    pub(crate) fn decrement_alive(&self) {
-        let mut descriptor = self.descriptor.get();
-        descriptor.decrement_alive();
-        self.descriptor.set(descriptor);
-    }
-
     /// Update the state of the successor cell in the neighborhood descriptor.
     ///
     /// If the successor cell is unknown, set it to some state.

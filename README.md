@@ -6,7 +6,7 @@ This program is still work in progress. Many features are still missing.
 
 Now it has a text-based UI and an egui desktop GUI. A web UI will be added in the future.
 
-Since 2026, most of the development has been done by AI assistants. I don't have time to review all the AI-generated code, so there may be bugs. Please report any issues you find.
+Since 2026, most of the development has been done by AI agents. I don't have time to review all the AI-generated code, so there may be bugs. Please report any issues you find.
 
 ## Usage
 
@@ -84,9 +84,11 @@ Features that rlifesrc has but factoriosrc doesn't:
   - [x] Dynamically adjust the max population constraint to find the smallest pattern.
 - [ ] Support more rules.
   - [x] Parse rule strings.
-  - [ ] Non-totalistic rules.
+  - [x] Isotropic non-totalistic rules.
+  - [ ] Higher-range isotropic non-totalistic rules.
+  - [ ] Non-isotropic non-totalistic rules.
   - [ ] Generations rules.
-  - [ ] Hexagonal rules.
+  - [x] Hexagonal rules.
   - [x] Check the symmetry of a rule. So that we can know what symmetries and transformations are compatible with the rule, and whether [the front optimization](docs/front.md) can be applied.
   - [ ] Update (or completely rewrite) the [ca-rules](https://crates.io/crates/ca-rules) crate.
 - [x] Support trying a random state for unknown cells.

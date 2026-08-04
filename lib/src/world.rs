@@ -379,14 +379,16 @@ impl World {
                         let neighbor_coord = (x + ox, y + oy, t);
                         let neighbor = self.get_cell_by_coord_ptr(neighbor_coord);
 
-                        let cell = self.get_cell_by_coord_mut((x, y, t)).unwrap();
+                        let cell = self.get_cell_by_coord_ptr((x, y, t));
 
-                        cell.neighborhood[i] = neighbor;
+                        unsafe {
+                            (*cell).neighborhood[i] = neighbor;
 
-                        // If some neighbor is outside the world, the state of that neighbor is assumed to be dead.
-                        // So we update the neighborhood descriptor of the cell here.
-                        if neighbor.is_null() {
-                            cell.increment_dead();
+                            // If some neighbor is outside the world, the state of that neighbor is assumed to be dead.
+                            // So we update the neighborhood descriptor of the cell here.
+                            if neighbor.is_null() {
+                                self.rule.set_outside_neighbor(&*cell, i);
+                            }
                         }
                     }
                 }
@@ -660,10 +662,7 @@ impl World {
 
         for i in 0..self.rule.neighborhood_size {
             if let Some(neighbor) = unsafe { cell.neighborhood[i].as_ref() } {
-                match state {
-                    CellState::Dead => neighbor.increment_dead(),
-                    CellState::Alive => neighbor.increment_alive(),
-                }
+                self.rule.set_neighbor(neighbor, i, state);
             }
         }
 
@@ -704,10 +703,7 @@ impl World {
 
         for i in 0..self.rule.neighborhood_size {
             if let Some(neighbor) = unsafe { cell.neighborhood[i].as_ref() } {
-                match state {
-                    CellState::Dead => neighbor.decrement_dead(),
-                    CellState::Alive => neighbor.decrement_alive(),
-                }
+                self.rule.unset_neighbor(neighbor, i, state);
             }
         }
 
@@ -1173,6 +1169,138 @@ mod test {
         coords
     }
 
+    /// Read the states of a generation from the world.
+    fn read_generation(world: &World, t: i32) -> Vec<Vec<CellState>> {
+        let (w, h) = (
+            world.config().width as usize,
+            world.config().height as usize,
+        );
+        (0..h)
+            .map(|y| {
+                (0..w)
+                    .map(|x| world.get_cell_state((x as i32, y as i32, t)).unwrap())
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Simulate one generation of a rule.
+    ///
+    /// This is an independent implementation used to verify the search results.
+    /// Cells outside the given grid are assumed to be dead.
+    ///
+    /// For a totalistic rule, the state of a cell is determined by the number
+    /// of living neighbors. For a non-totalistic rule, it is determined by the
+    /// arrangement of the living neighbors.
+    fn simulate(rule: &ca_rules2::Rule, states: &[Vec<CellState>]) -> Vec<Vec<CellState>> {
+        let (w, h) = (states[0].len() as i32, states.len() as i32);
+        let coords = rule.neighbor_coords();
+        let mut result = vec![vec![CellState::Dead; w as usize]; h as usize];
+
+        for y in 0..h {
+            for x in 0..w {
+                let center = states[y as usize][x as usize];
+                let mut mask = 0u64;
+                for (i, (ox, oy)) in coords.iter().enumerate() {
+                    let (nx, ny) = (x + ox, y + oy);
+                    if (0..w).contains(&nx)
+                        && (0..h).contains(&ny)
+                        && states[ny as usize][nx as usize] == CellState::Alive
+                    {
+                        mask |= 1 << i;
+                    }
+                }
+                let conditions = match center {
+                    CellState::Dead => &rule.birth,
+                    CellState::Alive => &rule.survival,
+                };
+                let alive = if rule.is_totalistic() {
+                    conditions.contains(&(mask.count_ones() as u64))
+                } else {
+                    conditions.contains(&mask)
+                };
+                result[y as usize][x as usize] = if alive {
+                    CellState::Alive
+                } else {
+                    CellState::Dead
+                };
+            }
+        }
+
+        result
+    }
+
+    /// Search for a pattern and verify that it is a solution by simulating the
+    /// rule independently for a whole period.
+    fn search_and_verify(rule_str: &str, width: u32, height: u32, period: u32) {
+        let mut world = World::new(Config::new(rule_str, width, height, period)).unwrap();
+        world.search(None);
+        assert_eq!(
+            world.status(),
+            Status::Solved,
+            "no solution found for {rule_str}"
+        );
+
+        let rule = ca_rules2::parse_rule(rule_str).unwrap();
+        let p = world.config().period as i32;
+        for t in 0..p {
+            let generation = read_generation(&world, t);
+            let next = read_generation(&world, t + 1);
+            assert_eq!(
+                next,
+                simulate(&rule, &generation),
+                "generation {t} of {rule_str}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_search_int_rule() {
+        // A diagonal pair is a still life in the rule B2a/S12 on the Moore neighborhood.
+        search_and_verify("B2a/S12", 3, 3, 1);
+    }
+
+    #[test]
+    fn test_search_int_hex_rule() {
+        // There is a period-2 oscillator in the rule B2o/S23oH on the hexagonal neighborhood.
+        search_and_verify("B2o/S23oH", 3, 3, 2);
+    }
+
+    #[test]
+    fn test_search_hex_totalistic_rule() {
+        // There is a period-2 oscillator in the rule B2/S34H on the hexagonal neighborhood.
+        search_and_verify("B2/S34H", 3, 2, 2);
+    }
+
+    #[test]
+    fn test_search_hex_totalistic_still_life() {
+        // There are still lifes in the rule B2/S1234H on the hexagonal neighborhood.
+        search_and_verify("B2/S1234H", 3, 3, 1);
+    }
+
+    #[test]
+    fn test_miri_int() {
+        let config = Config::new("B2a/S12", 3, 3, 1);
+        let mut world = World::new(config).unwrap();
+        world.search(None);
+        assert_eq!(world.status(), Status::Solved);
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn test_miri_serde_int() {
+        let config = Config::new("B2a/S12", 3, 3, 1);
+        let mut world = World::new(config).unwrap();
+
+        let serde = world.to_serde();
+        let mut world2 = World::try_from(serde).unwrap();
+
+        world.search(None);
+        world2.search(None);
+        assert_eq!(world.status(), world2.status());
+        assert_eq!(world.rle(0, true), world2.rle(0, true));
+    }
+
     #[test]
     fn test_world_new_assigns_automatic_search_order() {
         let world = World::new(Config::new("B3/S23", 2, 5, 1)).unwrap();
@@ -1241,6 +1369,34 @@ mod test {
             ]
         );
         assert_eq!(world.front_count, 9);
+    }
+
+    #[test]
+    fn test_init_front_falls_back_to_whole_first_generation_for_hex() {
+        // A hexagonal rule is not invariant under the horizontal reflection `S2`,
+        // so the halved row-first front cannot be used. The front falls back to
+        // the whole first generation.
+        let world =
+            World::new(Config::new("B2/S34H", 4, 5, 1).with_search_order(SearchOrder::RowFirst))
+                .unwrap();
+
+        assert_eq!(front_coords(&world).len(), 20);
+        assert!(front_coords(&world).iter().all(|&(_, _, t)| t == 0));
+        assert_eq!(world.front_count, 20);
+    }
+
+    #[test]
+    fn test_hex_rule_symmetry() {
+        // A hexagonal rule is invariant only under `R0`, `R2`, `S1`, and `S3`.
+        assert!(World::new(Config::new("B2/S34H", 4, 4, 1).with_symmetry(Symmetry::D2D),).is_ok());
+        assert!(matches!(
+            World::new(Config::new("B2/S34H", 4, 4, 1).with_symmetry(Symmetry::D2H)),
+            Err(ConfigError::SymmetryIncompatibleWithRule)
+        ));
+        assert!(matches!(
+            World::new(Config::new("B2/S34H", 4, 4, 1).with_transformation(Transformation::S0),),
+            Err(ConfigError::TransformationIncompatibleWithRule)
+        ));
     }
 
     #[test]
@@ -1381,3 +1537,6 @@ mod test {
         );
     }
 }
+
+// Temporary test appended to world.rs
+// Temporary test appended to world.rs

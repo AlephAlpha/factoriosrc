@@ -3,7 +3,7 @@ use rand::RngExt;
 use crate::{
     cell::{LifeCell, Reason},
     config::NewState,
-    rule::{CellState, Implication},
+    rule::{CellState, CheckResult, Implication},
     world::{Status, World},
 };
 
@@ -20,15 +20,19 @@ impl World {
     /// Otherwise the behavior is undefined.
     unsafe fn check_descriptor(&mut self, cell: &LifeCell) -> Option<()> {
         unsafe {
-            let implication = self.rule.implies(cell.descriptor());
+            let result = self.rule.implies(cell.descriptor());
 
             // The descriptor does not imply anything.
-            if implication.is_empty() {
+            //
+            // For a non-totalistic rule, the flags are empty when the states of
+            // the individual unknown neighbors are not deduced, but some of them
+            // may still be forced to be dead or alive.
+            if result.is_empty() {
                 return Some(());
             }
 
             // A conflict was found.
-            if implication.contains(Implication::Conflict) {
+            if result.flags().contains(Implication::Conflict) {
                 return None;
             }
 
@@ -36,10 +40,12 @@ impl World {
             //
             // In this case, the successor was unknown, so there is no implication about the cell
             // itself or its neighbors. So we can return early.
-            if implication.intersects(Implication::SuccessorDead | Implication::SuccessorAlive)
+            if result
+                .flags()
+                .intersects(Implication::SuccessorDead | Implication::SuccessorAlive)
                 && let Some(successor) = cell.successor.as_ref()
             {
-                let state = if implication.contains(Implication::SuccessorAlive) {
+                let state = if result.flags().contains(Implication::SuccessorAlive) {
                     CellState::Alive
                 } else {
                     CellState::Dead
@@ -51,8 +57,11 @@ impl World {
             }
 
             // The descriptor implies that the current cell is dead or alive.
-            if implication.intersects(Implication::CurrentDead | Implication::CurrentAlive) {
-                let state = if implication.contains(Implication::CurrentAlive) {
+            if result
+                .flags()
+                .intersects(Implication::CurrentDead | Implication::CurrentAlive)
+            {
+                let state = if result.flags().contains(Implication::CurrentAlive) {
                     CellState::Alive
                 } else {
                     CellState::Dead
@@ -62,10 +71,11 @@ impl World {
             }
 
             // The descriptor implies that all unknown neighbors are dead or alive.
-            if implication
+            if result
+                .flags()
                 .intersects(Implication::NeighborhoodDead | Implication::NeighborhoodAlive)
             {
-                let state = if implication.contains(Implication::NeighborhoodAlive) {
+                let state = if result.flags().contains(Implication::NeighborhoodAlive) {
                     CellState::Alive
                 } else {
                     CellState::Dead
@@ -80,7 +90,44 @@ impl World {
                 }
             }
 
+            // For a non-totalistic rule, set the individual unknown neighbors
+            // that are forced to be dead or alive.
+            //
+            // The "all unknown neighbors are dead or alive" implication above is too strong
+            // for a non-totalistic rule, where the arrangement of the neighbors matters.
+            if result.forced() != 0 {
+                self.set_forced_neighbors(cell, result);
+            }
+
             Some(())
+        }
+    }
+
+    /// Set the individual unknown neighbors of a cell that are forced to be
+    /// dead or alive.
+    ///
+    /// This is only meaningful for non-totalistic rules, where the arrangement
+    /// of the neighbors matters.
+    ///
+    /// # Safety
+    ///
+    /// The cell must be in the same world as `self`.
+    /// Otherwise the behavior is undefined.
+    unsafe fn set_forced_neighbors(&mut self, cell: &LifeCell, result: CheckResult) {
+        unsafe {
+            let mut forced = result.forced();
+
+            while forced != 0 {
+                let i = (forced.trailing_zeros() >> 1) as usize;
+                forced &= !(0b11 << (2 * i));
+
+                if let Some(state) = result.forced_neighbor(i)
+                    && let Some(neighbor) = cell.neighborhood[i].as_ref()
+                    && neighbor.state().is_none()
+                {
+                    self.set_cell(neighbor, state, Reason::Deduced);
+                }
+            }
         }
     }
 
