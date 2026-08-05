@@ -21,6 +21,7 @@ At the app level, `Config::parse_rule()` currently accepts only:
 - non-`B0` rules
 - totalistic neighborhoods with size at most 24
 - isotropic non-totalistic rules with a range-1 Moore or hexagonal neighborhood (size at most 8)
+- non-isotropic (MAP) rules with a range-1 Moore, von Neumann, or hexagonal neighborhood
 
 Within that subset, a front cell is empty exactly when it is dead. That lets the current code use
 one simple counter: `front_count` is the number of front cells that are still unknown or alive.

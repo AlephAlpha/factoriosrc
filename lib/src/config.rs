@@ -475,6 +475,9 @@ impl Config {
     /// - [Isotropic non-totalistic rules](https://conwaylife.com/wiki/Isotropic_non-totalistic_rule).
     ///   Both the range-1 Moore neighborhood and the range-1 hexagonal neighborhood
     ///   (emulated on a square grid) are supported.
+    /// - [Non-isotropic rules](https://conwaylife.com/wiki/Non-isotropic_rule),
+    ///   in the form of [MAP strings](https://conwaylife.com/wiki/MAP_string).
+    ///   The range-1 Moore, von Neumann, and hexagonal neighborhoods are supported.
     ///
     /// Rules whose birth conditions contain `0` are not supported.
     #[inline]
@@ -643,6 +646,13 @@ mod tests {
         assert!(Config::new("B2o/S12oH", 3, 3, 1).parse_rule().is_ok());
         assert!(Config::new("B2/S34H", 3, 2, 2).parse_rule().is_ok());
         assert!(Config::new("B245/S3H", 3, 3, 1).parse_rule().is_ok());
+        assert!(Config::new("MAPHmlphg", 3, 3, 1).parse_rule().is_ok());
+        assert!(
+            Config::new("MAPFgFoF2gXgH5oF4B+gH4A6A", 3, 3, 1)
+                .parse_rule()
+                .is_ok()
+        );
+        assert!(Config::new("MAPARYXfhZofugWaH7oaIDogBZofuhogOiAaIDogIAAgAAWaH7oaIDogGiA6ICAAIAAaIDogIAAgACAAIAAAAAAAA", 3, 3, 1).parse_rule().is_ok());
     }
 
     #[test]
@@ -655,7 +665,13 @@ mod tests {
 
     #[test]
     fn test_parse_rule_rejects_unsupported_rules() {
-        for rule in ["B03/S23", "B2/S/3", "R3,C2,S2,B3"] {
+        for rule in [
+            "B03/S23",
+            "B2/S/3",
+            "R3,C2,S2,B3",
+            "MAP/////w==",
+            "MAPHmlphg/3",
+        ] {
             assert!(matches!(
                 Config::new(rule, 3, 3, 1).parse_rule(),
                 Err(ConfigError::UnsupportedRule)

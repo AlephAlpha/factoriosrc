@@ -10,6 +10,8 @@
 //!   [`parse_generations`].
 //! - [HROT rules](https://conwaylife.com/wiki/Higher-range_outer-totalistic_cellular_automaton),
 //!   see [`parse_hrot`].
+//! - [Non-isotropic rules](https://conwaylife.com/wiki/Non-isotropic_rule),
+//!   see [`parse_map`].
 //!
 //! [`parse_rule`] supports all of the above, and chooses the right kind of
 //! rule automatically.
@@ -24,6 +26,7 @@ mod rule;
 
 pub use error::{NeighborError, ParseRuleError};
 pub use parse::{
-    parse_generations, parse_hrot, parse_int_hex, parse_int_life, parse_life_like, parse_rule,
+    parse_generations, parse_hrot, parse_int_hex, parse_int_life, parse_life_like, parse_map,
+    parse_rule,
 };
 pub use rule::{Neighbor, Neighborhood, NeighborhoodType, Rule};

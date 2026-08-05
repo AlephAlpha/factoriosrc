@@ -26,4 +26,10 @@ pub enum ParseRuleError {
     /// Integer overflow occurred.
     #[error("Integer overflow occurred")]
     IntegerOverflow,
+    /// The length of the MAP string is invalid.
+    #[error("The length of the MAP string is invalid")]
+    InvalidLength,
+    /// The MAP string is not a valid base64 string.
+    #[error("The MAP string is not a valid base64 string")]
+    InvalidBase64,
 }

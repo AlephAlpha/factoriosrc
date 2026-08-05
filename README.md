@@ -86,7 +86,7 @@ Features that rlifesrc has but factoriosrc doesn't:
   - [x] Parse rule strings.
   - [x] Isotropic non-totalistic rules.
   - [ ] Higher-range isotropic non-totalistic rules.
-  - [ ] Non-isotropic non-totalistic rules.
+  - [x] Non-isotropic non-totalistic rules.
   - [ ] Generations rules.
   - [x] Hexagonal rules.
   - [x] Check the symmetry of a rule. So that we can know what symmetries and transformations are compatible with the rule, and whether [the front optimization](docs/front.md) can be applied.

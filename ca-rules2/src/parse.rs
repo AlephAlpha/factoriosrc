@@ -2,11 +2,26 @@ use crate::{
     Neighborhood, NeighborhoodType, ParseRuleError, Rule,
     int::{INT_HEX_TABLE, INT_LIFE_TABLE},
 };
+use base64::{
+    alphabet::STANDARD,
+    engine::{
+        DecodePaddingMode, Engine,
+        general_purpose::{GeneralPurpose, GeneralPurposeConfig},
+    },
+};
 use std::{
     num::ParseIntError,
     ops::{Range, RangeInclusive},
     str,
 };
+
+/// The base64 engine used for parsing MAP strings.
+///
+/// Padding is optional, so that both padded and unpadded MAP strings are
+/// accepted.
+const MAP_ENGINE_CONFIG: GeneralPurposeConfig =
+    GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent);
+const MAP_ENGINE: GeneralPurpose = GeneralPurpose::new(&STANDARD, MAP_ENGINE_CONFIG);
 
 /// A pattern for matching a single character represented as a byte.
 trait CharPattern {
@@ -953,6 +968,58 @@ impl<'a> Parser<'a> {
             .or_else(|| self.try_parse(Parser::parse_hrot_hrot))
     }
 
+    /// Parse a MAP string for a non-isotropic rule.
+    ///
+    /// Returns `None` if this rule string is not a MAP string.
+    /// Returns `Some(Err(_))` if it is a MAP string but there is some other
+    /// error.
+    ///
+    /// See [`parse_map`] for more details.
+    fn parse_map(&mut self) -> Option<Result<Rule, ParseRuleError>> {
+        self.read_matches_exact(b"MAP")?;
+        let data = self.input;
+
+        // Try to decode the whole string as a non-Generations rule.
+        let decoded = MAP_ENGINE.decode(data).ok();
+        if let Some(rule) = decoded
+            .as_deref()
+            .and_then(|bytes| build_map_rule(bytes, 2))
+        {
+            return Some(Ok(rule));
+        }
+
+        // Try to find a Generations suffix.
+        // A `/` in the base64 string is a valid base64 character, so we only
+        // treat a `/` as the separator if the part before it has a valid
+        // length and the part after it is a number.
+        let mut slash = data.len();
+        while let Some(pos) = data[..slash].iter().rposition(|&c| c == b'/') {
+            slash = pos;
+            let Ok(bytes) = MAP_ENGINE.decode(&data[..pos]) else {
+                continue;
+            };
+            let Some(states) = parse_map_gen(&data[pos + 1..]) else {
+                continue;
+            };
+            let states = match states {
+                Ok(states) => states,
+                Err(err) => return Some(Err(err)),
+            };
+            if states < 2 {
+                return Some(Err(ParseRuleError::TooFewStates));
+            }
+            if let Some(rule) = build_map_rule(&bytes, states) {
+                return Some(Ok(rule));
+            }
+        }
+
+        Some(Err(if decoded.is_some() {
+            ParseRuleError::InvalidLength
+        } else {
+            ParseRuleError::InvalidBase64
+        }))
+    }
+
     /// Parse a rule string.
     ///
     /// This function supports the following kinds of rule strings:
@@ -962,13 +1029,74 @@ impl<'a> Parser<'a> {
     ///   [`parse_int_hex`](Self::parse_int_hex).
     /// - Generations rule, see [`parse_generations`](Self::parse_generations).
     /// - HROT rule, see [`parse_hrot`](Self::parse_hrot).
+    /// - MAP string, see [`parse_map`](Self::parse_map).
     fn parse_rule(&mut self) -> Option<Result<Rule, ParseRuleError>> {
         self.parse_life_like()
             .or_else(|| self.parse_int_life())
             .or_else(|| self.parse_int_hex())
             .or_else(|| self.parse_generations())
             .or_else(|| self.parse_hrot())
+            .or_else(|| self.parse_map())
     }
+}
+
+/// Parse the number of states at the end of a MAP string.
+///
+/// Returns `None` if the given bytes do not form a number.
+fn parse_map_gen(tail: &[u8]) -> Option<Result<u64, ParseRuleError>> {
+    if tail.is_empty() || !tail.iter().all(u8::is_ascii_digit) {
+        return None;
+    }
+    Some(
+        str::from_utf8(tail)
+            .unwrap()
+            .parse()
+            .map_or(Err(ParseRuleError::IntegerOverflow), Ok),
+    )
+}
+
+/// Build a rule from the decoded transition table of a MAP string.
+///
+/// Returns `None` if the length of the table does not correspond to any
+/// supported neighborhood type.
+fn build_map_rule(bytes: &[u8], states: u64) -> Option<Rule> {
+    let (neighborhood_type, n) = match bytes.len() {
+        4 => (NeighborhoodType::VonNeumann, 4),
+        16 => (NeighborhoodType::Hexagonal, 6),
+        64 => (NeighborhoodType::Moore, 8),
+        _ => return None,
+    };
+
+    // The center cell is in the middle of the table. The `i`-th bit of a
+    // condition corresponds to the `i`-th neighbor of the neighborhood, where
+    // the first `n / 2` neighbors are the first `n / 2` cells of the table and
+    // the rest are the cells after the center cell.
+    let center_mark = 1 << (n / 2);
+    let right_mark = center_mark - 1;
+    let left_mark = right_mark << (n / 2 + 1);
+
+    let mut birth = Vec::new();
+    let mut survival = Vec::new();
+    for (i, x) in bytes.iter().map(|x| x.reverse_bits()).enumerate() {
+        for j in 0..8 {
+            if x & (1 << j) != 0 {
+                let k = i * 8 + j;
+                let mask = ((k & left_mark) >> 1 | (k & right_mark)) as u64;
+                if k & center_mark == 0 {
+                    birth.push(mask);
+                } else {
+                    survival.push(mask);
+                }
+            }
+        }
+    }
+
+    Some(Rule {
+        states,
+        neighborhood: Neighborhood::Nontotalistic(neighborhood_type, 1),
+        birth,
+        survival,
+    })
 }
 
 /// Parse a [Life-like](https://conwaylife.com/wiki/Life-like_cellular_automaton) rule string.
@@ -1259,6 +1387,69 @@ pub fn parse_hrot(rule_string: &str) -> Result<Rule, ParseRuleError> {
         .unwrap_or(Err(ParseRuleError::InvalidSyntax))
 }
 
+/// Parse a [non-isotropic rule](https://conwaylife.com/wiki/Non-isotropic_rule)
+/// from a [MAP string](https://conwaylife.com/wiki/MAP_string).
+///
+/// The range-1 Moore, von Neumann, and hexagonal neighborhoods are supported.
+/// A MAP string is a base64 encoding of the transition table of the rule,
+/// prefixed by `MAP`. The prefix is case-sensitive. The base64 string may or
+/// may not be padded with `=`.
+///
+/// The length of the encoded table determines the neighborhood type:
+///
+/// - 4 bytes (32 bits) mean the [von Neumann](NeighborhoodType::VonNeumann)
+///   neighborhood.
+/// - 16 bytes (128 bits) mean the [hexagonal](NeighborhoodType::Hexagonal)
+///   neighborhood.
+/// - 64 bytes (512 bits) mean the [Moore](NeighborhoodType::Moore)
+///   neighborhood.
+///
+/// All three neighborhood types have a radius of 1.
+///
+/// The rule string may have a suffix `/{states}` to indicate that it is a
+/// [Generations](https://conwaylife.com/wiki/Generations) rule with the given
+/// number of states. The number of states must be at least 2. Since `/` is a
+/// valid base64 character, the parser treats the last `/` followed by a number
+/// as the suffix only if the part before it has a valid length.
+///
+/// The `i`-th bit of a condition corresponds to the `i`-th neighbor in
+/// [`Neighborhood::neighbor_coords`], in the order of the range-1 neighborhood
+/// of the corresponding type.
+///
+/// # Examples
+///
+/// ```
+/// # use ca_rules2::{parse_map, Neighborhood, NeighborhoodType};
+/// // The MAP string equivalent of Conway's Game of Life.
+/// let life = parse_map("MAPARYXfhZofugWaH7oaIDogBZofuhogOiAaIDogIAAgAAWaH7oaIDogGiA6ICAAIAAaIDogIAAgACAAIAAAAAAAA").unwrap();
+/// assert_eq!(
+///     life.neighborhood,
+///     Neighborhood::Nontotalistic(NeighborhoodType::Moore, 1)
+/// );
+/// assert!(life.birth.contains(&0b0000_0111));
+///
+/// // The MAP string equivalent of "B2/S013V".
+/// let von_neumann = parse_map("MAPHmlphg").unwrap();
+/// assert_eq!(
+///     von_neumann.neighborhood,
+///     Neighborhood::Nontotalistic(NeighborhoodType::VonNeumann, 1)
+/// );
+///
+/// // The MAP string equivalent of "B2/S34H".
+/// let hex = parse_map("MAPFgFoF2gXgH5oF4B+gH4A6A").unwrap();
+/// assert_eq!(
+///     hex.neighborhood,
+///     Neighborhood::Nontotalistic(NeighborhoodType::Hexagonal, 1)
+/// );
+/// ```
+pub fn parse_map(rule_string: &str) -> Result<Rule, ParseRuleError> {
+    let mut parser = Parser::new(rule_string);
+
+    parser
+        .parse_map()
+        .unwrap_or(Err(ParseRuleError::InvalidSyntax))
+}
+
 /// Parse a rule string.
 ///
 /// This function supports the following kinds of rule strings:
@@ -1267,10 +1458,12 @@ pub fn parse_hrot(rule_string: &str) -> Result<Rule, ParseRuleError> {
 /// - Isotropic non-totalistic rule, see [`parse_int_life`] and [`parse_int_hex`].
 /// - Generations rule, see [`parse_generations`].
 /// - HROT rule, see [`parse_hrot`].
+/// - MAP string, see [`parse_map`].
 ///
 /// The kind of rule is determined by the syntax of the rule string. For
-/// example, `B3/S23` is a Life-like rule, and `B2e/S23` is an isotropic
-/// non-totalistic rule.
+/// example, `B3/S23` is a Life-like rule, `B2e/S23` is an isotropic
+/// non-totalistic rule, and `MAPARYXfhZofugWaH7oaIDogBZofuhogOiAaIDogIAAgAAWaH7oaIDogGiA6ICAAIAAaIDogIAAgACAAIAAAAAAAA`
+/// is a non-isotropic rule.
 ///
 /// See the documentation of each function for more details.
 ///
@@ -1910,5 +2103,229 @@ mod tests {
                 survival: vec![6, 7, 8, 9, 10, 12],
             }
         );
+    }
+
+    #[test]
+    fn test_parse_map_moore() {
+        // The MAP string equivalent of "B3/S23".
+        let life = parse_map("MAPARYXfhZofugWaH7oaIDogBZofuhogOiAaIDogIAAgAAWaH7oaIDogGiA6ICAAIAAaIDogIAAgACAAIAAAAAAAA").unwrap();
+        assert_eq!(
+            life.neighborhood,
+            Neighborhood::Nontotalistic(NeighborhoodType::Moore, 1)
+        );
+        for mask in 0..=0xffu64 {
+            assert_eq!(life.birth.contains(&mask), mask.count_ones() == 3);
+            assert_eq!(
+                life.survival.contains(&mask),
+                [2, 3].contains(&mask.count_ones())
+            );
+        }
+
+        // The padded variant is equivalent.
+        let padded = parse_map("MAPARYXfhZofugWaH7oaIDogBZofuhogOiAaIDogIAAgAAWaH7oaIDogGiA6ICAAIAAaIDogIAAgACAAIAAAAAAAA==").unwrap();
+        assert_eq!(life, padded);
+
+        // A totalistic rule on the Moore neighborhood is invariant under all
+        // 8 transformations.
+        assert_eq!(life.symmetry_elements().len(), 8);
+    }
+
+    #[test]
+    fn test_parse_map_von_neumann() {
+        // The MAP string equivalent of "B2/S013V".
+        let von_neumann = parse_map("MAPHmlphg").unwrap();
+        assert_eq!(
+            von_neumann.neighborhood,
+            Neighborhood::Nontotalistic(NeighborhoodType::VonNeumann, 1)
+        );
+        for mask in 0..=0x0fu64 {
+            assert_eq!(von_neumann.birth.contains(&mask), mask.count_ones() == 2);
+            assert_eq!(
+                von_neumann.survival.contains(&mask),
+                [0, 1, 3].contains(&mask.count_ones())
+            );
+        }
+
+        // The von Neumann neighborhood is invariant under all 8
+        // transformations.
+        assert_eq!(von_neumann.symmetry_elements().len(), 8);
+    }
+
+    #[test]
+    fn test_parse_map_hex() {
+        // The MAP string equivalent of "B2/S34H".
+        let hex = parse_map("MAPFgFoF2gXgH5oF4B+gH4A6A").unwrap();
+        assert_eq!(
+            hex.neighborhood,
+            Neighborhood::Nontotalistic(NeighborhoodType::Hexagonal, 1)
+        );
+        for mask in 0..0x40u64 {
+            assert_eq!(hex.birth.contains(&mask), mask.count_ones() == 2);
+            assert_eq!(
+                hex.survival.contains(&mask),
+                [3, 4].contains(&mask.count_ones())
+            );
+        }
+
+        // A hexagonal rule is invariant under exactly R0, R2, S1, and S3.
+        assert_eq!(
+            hex.symmetry_elements(),
+            vec![
+                Transformation::R0,
+                Transformation::R2,
+                Transformation::S1,
+                Transformation::S3,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_map_generations() {
+        // The MAP string equivalent of "3457/357/5". It contains `/` both as
+        // base64 characters and as the suffix separator.
+        let rule = parse_map("MAPARYBFxZpF38WaRd/aZZ//hZpF39pln/+aZZ//pZp/ukWaRd/aZZ//mmWf/6Waf7paZZ//pZp/umWaf7paZbplg/5").unwrap();
+        assert_eq!(rule.states, 5);
+        assert_eq!(
+            rule.neighborhood,
+            Neighborhood::Nontotalistic(NeighborhoodType::Moore, 1)
+        );
+        for mask in 0..=0xffu64 {
+            assert_eq!(
+                rule.birth.contains(&mask),
+                [3, 5, 7].contains(&mask.count_ones())
+            );
+            assert_eq!(
+                rule.survival.contains(&mask),
+                [3, 4, 5, 7].contains(&mask.count_ones())
+            );
+        }
+
+        // A von Neumann Generations rule.
+        let rule = parse_map("MAPHmlphg/3").unwrap();
+        assert_eq!(rule.states, 3);
+        assert_eq!(
+            rule.neighborhood,
+            Neighborhood::Nontotalistic(NeighborhoodType::VonNeumann, 1)
+        );
+        for mask in 0..=0x0fu64 {
+            assert_eq!(rule.birth.contains(&mask), mask.count_ones() == 2);
+            assert_eq!(
+                rule.survival.contains(&mask),
+                [0, 1, 3].contains(&mask.count_ones())
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_map_round_trip() {
+        // Encode an asymmetric INT rule as a MAP string, and check that
+        // parsing it gives back the same conditions. This pins down the
+        // bit order of MAP strings.
+        let rule = parse_int_life("B35y/S1e2-ci3-a5i").unwrap();
+        let parsed = parse_map(&encode_map(&rule)).unwrap();
+        assert_same_conditions(&rule.birth, &parsed.birth);
+        assert_same_conditions(&rule.survival, &parsed.survival);
+
+        let rule = parse_int_hex("B2o3-o4m/S12m3o4m5H").unwrap();
+        let parsed = parse_map(&encode_map(&rule)).unwrap();
+        assert_same_conditions(&rule.birth, &parsed.birth);
+        assert_same_conditions(&rule.survival, &parsed.survival);
+
+        let rule = parse_map("MAPHmlphg").unwrap();
+        let parsed = parse_map(&encode_map(&rule)).unwrap();
+        assert_same_conditions(&rule.birth, &parsed.birth);
+        assert_same_conditions(&rule.survival, &parsed.survival);
+    }
+
+    #[test]
+    fn test_parse_map_invalid() {
+        // Not a MAP string.
+        assert!(matches!(
+            parse_map("B3/S23"),
+            Err(ParseRuleError::InvalidSyntax)
+        ));
+
+        // Wrong length.
+        assert!(matches!(
+            parse_map(
+                "MAPARYXfhZofugWaH7oaIDogBZofuhogOiAaIDogIAAgAAWaH7oaIDogGiA6ICAAIAAaIDogIAAgACAAIA"
+            ),
+            Err(ParseRuleError::InvalidLength)
+        ));
+
+        // Invalid base64.
+        assert!(matches!(
+            parse_map(
+                "MAPARYXfhZofugWaH7oaIDogBZofuhogOiAaIDogIAAgAAWaH7oaIDogGiA6ICAAIAAaIDogIAAgACAAIAAAAAAAX"
+            ),
+            Err(ParseRuleError::InvalidBase64)
+        ));
+
+        // Too few states.
+        assert!(matches!(
+            parse_map("MAPHmlphg/1"),
+            Err(ParseRuleError::TooFewStates)
+        ));
+
+        // Invalid suffixes.
+        assert!(parse_map("MAPHmlphg/3x").is_err());
+        assert!(parse_map("MAPHmlphg/x").is_err());
+        assert!(parse_map("MAPHmlphg/").is_err());
+    }
+
+    #[test]
+    fn test_parse_rule_dispatches_map() {
+        assert!(matches!(
+            parse_rule("MAPHmlphg").unwrap().neighborhood,
+            Neighborhood::Nontotalistic(NeighborhoodType::VonNeumann, _)
+        ));
+        assert!(matches!(
+            parse_rule("MAPFgFoF2gXgH5oF4B+gH4A6A")
+                .unwrap()
+                .neighborhood,
+            Neighborhood::Nontotalistic(NeighborhoodType::Hexagonal, _)
+        ));
+        assert!(matches!(
+            parse_rule("MAPARYXfhZofugWaH7oaIDogBZofuhogOiAaIDogIAAgAAWaH7oaIDogGiA6ICAAIAAaIDogIAAgACAAIAAAAAAAA").unwrap().neighborhood,
+            Neighborhood::Nontotalistic(NeighborhoodType::Moore, _)
+        ));
+        assert_eq!(
+            parse_rule("MAPARYXfhZofugWaH7oaIDogBZofuhogOiAaIDogIAAgAAWaH7oaIDogGiA6ICAAIAAaIDogIAAgACAAIAAAAAAAA/4").unwrap().states,
+            4
+        );
+    }
+
+    /// Check that two lists of conditions contain the same elements,
+    /// regardless of their order.
+    fn assert_same_conditions(left: &[u64], right: &[u64]) {
+        let mut left = left.to_vec();
+        let mut right = right.to_vec();
+        left.sort_unstable();
+        right.sort_unstable();
+        assert_eq!(left, right);
+    }
+
+    /// Encode a rule as a MAP string.
+    ///
+    /// This is the inverse of [`parse_map`], used to test it.
+    fn encode_map(rule: &Rule) -> String {
+        let n = rule.neighborhood_size();
+        let center_mark = 1 << (n / 2);
+        let right_mark = center_mark - 1;
+        let mut table = vec![0u8; (2 << n) / 8];
+        let mut set = |mask: u64, center: bool| {
+            let mask = mask as usize;
+            let k = (mask & right_mark) | ((mask & (right_mark << (n / 2))) << 1);
+            let k = k | if center { center_mark } else { 0 };
+            table[k / 8] |= 1u8 << (k % 8);
+        };
+        for &mask in &rule.birth {
+            set(mask, false);
+        }
+        for &mask in &rule.survival {
+            set(mask, true);
+        }
+        let bytes: Vec<u8> = table.iter().map(|x| x.reverse_bits()).collect();
+        format!("MAP{}", MAP_ENGINE.encode(bytes))
     }
 }
