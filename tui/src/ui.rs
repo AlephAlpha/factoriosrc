@@ -13,6 +13,11 @@ use ratatui::{
     widgets::{Block, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Widget},
 };
 
+/// The RLE character for a dying state.
+const fn dying_char(i: u8) -> char {
+    char::from_u32(b'A' as u32 + i as u32 - 1).unwrap()
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Palette {
     chrome: Style,
@@ -875,11 +880,12 @@ impl App {
                     let coord = (world_x as u32, world_y as u32, self.generation as u32);
                     let known = state.known_cells.iter().find(|k| (k.x, k.y, k.t) == coord);
 
-                    let (ch, base_style) = match known {
-                        Some(k) if k.state == CellState::Alive => ('o', palette.known_alive),
-                        Some(_) => ('.', palette.known_dead),
-                        None => ('?', palette.unknown),
-                    };
+                    let (ch, base_style) =
+                        known.map_or(('?', palette.unknown), |k| match k.state {
+                            CellState::Alive => ('o', palette.known_alive),
+                            CellState::Dying(i) => (dying_char(i), palette.known_alive),
+                            CellState::Dead => ('.', palette.known_dead),
+                        });
 
                     let style = if cursor_here {
                         base_style.add_modifier(Modifier::REVERSED)
@@ -965,10 +971,26 @@ impl Widget for Rle<'_> {
                     let coord = (world_x as i32, world_y as i32, self.t);
                     let state = self.world.get_cell_state(coord);
                     let reason = self.world.get_cell_reason(coord);
+                    let alive_char = if self.world.is_generations_rule() {
+                        'A'
+                    } else {
+                        'o'
+                    };
                     let (ch, style) = match (state, reason) {
-                        (Some(CellState::Alive), Some(Reason::Known)) => ('o', palette.known_alive),
-                        (Some(CellState::Alive), Some(Reason::Deduced)) => ('o', palette.deduced),
-                        (Some(CellState::Alive), _) => ('o', palette.success),
+                        (Some(CellState::Alive), Some(Reason::Known)) => {
+                            (alive_char, palette.known_alive)
+                        }
+                        (Some(CellState::Alive), Some(Reason::Deduced)) => {
+                            (alive_char, palette.deduced)
+                        }
+                        (Some(CellState::Alive), _) => (alive_char, palette.success),
+                        (Some(CellState::Dying(i)), Some(Reason::Known)) => {
+                            (dying_char(i), palette.known_alive)
+                        }
+                        (Some(CellState::Dying(i)), Some(Reason::Deduced)) => {
+                            (dying_char(i), palette.deduced)
+                        }
+                        (Some(CellState::Dying(i)), _) => (dying_char(i), palette.success),
                         (Some(CellState::Dead), Some(Reason::Known)) => ('.', palette.known_dead),
                         (Some(CellState::Dead), Some(Reason::Deduced)) => {
                             ('.', palette.guessed_dead)

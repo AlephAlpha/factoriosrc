@@ -90,7 +90,7 @@ impl ConfigHelpField {
     pub const fn short_help(self) -> &'static str {
         match self {
             Self::RuleString => {
-                "Cellular automaton rule in Life-like or higher-range totalistic syntax."
+                "Cellular automaton rule in Life-like, higher-range totalistic, or Generations syntax."
             }
             Self::Width => "Width of the search world in cells.",
             Self::Height => "Height of the search world in cells.",

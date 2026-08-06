@@ -192,7 +192,8 @@ impl Cli {
                                 ErrorKind::ValueValidation,
                                 format!(
                                     "invalid --known-cell value '{s}': expected \
-                                     'x,y,t,state' where state is 'alive'/'dead' or '1'/'0'"
+                                     'x,y,t,state' where state is 'alive'/'dead' or a \
+                                     state number"
                                 ),
                             )
                             .exit();
@@ -215,18 +216,21 @@ impl Cli {
                     let state = match parts[3] {
                         "dead" | "0" => CellState::Dead,
                         "alive" | "1" => CellState::Alive,
-                        _ => {
-                            Self::command()
-                                .error(
-                                    ErrorKind::ValueValidation,
-                                    format!(
-                                        "invalid state '{}' in '--known-cell {s}': expected \
-                                         'alive'/'dead' or '1'/'0'",
-                                        parts[3]
-                                    ),
-                                )
-                                .exit();
-                        }
+                        _ => parts[3].parse::<u8>().map_or_else(
+                            |_| {
+                                Self::command()
+                                    .error(
+                                        ErrorKind::ValueValidation,
+                                        format!(
+                                            "invalid state '{}' in '--known-cell {s}': expected \
+                                             'alive'/'dead' or a state number",
+                                            parts[3]
+                                        ),
+                                    )
+                                    .exit();
+                            },
+                            CellState::from_number,
+                        ),
                     };
                     args.config.known_cells.push(KnownCell { x, y, t, state });
                 }
@@ -257,7 +261,7 @@ impl Cli {
                                     format!(
                                         "invalid known-cells file entry in '{}' line {}: '{line}'. \
                                          Expected 'x,y,t,state' where state is 'alive'/'dead' \
-                                         or '1'/'0'",
+                                         or a state number",
                                         path.display(),
                                         line_num + 1
                                     ),
@@ -284,20 +288,23 @@ impl Cli {
                         let state = match parts[3] {
                             "dead" | "0" => CellState::Dead,
                             "alive" | "1" => CellState::Alive,
-                            _ => {
-                                Self::command()
-                                    .error(
-                                        ErrorKind::ValueValidation,
-                                        format!(
-                                            "invalid state '{}' in '{}' line {}: expected \
-                                             'alive'/'dead' or '1'/'0'",
-                                            parts[3],
-                                            path.display(),
-                                            line_num + 1
-                                        ),
-                                    )
-                                    .exit();
-                            }
+                            _ => parts[3].parse::<u8>().map_or_else(
+                                |_| {
+                                    Self::command()
+                                        .error(
+                                            ErrorKind::ValueValidation,
+                                            format!(
+                                                "invalid state '{}' in '{}' line {}: expected \
+                                                 'alive'/'dead' or a state number",
+                                                parts[3],
+                                                path.display(),
+                                                line_num + 1
+                                            ),
+                                        )
+                                        .exit();
+                                },
+                                CellState::from_number,
+                            ),
                         };
                         args.config.known_cells.push(KnownCell { x, y, t, state });
                     }

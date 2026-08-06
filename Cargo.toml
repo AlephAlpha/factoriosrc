@@ -6,7 +6,7 @@ resolver = "2"
 base64 = "0.23.1"
 ca-rules2 = { path = "ca-rules2", version = "0.1.0" }
 ca-symmetry = { path = "symmetry", version = "0.1.0" }
-clap = { version = "4.6.5", features = ["derive"] }
+clap = { version = "4.6.6", features = ["derive"] }
 color-eyre = "0.6.5"
 documented = "0.10.0"
 eframe = { version = "0.36.0", default-features = false, features = [

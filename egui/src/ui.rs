@@ -84,7 +84,7 @@ fn cycle_known_cell(known_cells: &mut Vec<KnownCell>, x: u32, y: u32, t: u32) ->
     let next = match known_cell_state(known_cells, x, y, t) {
         None => Some(CellState::Alive),
         Some(CellState::Alive) => Some(CellState::Dead),
-        Some(CellState::Dead) => None,
+        Some(CellState::Dead | CellState::Dying(_)) => None,
     };
     set_known_cell(known_cells, x, y, t, next);
     next
@@ -1295,14 +1295,24 @@ impl App {
                                                 y,
                                                 editor.generation,
                                             );
-                                            let (text, fill, text_color) = match state {
+                                            let text = match state {
+                                                Some(CellState::Alive) => "o".to_string(),
+                                                Some(CellState::Dead) => ".".to_string(),
+                                                Some(CellState::Dying(i)) => char::from_u32(
+                                                    b'A' as u32 + i as u32 - 1,
+                                                )
+                                                .unwrap()
+                                                .to_string(),
+                                                None => "?".to_string(),
+                                            };
+                                            let (fill, text_color) = match state {
                                                 Some(CellState::Alive) => {
-                                                    ("o", palette.accent_soft, palette.success)
+                                                    (palette.accent_soft, palette.success)
                                                 }
-                                                Some(CellState::Dead) => {
-                                                    (".", palette.surface_alt, palette.dead)
+                                                Some(CellState::Dead | CellState::Dying(_)) => {
+                                                    (palette.surface_alt, palette.dead)
                                                 }
-                                                None => ("?", palette.surface, palette.subtle_text),
+                                                None => (palette.surface, palette.subtle_text),
                                             };
 
                                             painter.rect_filled(cell_rect, 2.0, fill);
@@ -1341,14 +1351,16 @@ impl App {
                                 } else {
                                     for cell in generation_cells {
                                         let label = match cell.state {
-                                            CellState::Alive => "alive",
-                                            CellState::Dead => "dead",
+                                            CellState::Alive => "alive".to_string(),
+                                            CellState::Dead => "dead".to_string(),
+                                            CellState::Dying(i) => format!("dying {i}"),
                                         };
                                         ui.horizontal(|ui| {
                                             ui.label(format!("({}, {})", cell.x, cell.y));
                                             ui.label(RichText::new(label).color(match cell.state {
                                                 CellState::Alive => palette.success,
                                                 CellState::Dead => palette.dead,
+                                                CellState::Dying(_) => palette.subtle_text,
                                             }));
                                             if ui.add(Button::new("x")).clicked() {
                                                 set_known_cell(

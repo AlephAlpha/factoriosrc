@@ -5,20 +5,92 @@ use std::cell::Cell;
 use serde::{Deserialize, Serialize};
 
 /// The reason why a cell is set to a state.
+///
+/// When serialized, [`Known`](Reason::Known), [`Deduced`](Reason::Deduced),
+/// and [`Guessed`](Reason::Guessed) are represented by the strings `"k"`,
+/// `"d"`, and `"g"`, and [`TryAnother`](Reason::TryAnother) is represented by
+/// the number of states that have not been tried yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum Reason {
     /// The state is known from the configuration before the search.
-    #[cfg_attr(feature = "serde", serde(rename = "k"))]
     Known,
 
     /// The state is deduced from some other cells.
-    #[cfg_attr(feature = "serde", serde(rename = "d"))]
     Deduced,
 
     /// The state is chosen as a guess.
-    #[cfg_attr(feature = "serde", serde(rename = "g"))]
     Guessed,
+
+    /// A guessed state was rejected, and the cell is set to another state.
+    ///
+    /// The field is the number of states that have not been tried yet.
+    /// Only used in Generations rules.
+    TryAnother(u8),
+}
+
+#[cfg(feature = "serde")]
+impl Serialize for Reason {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Self::Known => serializer.serialize_str("k"),
+            Self::Deduced => serializer.serialize_str("d"),
+            Self::Guessed => serializer.serialize_str("g"),
+            Self::TryAnother(n) => serializer.serialize_u8(*n),
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> Deserialize<'de> for Reason {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct ReasonVisitor;
+
+        impl serde::de::Visitor<'_> for ReasonVisitor {
+            type Value = Reason;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str(r#"the string "k", "d", or "g", or a number of untried states"#)
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                match v {
+                    "k" => Ok(Reason::Known),
+                    "d" => Ok(Reason::Deduced),
+                    "g" => Ok(Reason::Guessed),
+                    _ => Err(serde::de::Error::custom("invalid reason")),
+                }
+            }
+
+            fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                u8::try_from(v)
+                    .map(Reason::TryAnother)
+                    .map_err(serde::de::Error::custom)
+            }
+
+            fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                u8::try_from(v)
+                    .map(Reason::TryAnother)
+                    .map_err(serde::de::Error::custom)
+            }
+        }
+
+        deserializer.deserialize_any(ReasonVisitor)
+    }
 }
 
 /// A cell in the cellular automaton.

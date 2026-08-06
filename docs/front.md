@@ -17,14 +17,15 @@ rlifesrc discusses.
 
 At the app level, `Config::parse_rule()` currently accepts only:
 
-- 2-state rules
 - non-`B0` rules
+- 2-state rules, or Generations rules with up to 255 states
 - totalistic neighborhoods with size at most 24
 - isotropic non-totalistic rules with a range-1 Moore or hexagonal neighborhood (size at most 8)
 - non-isotropic (MAP) rules with a range-1 Moore, von Neumann, or hexagonal neighborhood
 
 Within that subset, a front cell is empty exactly when it is dead. That lets the current code use
 one simple counter: `front_count` is the number of front cells that are still unknown or alive.
+Dying cells are counted as non-empty, which is conservative but sound for Generations rules.
 
 ## Why the optimization works
 
@@ -125,9 +126,12 @@ with the relevant translation or reflection argument.
 
 ### More rules
 
-If factoriosrc starts supporting `B0`, Generations, or other multi-state rule families, the notion
-of an empty front cell stops being equivalent to dead. At that point, `front_count` will need to
-track emptiness, not just dead-vs-non-dead.
+factoriosrc now supports Generations rules with up to 255 states. The notion of an empty
+front cell is handled conservatively: `front_count` is decremented only when a front cell is
+set to the dead state, exactly like rlifesrc does. A front cell in a dying state is still
+counted as non-empty, so the front optimization is weaker for patterns that contain dying
+cells, but it never rejects a valid pattern. Since a dying cell can never become alive, this
+is still sound.
 
 There is also a rule-symmetry assumption in the current implementation. Most rules that
 factoriosrc currently supports are fully symmetric on the square grid, so their symmetry can be

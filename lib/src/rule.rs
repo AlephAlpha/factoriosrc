@@ -13,16 +13,129 @@ use std::{
 };
 
 /// The state of a known cell.
+///
+/// The states are numbered from 0. State 0 is [`Dead`](CellState::Dead),
+/// state 1 is [`Alive`](CellState::Alive), and the states `2..num_states - 1` are
+/// dying states, where `num_states` is the number of states of the rule.
+///
+/// When serialized, the dead and alive states are represented by the strings
+/// `"0"` and `"1"`, and a dying state is represented by its state number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub enum CellState {
     /// The cell is dead.
-    #[cfg_attr(feature = "serde", serde(rename = "0"))]
-    Dead = 0b01,
+    Dead,
 
     /// The cell is alive.
-    #[cfg_attr(feature = "serde", serde(rename = "1"))]
-    Alive = 0b10,
+    Alive,
+
+    /// The cell is in a dying state.
+    ///
+    /// In each generation, a cell in the `i`-th dying state transitions to the
+    /// `(i + 1)`-th state, or to the dead state if `i` is the last dying state.
+    Dying(u8),
+}
+
+#[cfg(feature = "serde")]
+impl Serialize for CellState {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Self::Dead => serializer.serialize_str("0"),
+            Self::Alive => serializer.serialize_str("1"),
+            Self::Dying(i) => serializer.serialize_u8(*i),
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> Deserialize<'de> for CellState {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct CellStateVisitor;
+
+        impl serde::de::Visitor<'_> for CellStateVisitor {
+            type Value = CellState;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str(r#"the string "0" or "1", or a state number"#)
+            }
+
+            fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                match v {
+                    "0" => Ok(CellState::Dead),
+                    "1" => Ok(CellState::Alive),
+                    _ => v
+                        .parse::<u8>()
+                        .map(CellState::from_number)
+                        .map_err(serde::de::Error::custom),
+                }
+            }
+
+            fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                u8::try_from(v)
+                    .map(CellState::from_number)
+                    .map_err(serde::de::Error::custom)
+            }
+
+            fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E>
+            where
+                E: serde::de::Error,
+            {
+                u8::try_from(v)
+                    .map(CellState::from_number)
+                    .map_err(serde::de::Error::custom)
+            }
+        }
+
+        deserializer.deserialize_any(CellStateVisitor)
+    }
+}
+
+impl CellState {
+    /// Create a state from its number.
+    ///
+    /// State 0 is dead, state 1 is alive, and the other states are dying states.
+    #[inline]
+    pub const fn from_number(n: u8) -> Self {
+        match n {
+            0 => Self::Dead,
+            1 => Self::Alive,
+            _ => Self::Dying(n),
+        }
+    }
+
+    /// The number of the state.
+    #[inline]
+    pub const fn number(self) -> u8 {
+        match self {
+            Self::Dead => 0,
+            Self::Alive => 1,
+            Self::Dying(i) => i,
+        }
+    }
+
+    /// The state of the cell in the underlying 2-state rule.
+    ///
+    /// This is the encoding used in the neighborhood descriptor: `0b01` means
+    /// dead (or dying, which is dead for the underlying rule), and `0b10` means
+    /// alive.
+    #[inline]
+    pub(crate) const fn base_code(self) -> u64 {
+        match self {
+            Self::Dead | Self::Dying(_) => 0b01,
+            Self::Alive => 0b10,
+        }
+    }
 }
 
 impl Not for CellState {
@@ -31,8 +144,8 @@ impl Not for CellState {
     #[inline]
     fn not(self) -> Self::Output {
         match self {
-            Self::Dead => Self::Alive,
             Self::Alive => Self::Dead,
+            _ => Self::Alive,
         }
     }
 }
@@ -161,8 +274,8 @@ impl Descriptor {
 
         let dead = dead as u64;
         let alive = alive as u64;
-        let successor = successor.into().map_or(0, |state| state as u64);
-        let current = current.into().map_or(0, |state| state as u64);
+        let successor = successor.into().map_or(0, |state| state.base_code());
+        let current = current.into().map_or(0, |state| state.base_code());
         Self(
             dead << Self::DEAD_SHIFT
                 | alive << Self::ALIVE_SHIFT
@@ -200,8 +313,11 @@ impl Descriptor {
     /// If the successor cell is known, set it to unknown. In this case,
     /// the `state` argument should be equal to its current state.
     pub(crate) fn update_successor(&mut self, state: CellState) {
-        debug_assert!(self.successor().is_none() || self.successor() == Some(state));
-        self.0 ^= (state as u64) << 2;
+        debug_assert!(
+            self.successor().is_none()
+                || self.successor().unwrap().base_code() == state.base_code()
+        );
+        self.0 ^= state.base_code() << 2;
     }
 
     /// If the current cell is unknown, set it to some state.
@@ -209,8 +325,10 @@ impl Descriptor {
     /// If the current cell is known, set it to unknown. In this case,
     /// the `state` argument should be equal to its current state.
     pub(crate) fn update_current(&mut self, state: CellState) {
-        debug_assert!(self.current().is_none() || self.current() == Some(state));
-        self.0 ^= state as u64;
+        debug_assert!(
+            self.current().is_none() || self.current().unwrap().base_code() == state.base_code()
+        );
+        self.0 ^= state.base_code();
     }
 }
 
@@ -329,6 +447,12 @@ pub struct RuleTable {
     ///
     /// See [`alive_tokens`](RuleTable::alive_tokens).
     dead_tokens: [u64; MAX_NEIGHBORHOOD_SIZE],
+
+    /// The number of states of the rule.
+    ///
+    /// For a Generations rule, this is at least 3. A cell in a dying state
+    /// transitions to the next state in each generation, regardless of the rule.
+    pub(crate) num_states: u8,
 }
 
 impl Debug for RuleTable {
@@ -362,7 +486,7 @@ enum RuleTableImpl {
 impl RuleTable {
     /// Create and initialize a rule table from a [`Rule`].
     pub fn new(rule: &Rule) -> Result<Self, ConfigError> {
-        if rule.contains_b0() {
+        if rule.contains_b0() || rule.states > 255 {
             return Err(ConfigError::UnsupportedRule);
         }
 
@@ -420,7 +544,23 @@ impl RuleTable {
             impl_,
             alive_tokens,
             dead_tokens,
+            num_states: rule.states as u8,
         })
+    }
+
+    /// The number of states of the rule.
+    #[inline]
+    pub const fn num_states(&self) -> u8 {
+        self.num_states
+    }
+
+    /// Whether the rule is a Generations rule.
+    ///
+    /// A Generations rule has at least 3 states. A cell in a dying state
+    /// transitions to the next state in each generation, regardless of the rule.
+    #[inline]
+    pub const fn is_generations(&self) -> bool {
+        self.num_states > 2
     }
 
     /// Find the implication of a neighborhood descriptor.
@@ -442,12 +582,12 @@ impl RuleTable {
 
         match &self.impl_ {
             RuleTableImpl::Count(_) => match state {
-                CellState::Dead => descriptor.increment_dead(),
+                CellState::Dead | CellState::Dying(_) => descriptor.increment_dead(),
                 CellState::Alive => descriptor.increment_alive(),
             },
             RuleTableImpl::Mask(_) => {
                 let token = match state {
-                    CellState::Dead => self.dead_tokens[i],
+                    CellState::Dead | CellState::Dying(_) => self.dead_tokens[i],
                     CellState::Alive => self.alive_tokens[i],
                 };
                 descriptor.0 ^= token;
@@ -468,12 +608,12 @@ impl RuleTable {
 
         match &self.impl_ {
             RuleTableImpl::Count(_) => match state {
-                CellState::Dead => descriptor.decrement_dead(),
+                CellState::Dead | CellState::Dying(_) => descriptor.decrement_dead(),
                 CellState::Alive => descriptor.decrement_alive(),
             },
             RuleTableImpl::Mask(_) => {
                 let token = match state {
-                    CellState::Dead => self.dead_tokens[i],
+                    CellState::Dead | CellState::Dying(_) => self.dead_tokens[i],
                     CellState::Alive => self.alive_tokens[i],
                 };
                 descriptor.0 ^= token;
@@ -779,8 +919,8 @@ impl MaskTable {
         let base = Self::states(n, alive, unknown);
 
         // When the current cell is known.
-        self.fill_known_current(base | CellState::Dead as u64, reachable_dead);
-        self.fill_known_current(base | CellState::Alive as u64, reachable_alive);
+        self.fill_known_current(base | CellState::Dead.base_code(), reachable_dead);
+        self.fill_known_current(base | CellState::Alive.base_code(), reachable_alive);
 
         // When the current cell is unknown.
         self.fill_unknown_current(base, reachable_dead, reachable_alive);
@@ -817,7 +957,8 @@ impl MaskTable {
         .bits() as u32;
 
         // When the successor cell is known to be dead.
-        self.table[(base | (CellState::Dead as u64) << 2) as usize] = (if reachable & 0b01 == 0 {
+        self.table[(base | (CellState::Dead.base_code()) << 2) as usize] = (if reachable & 0b01 == 0
+        {
             Implication::Conflict.into()
         } else {
             BitFlags::empty()
@@ -825,12 +966,13 @@ impl MaskTable {
         .bits() as u32;
 
         // When the successor cell is known to be alive.
-        self.table[(base | (CellState::Alive as u64) << 2) as usize] = (if reachable & 0b10 == 0 {
-            Implication::Conflict.into()
-        } else {
-            BitFlags::empty()
-        })
-        .bits() as u32;
+        self.table[(base | (CellState::Alive.base_code()) << 2) as usize] =
+            (if reachable & 0b10 == 0 {
+                Implication::Conflict.into()
+            } else {
+                BitFlags::empty()
+            })
+            .bits() as u32;
     }
 
     /// Fill the implications of the descriptors with the given masks of alive and
@@ -849,11 +991,11 @@ impl MaskTable {
         .bits() as u32;
 
         // When the successor cell is known to be dead.
-        self.table[(base | (CellState::Dead as u64) << 2) as usize] =
+        self.table[(base | (CellState::Dead.base_code()) << 2) as usize] =
             Self::current_flags(reachable_dead, reachable_alive, 0b01).bits() as u32;
 
         // When the successor cell is known to be alive.
-        self.table[(base | (CellState::Alive as u64) << 2) as usize] =
+        self.table[(base | (CellState::Alive.base_code()) << 2) as usize] =
             Self::current_flags(reachable_dead, reachable_alive, 0b10).bits() as u32;
     }
 
@@ -988,7 +1130,7 @@ mod tests {
         let table = RuleTable::new(&rule).unwrap();
 
         // A dead cell with two adjacent living neighbors is born.
-        let descriptor = moore_descriptor(0x03, 0, CellState::Dead as u64, 0);
+        let descriptor = moore_descriptor(0x03, 0, CellState::Dead.base_code(), 0);
         assert!(
             table
                 .implies(descriptor)
@@ -997,7 +1139,7 @@ mod tests {
         );
 
         // A dead cell with two non-adjacent living neighbors is not born.
-        let descriptor = moore_descriptor(0x0a, 0, CellState::Dead as u64, 0);
+        let descriptor = moore_descriptor(0x0a, 0, CellState::Dead.base_code(), 0);
         assert!(
             table
                 .implies(descriptor)
@@ -1006,7 +1148,7 @@ mod tests {
         );
 
         // An alive cell with one living neighbor survives.
-        let descriptor = moore_descriptor(0x01, 0, CellState::Alive as u64, 0);
+        let descriptor = moore_descriptor(0x01, 0, CellState::Alive.base_code(), 0);
         assert!(
             table
                 .implies(descriptor)
@@ -1015,7 +1157,7 @@ mod tests {
         );
 
         // An alive cell with no living neighbors dies.
-        let descriptor = moore_descriptor(0, 0, CellState::Alive as u64, 0);
+        let descriptor = moore_descriptor(0, 0, CellState::Alive.base_code(), 0);
         assert!(
             table
                 .implies(descriptor)
@@ -1024,7 +1166,12 @@ mod tests {
         );
 
         // If the successor cell is known to be dead, a birth pattern is a conflict.
-        let descriptor = moore_descriptor(0x03, 0, CellState::Dead as u64, CellState::Dead as u64);
+        let descriptor = moore_descriptor(
+            0x03,
+            0,
+            CellState::Dead.base_code(),
+            CellState::Dead.base_code(),
+        );
         assert!(
             table
                 .implies(descriptor)
@@ -1041,7 +1188,7 @@ mod tests {
         // If the successor cell is known to be alive, and the neighborhood has two
         // non-adjacent living neighbors, then the current cell cannot be dead
         // (a dead cell with such a neighborhood is not born).
-        let descriptor = moore_descriptor(0x0a, 0, 0, CellState::Alive as u64);
+        let descriptor = moore_descriptor(0x0a, 0, 0, CellState::Alive.base_code());
         assert!(
             table
                 .implies(descriptor)
@@ -1052,7 +1199,7 @@ mod tests {
         // If the successor cell is known to be dead, and the neighborhood has two
         // non-adjacent living neighbors, then the current cell cannot be alive
         // (an alive cell with such a neighborhood survives).
-        let descriptor = moore_descriptor(0x0a, 0, 0, CellState::Dead as u64);
+        let descriptor = moore_descriptor(0x0a, 0, 0, CellState::Dead.base_code());
         assert!(
             table
                 .implies(descriptor)
@@ -1069,8 +1216,12 @@ mod tests {
         // The neighborhood has two adjacent living neighbors, and the successor cell
         // is known to be alive. The third neighbor must be dead, because a pattern
         // with three living neighbors is not born.
-        let descriptor =
-            moore_descriptor(0x03, 0x04, CellState::Dead as u64, CellState::Alive as u64);
+        let descriptor = moore_descriptor(
+            0x03,
+            0x04,
+            CellState::Dead.base_code(),
+            CellState::Alive.base_code(),
+        );
         assert_eq!(
             table.implies(descriptor).forced_neighbor(2),
             Some(CellState::Dead)
@@ -1078,15 +1229,19 @@ mod tests {
 
         // If the successor cell is known to be dead, the third neighbor must be alive,
         // because the only way to avoid the birth is to have three living neighbors.
-        let descriptor =
-            moore_descriptor(0x03, 0x04, CellState::Dead as u64, CellState::Dead as u64);
+        let descriptor = moore_descriptor(
+            0x03,
+            0x04,
+            CellState::Dead.base_code(),
+            CellState::Dead.base_code(),
+        );
         assert_eq!(
             table.implies(descriptor).forced_neighbor(2),
             Some(CellState::Alive)
         );
 
         // If the successor cell is unknown, no neighbor is forced.
-        let descriptor = moore_descriptor(0x03, 0x04, CellState::Dead as u64, 0);
+        let descriptor = moore_descriptor(0x03, 0x04, CellState::Dead.base_code(), 0);
         assert_eq!(table.implies(descriptor).forced_neighbor(2), None);
     }
 }

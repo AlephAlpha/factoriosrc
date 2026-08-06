@@ -20,6 +20,12 @@ impl World {
     /// Otherwise the behavior is undefined.
     unsafe fn check_descriptor(&mut self, cell: &LifeCell) -> Option<()> {
         unsafe {
+            // For a Generations rule, the exact states of the cell and its
+            // successor matter, so a different check is needed.
+            if self.rule.is_generations() {
+                return self.check_generations(cell);
+            }
+
             let result = self.rule.implies(cell.descriptor());
 
             // The descriptor does not imply anything.
@@ -103,6 +109,200 @@ impl World {
         }
     }
 
+    /// Check the neighborhood descriptor of a cell for a Generations rule.
+    ///
+    /// In a Generations rule, a cell in a dying state transitions to the next
+    /// state in each generation, regardless of the rule. Only a dead cell and
+    /// an alive cell follow the underlying 2-state rule, which is what the
+    /// lookup table describes. This check handles the exact states of the cell
+    /// and its successor, and applies the lookup table only when it is sound to
+    /// do so.
+    ///
+    /// In particular, the deductions of the lookup table assume that the cell
+    /// and its neighbors are dead or alive, not dying, so:
+    ///
+    /// - the successor of a cell can only be deduced when the cell itself is
+    ///   known to be dead or alive;
+    /// - the state of the cell can only be deduced from the successor, or
+    ///   deduced to be dead or alive when the successor is known to be alive;
+    /// - a neighbor can only be deduced to be alive, because a neighbor in a
+    ///   dying state would also behave as dead;
+    /// - a conflict can only be trusted when the successor is known to be
+    ///   alive, because a cell in the last dying state would otherwise be a
+    ///   valid candidate.
+    ///
+    /// If a conflict is found, return [`None`].
+    ///
+    /// # Safety
+    ///
+    /// The cell must be in the same world as `self`.
+    /// Otherwise the behavior is undefined.
+    unsafe fn check_generations(&mut self, cell: &LifeCell) -> Option<()> {
+        unsafe {
+            let num_states = self.rule.num_states();
+            let state = cell.state();
+            let successor_state = cell.successor.as_ref().and_then(LifeCell::state);
+
+            match state {
+                // A dying cell always transitions to the next state.
+                Some(CellState::Dying(i)) => {
+                    let expected =
+                        CellState::from_number(((i as u16 + 1) % num_states as u16) as u8);
+                    match successor_state {
+                        Some(successor) if successor == expected => Some(()),
+                        Some(_) => None,
+                        None => {
+                            if let Some(successor) = cell.successor.as_ref() {
+                                self.set_cell(successor, expected, Reason::Deduced);
+                            }
+                            Some(())
+                        }
+                    }
+                }
+
+                // A dead cell can never have a dying successor.
+                Some(CellState::Dead) if matches!(successor_state, Some(CellState::Dying(_))) => {
+                    None
+                }
+
+                // An alive cell can only have an alive successor or a successor
+                // in the first dying state.
+                Some(CellState::Alive)
+                    if matches!(successor_state, Some(CellState::Dead))
+                        || matches!(successor_state, Some(CellState::Dying(i)) if i != 2) =>
+                {
+                    None
+                }
+
+                // The state of the cell is unknown.
+                None => match successor_state {
+                    // The cell must be dead, or in the last dying state, which
+                    // transitions to dead. If a dead cell would be born in this
+                    // neighborhood, the cell must be in the last dying state.
+                    Some(CellState::Dead) => {
+                        if self
+                            .rule
+                            .implies(cell.descriptor())
+                            .flags()
+                            .contains(Implication::CurrentAlive)
+                        {
+                            self.set_cell(
+                                cell,
+                                CellState::from_number(num_states - 1),
+                                Reason::Deduced,
+                            );
+                        }
+                        Some(())
+                    }
+
+                    // The cell must be dead or alive, as determined by the rule.
+                    Some(CellState::Alive) => {
+                        let result = self.rule.implies(cell.descriptor());
+                        if result.flags().contains(Implication::Conflict) {
+                            return None;
+                        }
+                        if result.flags().contains(Implication::CurrentAlive) {
+                            self.set_cell(cell, CellState::Alive, Reason::Deduced);
+                        } else if result.flags().contains(Implication::CurrentDead) {
+                            self.set_cell(cell, CellState::Dead, Reason::Deduced);
+                        }
+                        if result.flags().contains(Implication::NeighborhoodAlive) {
+                            for i in 0..self.rule.neighborhood_size {
+                                if let Some(neighbor) = cell.neighborhood[i].as_ref()
+                                    && neighbor.state().is_none()
+                                {
+                                    self.set_cell(neighbor, CellState::Alive, Reason::Deduced);
+                                }
+                            }
+                        }
+                        Some(())
+                    }
+
+                    // The cell must be in the previous dying state.
+                    Some(CellState::Dying(i)) => {
+                        self.set_cell(cell, CellState::from_number(i - 1), Reason::Deduced);
+                        Some(())
+                    }
+
+                    // Nothing can be deduced from the successor.
+                    None => Some(()),
+                },
+
+                // The cell is dead or alive, and the successor is dead, alive, or unknown.
+                _ => {
+                    let result = self.rule.implies(cell.descriptor());
+
+                    // The descriptor does not imply anything.
+                    if result.is_empty() {
+                        return Some(());
+                    }
+
+                    // A conflict was found.
+                    if result.flags().contains(Implication::Conflict) {
+                        return None;
+                    }
+
+                    // The descriptor implies that the successor is dead or alive.
+                    //
+                    // In this case, the successor was unknown, so there is no implication about
+                    // the cell itself or its neighbors. So we can return early.
+                    if result
+                        .flags()
+                        .intersects(Implication::SuccessorDead | Implication::SuccessorAlive)
+                        && let Some(successor) = cell.successor.as_ref()
+                    {
+                        let state = if result.flags().contains(Implication::SuccessorAlive) {
+                            CellState::Alive
+                        } else if matches!(state, Some(CellState::Alive)) {
+                            // An alive cell that does not survive enters the first dying state.
+                            CellState::from_number(2)
+                        } else {
+                            CellState::Dead
+                        };
+
+                        self.set_cell(successor, state, Reason::Deduced);
+
+                        return Some(());
+                    }
+
+                    // The descriptor implies that all unknown neighbors are alive.
+                    //
+                    // There is no "all unknown neighbors are dead" implication here: a neighbor
+                    // in a dying state would also behave as dead.
+                    if result.flags().contains(Implication::NeighborhoodAlive) {
+                        for i in 0..self.rule.neighborhood_size {
+                            if let Some(neighbor) = cell.neighborhood[i].as_ref()
+                                && neighbor.state().is_none()
+                            {
+                                self.set_cell(neighbor, CellState::Alive, Reason::Deduced);
+                            }
+                        }
+                    }
+
+                    // For a non-totalistic rule, set the individual unknown neighbors
+                    // that are forced to be alive.
+                    //
+                    // The neighbors forced to be dead are ignored: a neighbor in a
+                    // dying state would also behave as dead.
+                    if result.forced() != 0 {
+                        let flags = result.flags();
+                        let mut forced = result.forced();
+                        for i in 0..self.rule.neighborhood_size {
+                            if forced & (0b10 << (2 * i)) != 0 {
+                                forced &= !(0b11 << (2 * i));
+                            }
+                        }
+                        if forced != 0 {
+                            self.set_forced_neighbors(cell, CheckResult::new(flags, forced));
+                        }
+                    }
+
+                    Some(())
+                }
+            }
+        }
+    }
+
     /// Set the individual unknown neighbors of a cell that are forced to be
     /// dead or alive.
     ///
@@ -173,16 +373,16 @@ impl World {
             // Check the neighborhood descriptor of the cell itself.
             self.check_descriptor(cell)?;
 
+            // Check the neighborhood descriptor of the predecessor.
+            if let Some(predecessor) = cell.predecessor.as_ref() {
+                self.check_descriptor(predecessor)?;
+            }
+
             // Check the neighborhood descriptors of the neighbors.
             for i in 0..self.rule.neighborhood_size {
                 if let Some(neighbor) = cell.neighborhood[i].as_ref() {
                     self.check_descriptor(neighbor)?;
                 }
-            }
-
-            // Check the neighborhood descriptor of the predecessor.
-            if let Some(predecessor) = cell.predecessor.as_ref() {
-                self.check_descriptor(predecessor)?;
             }
 
             Some(())
@@ -205,7 +405,11 @@ impl World {
     }
 
     /// Backtrack to the last cell whose state was chosen as a guess,
-    /// and deduce that it should be the opposite state.
+    /// and try another state for it.
+    ///
+    /// For a 2-state rule, the cell is set to the opposite state.
+    /// For a Generations rule, the cell is set to the next state, until all
+    /// states have been tried.
     ///
     /// Return the status of the search after backtracking:
     /// - If this goes back to the time before the search started, return [`NoSolution`](Status::NoSolution).
@@ -222,7 +426,36 @@ impl World {
                         self.stack_index = self.stack.len();
                         self.start = cell.next;
                         self.unset_cell(cell);
-                        self.set_cell(cell, !state, Reason::Deduced);
+
+                        if self.rule.is_generations() {
+                            let next = CellState::from_number(
+                                ((state.number() as u16 + 1) % self.rule.num_states() as u16) as u8,
+                            );
+                            self.set_cell(
+                                cell,
+                                next,
+                                Reason::TryAnother(self.rule.num_states() - 2),
+                            );
+                        } else {
+                            self.set_cell(cell, !state, Reason::Deduced);
+                        }
+                        return Status::Running;
+                    }
+                    Reason::TryAnother(n) => {
+                        let state = cell.state().unwrap();
+                        self.stack_index = self.stack.len();
+                        self.start = cell.next;
+                        self.unset_cell(cell);
+
+                        let next = CellState::from_number(
+                            ((state.number() as u16 + 1) % self.rule.num_states() as u16) as u8,
+                        );
+                        let reason = if n == 1 {
+                            Reason::Deduced
+                        } else {
+                            Reason::TryAnother(n - 1)
+                        };
+                        self.set_cell(cell, next, reason);
                         return Status::Running;
                     }
                 }
@@ -242,7 +475,15 @@ impl World {
                     let state = match self.config.new_state {
                         NewState::Alive => CellState::Alive,
                         NewState::Dead => CellState::Dead,
-                        NewState::Random => self.rng.random(),
+                        NewState::Random => {
+                            if self.rule.is_generations() {
+                                CellState::from_number(
+                                    self.rng.random_range(0..self.rule.num_states()),
+                                )
+                            } else {
+                                self.rng.random()
+                            }
+                        }
                     };
                     self.set_cell(cell, state, Reason::Guessed);
                     self.start = cell.next;

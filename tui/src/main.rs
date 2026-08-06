@@ -27,16 +27,19 @@ fn run_no_tui(
     let start = Instant::now();
 
     while matches!(world.status(), Status::NotStarted | Status::Running) {
-        world.search(step);
+        let status = world.search(step);
+        let solved = status == Status::Solved;
 
         match format {
             OutputFormat::Rle => {
-                println!("{}", world.rle(generation, true));
+                if solved {
+                    println!("{}", world.rle(generation, true));
+                }
             }
             OutputFormat::Json => {
-                let rle = world.rle(generation, true);
+                let rle = solved.then(|| world.rle(generation, true));
                 let output = serde_json::json!({
-                    "status": world.status().to_string(),
+                    "status": status.to_string(),
                     "generation": generation,
                     "population": world.population(generation),
                     "elapsed_secs": start.elapsed().as_secs_f64(),
@@ -51,13 +54,15 @@ fn run_no_tui(
                 let cells = world.cells_checked();
                 println!(
                     "Status: {:?} | Gen: {generation} | Pop: {pop} | Cells: {cells} | Time: {elapsed:.2?}",
-                    world.status(),
+                    status,
                 );
-                println!("{}", world.rle(generation, true));
+                if solved {
+                    println!("{}", world.rle(generation, true));
+                }
             }
         }
 
-        if matches!(world.status(), Status::Solved | Status::NoSolution) {
+        if matches!(status, Status::Solved | Status::NoSolution) {
             break;
         }
     }

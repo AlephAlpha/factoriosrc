@@ -16,4 +16,4 @@ A rule is defined by the following data:
 - A list of numbers that represent the birth conditions.
 - A list of numbers that represent the survival conditions.
 
-Currently factoriosrc only supports rules with 2 states, but this crate should support rules with more states.
+Currently factoriosrc supports rules with 2 states and Generations rules with up to 255 states.

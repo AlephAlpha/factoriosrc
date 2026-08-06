@@ -93,7 +93,8 @@ pub enum NewState {
 
     /// Make a random guess.
     ///
-    /// The probability of each state is 50%.
+    /// The probability of each state is 50% for a rule with 2 states.
+    /// For a Generations rule, the probability of each state is `1 / num_states`.
     #[cfg_attr(feature = "clap", value(alias = "r"))]
     Random,
 }
@@ -148,7 +149,6 @@ pub struct Config {
     ///   Currently, the program only supports Moore, von Neumann, cross, hash, and hexagonal
     ///   neighborhoods.
     ///   The size of the neighborhood must be at most 24.
-    ///   Rules with more than 2 states are not supported.
     ///
     /// - [Isotropic non-totalistic rules](https://conwaylife.com/wiki/Isotropic_non-totalistic_rule).
     ///   Both the range-1 Moore neighborhood and the range-1 hexagonal neighborhood
@@ -156,6 +156,9 @@ pub struct Config {
     ///   rules must be written with the class letters `o`, `m`, and `p`, so that they
     ///   are recognized as isotropic non-totalistic rules. Hexagonal rules written
     ///   without class letters are treated as (outer-)totalistic rules.
+    ///
+    /// - [Generations rules](https://conwaylife.com/wiki/Generations),
+    ///   with at most 255 states. All the neighborhoods above are supported.
     ///
     /// Rules whose birth conditions contain `0` are not supported.
     ///
@@ -471,20 +474,21 @@ impl Config {
     ///   Currently, the program only supports Moore, von Neumann, cross, hash, and hexagonal
     ///   neighborhoods.
     ///   The size of the neighborhood must be at most 24.
-    ///   Rules with more than 2 states are not supported.
     /// - [Isotropic non-totalistic rules](https://conwaylife.com/wiki/Isotropic_non-totalistic_rule).
     ///   Both the range-1 Moore neighborhood and the range-1 hexagonal neighborhood
     ///   (emulated on a square grid) are supported.
     /// - [Non-isotropic rules](https://conwaylife.com/wiki/Non-isotropic_rule),
     ///   in the form of [MAP strings](https://conwaylife.com/wiki/MAP_string).
     ///   The range-1 Moore, von Neumann, and hexagonal neighborhoods are supported.
+    /// - [Generations rules](https://conwaylife.com/wiki/Generations),
+    ///   with at most 255 states. All the neighborhoods above are supported.
     ///
     /// Rules whose birth conditions contain `0` are not supported.
     #[inline]
     pub fn parse_rule(&self) -> Result<Rule, ConfigError> {
         let rule = Rule::from_str(&self.rule_str).map_err(|_| ConfigError::InvalidRule)?;
 
-        if rule.contains_b0() || rule.states != 2 {
+        if rule.contains_b0() || rule.states > 255 {
             return Err(ConfigError::UnsupportedRule);
         }
 
@@ -523,6 +527,7 @@ impl Config {
             if known_cell.x >= self.width
                 || known_cell.y >= self.height
                 || known_cell.t >= self.period
+                || known_cell.state.number() as u64 >= rule.states
             {
                 return Err(ConfigError::InvalidKnownCell);
             }
@@ -653,6 +658,9 @@ mod tests {
                 .is_ok()
         );
         assert!(Config::new("MAPARYXfhZofugWaH7oaIDogBZofuhogOiAaIDogIAAgAAWaH7oaIDogGiA6ICAAIAAaIDogIAAgACAAIAAAAAAAA", 3, 3, 1).parse_rule().is_ok());
+        assert!(Config::new("3457/357/5", 3, 3, 1).parse_rule().is_ok());
+        assert!(Config::new("B2a/S12/3", 3, 3, 1).parse_rule().is_ok());
+        assert!(Config::new("B2/S/3", 3, 3, 1).parse_rule().is_ok());
     }
 
     #[test]
@@ -667,17 +675,40 @@ mod tests {
     fn test_parse_rule_rejects_unsupported_rules() {
         for rule in [
             "B03/S23",
-            "B2/S/3",
+            "B2/S/300",
             "R3,C2,S2,B3",
             "MAP/////w==",
-            "MAPHmlphg/3",
-            "B2a/S12/3",
+            "B2a/S12/256",
         ] {
             assert!(matches!(
                 Config::new(rule, 3, 3, 1).parse_rule(),
                 Err(ConfigError::UnsupportedRule)
             ));
         }
+    }
+
+    #[test]
+    fn test_check_rejects_known_cell_states_out_of_range() {
+        assert!(matches!(
+            Config::new("B3/S23", 3, 3, 1)
+                .with_known_cell(KnownCell::new(0, 0, 0, CellState::Dying(2)))
+                .check(),
+            Err(ConfigError::InvalidKnownCell)
+        ));
+
+        assert!(matches!(
+            Config::new("3457/357/5", 3, 3, 1)
+                .with_known_cell(KnownCell::new(0, 0, 0, CellState::Dying(5)))
+                .check(),
+            Err(ConfigError::InvalidKnownCell)
+        ));
+
+        assert!(
+            Config::new("3457/357/5", 3, 3, 1)
+                .with_known_cell(KnownCell::new(0, 0, 0, CellState::Dying(4)))
+                .check()
+                .is_ok()
+        );
     }
 
     #[test]

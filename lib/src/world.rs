@@ -470,8 +470,16 @@ impl World {
     fn init_next(&mut self) {
         match self.config.search_order.unwrap() {
             SearchOrder::RowFirst => {
+                // If the pattern is symmetric under the reflection `S2`, the
+                // cells in the left half of the world are determined by the
+                // cells in the right half, so only the right half is searched.
+                let x_start = if Transformation::S2.is_element_of(self.config.symmetry) {
+                    self.config.width as i32 / 2
+                } else {
+                    0
+                };
                 for y in (0..self.config.height as i32).rev() {
-                    for x in (0..self.config.width as i32).rev() {
+                    for x in (x_start..self.config.width as i32).rev() {
                         for t in (0..self.config.period as i32).rev() {
                             let cell = self.get_cell_by_coord_ptr((x, y, t));
 
@@ -488,8 +496,16 @@ impl World {
             }
 
             SearchOrder::ColumnFirst => {
+                // If the pattern is symmetric under the reflection `S0`, the
+                // cells in the upper half of the world are determined by the
+                // cells in the lower half, so only the lower half is searched.
+                let y_start = if Transformation::S0.is_element_of(self.config.symmetry) {
+                    self.config.height as i32 / 2
+                } else {
+                    0
+                };
                 for x in (0..self.config.width as i32).rev() {
-                    for y in (0..self.config.height as i32).rev() {
+                    for y in (y_start..self.config.height as i32).rev() {
                         for t in (0..self.config.period as i32).rev() {
                             let cell = self.get_cell_by_coord_ptr((x, y, t));
 
@@ -807,6 +823,21 @@ impl World {
         self.status
     }
 
+    /// Whether the rule is a Generations rule.
+    ///
+    /// A Generations rule has at least 3 states. A cell in a dying state
+    /// transitions to the next state in each generation, regardless of the rule.
+    #[inline]
+    pub const fn is_generations_rule(&self) -> bool {
+        self.rule.is_generations()
+    }
+
+    /// Get the number of states of the rule.
+    #[inline]
+    pub const fn num_states(&self) -> u8 {
+        self.rule.num_states()
+    }
+
     /// Get the configuration.
     #[inline]
     pub const fn config(&self) -> &Config {
@@ -823,7 +854,8 @@ impl World {
     /// Output a generation of the world in RLE format.
     ///
     /// - Dead cells are represented by `b` if `compact` is `true`, or `.` if `compact` is `false`.
-    /// - Alive cells are represented by `o`.
+    /// - Alive cells are represented by `o`, or `A` for a Generations rule.
+    /// - Dying cells are represented by `B`, `C`, ..., in the order of their state numbers.
     /// - Unknown cells are represented by `?`.
     /// - Each row is terminated by `$`.
     /// - The whole pattern is terminated by `!`.
@@ -867,7 +899,16 @@ impl World {
             for x in 0..w {
                 let c = match self.get_cell_state((x, y, t)) {
                     Some(CellState::Dead) => dead_char,
-                    Some(CellState::Alive) => 'o',
+                    Some(CellState::Alive) => {
+                        if self.rule.is_generations() {
+                            'A'
+                        } else {
+                            'o'
+                        }
+                    }
+                    Some(CellState::Dying(i)) => {
+                        char::from_u32(b'A' as u32 + i as u32 - 1).unwrap()
+                    }
                     None => '?',
                 };
 
@@ -1192,6 +1233,9 @@ mod test {
     /// For a totalistic rule, the state of a cell is determined by the number
     /// of living neighbors. For a non-totalistic rule, it is determined by the
     /// arrangement of the living neighbors.
+    ///
+    /// For a Generations rule, a dying cell transitions to the next state,
+    /// regardless of the rule.
     fn simulate(rule: &ca_rules2::Rule, states: &[Vec<CellState>]) -> Vec<Vec<CellState>> {
         let (w, h) = (states[0].len() as i32, states.len() as i32);
         let coords = rule.neighbor_coords();
@@ -1200,6 +1244,14 @@ mod test {
         for y in 0..h {
             for x in 0..w {
                 let center = states[y as usize][x as usize];
+
+                // A dying cell always transitions to the next state.
+                if let CellState::Dying(i) = center {
+                    result[y as usize][x as usize] =
+                        CellState::from_number(((i as u16 + 1) % rule.states as u16) as u8);
+                    continue;
+                }
+
                 let mut mask = 0u64;
                 for (i, (ox, oy)) in coords.iter().enumerate() {
                     let (nx, ny) = (x + ox, y + oy);
@@ -1213,16 +1265,34 @@ mod test {
                 let conditions = match center {
                     CellState::Dead => &rule.birth,
                     CellState::Alive => &rule.survival,
+                    CellState::Dying(_) => unreachable!(),
                 };
                 let alive = if rule.is_totalistic() {
                     conditions.contains(&(mask.count_ones() as u64))
                 } else {
                     conditions.contains(&mask)
                 };
-                result[y as usize][x as usize] = if alive {
-                    CellState::Alive
-                } else {
-                    CellState::Dead
+                result[y as usize][x as usize] = match (center, alive) {
+                    // A dead cell becomes alive if it is born, and stays dead otherwise.
+                    (CellState::Dead, alive) => {
+                        if alive {
+                            CellState::Alive
+                        } else {
+                            CellState::Dead
+                        }
+                    }
+                    // An alive cell stays alive if it survives. Otherwise it enters the
+                    // first dying state, or dies if the rule has only 2 states.
+                    (CellState::Alive, alive) => {
+                        if alive {
+                            CellState::Alive
+                        } else if rule.states > 2 {
+                            CellState::from_number(2)
+                        } else {
+                            CellState::Dead
+                        }
+                    }
+                    (CellState::Dying(_), _) => unreachable!(),
                 };
             }
         }
@@ -1233,7 +1303,21 @@ mod test {
     /// Search for a pattern and verify that it is a solution by simulating the
     /// rule independently for a whole period.
     fn search_and_verify(rule_str: &str, width: u32, height: u32, period: u32) {
-        let mut world = World::new(Config::new(rule_str, width, height, period)).unwrap();
+        search_and_verify_with_translations(rule_str, width, height, period, 0, 0);
+    }
+
+    /// Like [`search_and_verify`], but with translations.
+    fn search_and_verify_with_translations(
+        rule_str: &str,
+        width: u32,
+        height: u32,
+        period: u32,
+        dx: i32,
+        dy: i32,
+    ) {
+        let mut world =
+            World::new(Config::new(rule_str, width, height, period).with_translations(dx, dy))
+                .unwrap();
         world.search(None);
         assert_eq!(
             world.status(),
@@ -1276,6 +1360,51 @@ mod test {
     fn test_search_hex_totalistic_still_life() {
         // There are still lifes in the rule B2/S1234H on the hexagonal neighborhood.
         search_and_verify("B2/S1234H", 3, 3, 1);
+    }
+
+    #[test]
+    fn test_search_generations_rule() {
+        // A diamond of four cells is a still life in the Generations rule B3/S23/4.
+        search_and_verify("B3/S23/4", 4, 4, 1);
+    }
+
+    #[test]
+    fn test_search_generations_non_totalistic_rule() {
+        // A diagonal pair is a still life in the Generations rule B2a/S12/3.
+        search_and_verify("B2a/S12/3", 3, 3, 1);
+    }
+
+    #[test]
+    fn test_search_generations_with_dying_cells() {
+        // The solution of this search contains dying cells.
+        search_and_verify("3457/357/5", 8, 5, 5);
+    }
+
+    #[test]
+    fn test_search_generations_spaceship() {
+        // A glider-like spaceship in the Generations rule B3/S23/4.
+        // The solution contains dying cells as well.
+        search_and_verify_with_translations("B3/S23/4", 9, 9, 4, 1, 1);
+    }
+
+    #[test]
+    fn test_generations_rle_characters() {
+        let mut world = World::new(Config::new("B3/S23/3", 4, 4, 1)).unwrap();
+        world.search(None);
+        assert_eq!(world.status(), Status::Solved);
+
+        // The alive cell should be represented by `A` in the RLE.
+        let rle = world.rle(0, false);
+        assert!(rle.contains('A'), "RLE should contain 'A': {rle}");
+        assert!(!rle.contains('o'), "RLE should not contain 'o': {rle}");
+    }
+
+    #[test]
+    fn test_miri_generations() {
+        let config = Config::new("B2a/S12/3", 3, 3, 1);
+        let mut world = World::new(config).unwrap();
+        world.search(None);
+        assert_eq!(world.status(), Status::Solved);
     }
 
     #[test]
