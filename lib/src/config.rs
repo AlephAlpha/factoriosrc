@@ -671,6 +671,7 @@ mod tests {
             "R3,C2,S2,B3",
             "MAP/////w==",
             "MAPHmlphg/3",
+            "B2a/S12/3",
         ] {
             assert!(matches!(
                 Config::new(rule, 3, 3, 1).parse_rule(),

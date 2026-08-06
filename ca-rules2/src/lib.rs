@@ -8,6 +8,8 @@
 //!   see [`parse_int_life`] and [`parse_int_hex`].
 //! - [Generations rules](https://conwaylife.com/wiki/Generations), see
 //!   [`parse_generations`].
+//! - [Isotropic non-totalistic Generations rules](https://conwaylife.com/wiki/Isotropic_non-totalistic_rule),
+//!   see [`parse_int_generations`].
 //! - [HROT rules](https://conwaylife.com/wiki/Higher-range_outer-totalistic_cellular_automaton),
 //!   see [`parse_hrot`].
 //! - [Non-isotropic rules](https://conwaylife.com/wiki/Non-isotropic_rule),
@@ -26,7 +28,7 @@ mod rule;
 
 pub use error::{NeighborError, ParseRuleError};
 pub use parse::{
-    parse_generations, parse_hrot, parse_int_hex, parse_int_life, parse_life_like, parse_map,
-    parse_rule,
+    parse_generations, parse_hrot, parse_int_generations, parse_int_hex, parse_int_life,
+    parse_life_like, parse_map, parse_rule,
 };
 pub use rule::{Neighbor, Neighborhood, NeighborhoodType, Rule};

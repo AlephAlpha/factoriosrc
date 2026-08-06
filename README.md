@@ -85,7 +85,6 @@ Features that rlifesrc has but factoriosrc doesn't:
 - [ ] Support more rules.
   - [x] Parse rule strings.
   - [x] Isotropic non-totalistic rules.
-  - [ ] Higher-range isotropic non-totalistic rules.
   - [x] Non-isotropic non-totalistic rules.
   - [ ] Generations rules.
   - [x] Hexagonal rules.

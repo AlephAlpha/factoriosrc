@@ -396,13 +396,18 @@ impl<'a> Parser<'a> {
     /// Parse an isotropic non-totalistic rule string with B/S notation or
     /// Catagolue notation.
     ///
+    /// If `generations` is `true`, the rule string may be a Generations rule
+    /// string, and a slash followed by the number of states is required.
+    ///
     /// Returns `None` if this rule string is not using these notations.
     ///
-    /// See [`parse_int_life`] and [`parse_int_hex`] for more details.
+    /// See [`parse_int_life`], [`parse_int_hex`], and
+    /// [`parse_int_generations`] for more details.
     fn parse_int_bs_notation(
         &mut self,
         table: &[&[(u8, &[u8])]],
         hex: bool,
+        generations: bool,
     ) -> Option<Result<Rule, ParseRuleError>> {
         // Parse the birth sequence.
         self.read_matches(b"Bb")?;
@@ -416,6 +421,14 @@ impl<'a> Parser<'a> {
         self.read_matches(b"Ss")?;
         let survival = self.parse_int_bs(table)?;
 
+        // Parse the number of states. This is optional.
+        let states = if generations {
+            self.read_matches(b'/')?;
+            self.parse_number()?
+        } else {
+            Ok(2)
+        };
+
         // Parse the neighborhood type. The hexagonal neighborhood is indicated
         // by the suffix `H`.
         if hex {
@@ -427,13 +440,22 @@ impl<'a> Parser<'a> {
             return None;
         }
 
+        // Check that the number of states is valid.
+        if states.is_err() {
+            return Some(Err(ParseRuleError::IntegerOverflow));
+        }
+        let states = states.unwrap();
+        if states < 2 {
+            return Some(Err(ParseRuleError::TooFewStates));
+        }
+
         let neighborhood = if hex {
             Neighborhood::Nontotalistic(NeighborhoodType::Hexagonal, 1)
         } else {
             Neighborhood::Nontotalistic(NeighborhoodType::Moore, 1)
         };
         Some(Ok(Rule {
-            states: 2,
+            states,
             neighborhood,
             birth,
             survival,
@@ -442,13 +464,18 @@ impl<'a> Parser<'a> {
 
     /// Parse an isotropic non-totalistic rule string with S/B notation.
     ///
+    /// If `generations` is `true`, the rule string may be a Generations rule
+    /// string, and a slash followed by the number of states is required.
+    ///
     /// Returns `None` if this rule string is not using S/B notation.
     ///
-    /// See [`parse_int_life`] and [`parse_int_hex`] for more details.
+    /// See [`parse_int_life`], [`parse_int_hex`], and
+    /// [`parse_int_generations`] for more details.
     fn parse_int_sb_notation(
         &mut self,
         table: &[&[(u8, &[u8])]],
         hex: bool,
+        generations: bool,
     ) -> Option<Result<Rule, ParseRuleError>> {
         // Parse the survival sequence.
         let survival = self.parse_int_bs(table)?;
@@ -459,6 +486,14 @@ impl<'a> Parser<'a> {
         // Parse the birth sequence.
         let birth = self.parse_int_bs(table)?;
 
+        // Parse the number of states. This is optional.
+        let states = if generations {
+            self.read_matches(b'/')?;
+            self.parse_number()?
+        } else {
+            Ok(2)
+        };
+
         // Parse the neighborhood type. The hexagonal neighborhood is indicated
         // by the suffix `H`.
         if hex {
@@ -470,13 +505,22 @@ impl<'a> Parser<'a> {
             return None;
         }
 
+        // Check that the number of states is valid.
+        if states.is_err() {
+            return Some(Err(ParseRuleError::IntegerOverflow));
+        }
+        let states = states.unwrap();
+        if states < 2 {
+            return Some(Err(ParseRuleError::TooFewStates));
+        }
+
         let neighborhood = if hex {
             Neighborhood::Nontotalistic(NeighborhoodType::Hexagonal, 1)
         } else {
             Neighborhood::Nontotalistic(NeighborhoodType::Moore, 1)
         };
         Some(Ok(Rule {
-            states: 2,
+            states,
             neighborhood,
             birth,
             survival,
@@ -490,9 +534,9 @@ impl<'a> Parser<'a> {
     ///
     /// See [`parse_int_life`] and [`parse_int_hex`] for more details.
     fn parse_int_life(&mut self) -> Option<Result<Rule, ParseRuleError>> {
-        self.try_parse(|parser| parser.parse_int_bs_notation(&INT_LIFE_TABLE, false))
+        self.try_parse(|parser| parser.parse_int_bs_notation(&INT_LIFE_TABLE, false, false))
             .or_else(|| {
-                self.try_parse(|parser| parser.parse_int_sb_notation(&INT_LIFE_TABLE, false))
+                self.try_parse(|parser| parser.parse_int_sb_notation(&INT_LIFE_TABLE, false, false))
             })
     }
 
@@ -503,8 +547,95 @@ impl<'a> Parser<'a> {
     ///
     /// See [`parse_int_hex`] for more details.
     fn parse_int_hex(&mut self) -> Option<Result<Rule, ParseRuleError>> {
-        self.try_parse(|parser| parser.parse_int_bs_notation(&INT_HEX_TABLE, true))
-            .or_else(|| self.try_parse(|parser| parser.parse_int_sb_notation(&INT_HEX_TABLE, true)))
+        self.try_parse(|parser| parser.parse_int_bs_notation(&INT_HEX_TABLE, true, false))
+            .or_else(|| {
+                self.try_parse(|parser| parser.parse_int_sb_notation(&INT_HEX_TABLE, true, false))
+            })
+    }
+
+    /// Parse an isotropic non-totalistic Generations rule string with
+    /// Catagolue notation.
+    ///
+    /// Returns `None` if this rule string is not using Catagolue notation.
+    ///
+    /// See [`parse_int_generations`] for more details.
+    fn parse_int_generations_catagolue(
+        &mut self,
+        table: &[&[(u8, &[u8])]],
+        hex: bool,
+    ) -> Option<Result<Rule, ParseRuleError>> {
+        // Parse the number of states.
+        self.read_matches(b"gG")?;
+        let states = self.parse_number()?;
+
+        // Parse the birth sequence.
+        self.read_matches(b"bB")?;
+        let birth = self.parse_int_bs(table)?;
+
+        // Parse the survival sequence.
+        self.read_matches(b"sS")?;
+        let survival = self.parse_int_bs(table)?;
+
+        // Parse the neighborhood type. The hexagonal neighborhood is indicated
+        // by the suffix `H`.
+        if hex {
+            self.read_matches(b"Hh")?;
+        }
+
+        // Check that there is no more input.
+        if self.peek().is_some() {
+            return None;
+        }
+
+        // Check that the number of states is valid.
+        if states.is_err() {
+            return Some(Err(ParseRuleError::IntegerOverflow));
+        }
+        let states = states.unwrap();
+        if states < 2 {
+            return Some(Err(ParseRuleError::TooFewStates));
+        }
+
+        let neighborhood = if hex {
+            Neighborhood::Nontotalistic(NeighborhoodType::Hexagonal, 1)
+        } else {
+            Neighborhood::Nontotalistic(NeighborhoodType::Moore, 1)
+        };
+        Some(Ok(Rule {
+            states,
+            neighborhood,
+            birth,
+            survival,
+        }))
+    }
+
+    /// Parse an isotropic non-totalistic Generations rule string.
+    ///
+    /// Returns `None` if this is not a valid isotropic non-totalistic
+    /// Generations rule string.
+    ///
+    /// See [`parse_int_generations`] for more details.
+    fn parse_int_generations(&mut self) -> Option<Result<Rule, ParseRuleError>> {
+        self.try_parse(|parser| parser.parse_int_bs_notation(&INT_LIFE_TABLE, false, true))
+            .or_else(|| {
+                self.try_parse(|parser| parser.parse_int_sb_notation(&INT_LIFE_TABLE, false, true))
+            })
+            .or_else(|| {
+                self.try_parse(|parser| {
+                    parser.parse_int_generations_catagolue(&INT_LIFE_TABLE, false)
+                })
+            })
+            .or_else(|| {
+                self.try_parse(|parser| parser.parse_int_bs_notation(&INT_HEX_TABLE, true, true))
+            })
+            .or_else(|| {
+                self.try_parse(|parser| parser.parse_int_sb_notation(&INT_HEX_TABLE, true, true))
+            })
+            .or_else(|| {
+                self.try_parse(|parser| {
+                    parser.parse_int_generations_catagolue(&INT_HEX_TABLE, true)
+                })
+            })
     }
 
     /// Parse a Generations rule string with B/S/C notation.
@@ -1028,6 +1159,8 @@ impl<'a> Parser<'a> {
     ///   [`parse_int_life`](Self::parse_int_life) and
     ///   [`parse_int_hex`](Self::parse_int_hex).
     /// - Generations rule, see [`parse_generations`](Self::parse_generations).
+    /// - Isotropic non-totalistic Generations rule, see
+    ///   [`parse_int_generations`](Self::parse_int_generations).
     /// - HROT rule, see [`parse_hrot`](Self::parse_hrot).
     /// - MAP string, see [`parse_map`](Self::parse_map).
     fn parse_rule(&mut self) -> Option<Result<Rule, ParseRuleError>> {
@@ -1035,6 +1168,7 @@ impl<'a> Parser<'a> {
             .or_else(|| self.parse_int_life())
             .or_else(|| self.parse_int_hex())
             .or_else(|| self.parse_generations())
+            .or_else(|| self.parse_int_generations())
             .or_else(|| self.parse_hrot())
             .or_else(|| self.parse_map())
     }
@@ -1275,6 +1409,88 @@ pub fn parse_int_hex(rule_string: &str) -> Result<Rule, ParseRuleError> {
         .unwrap_or(Err(ParseRuleError::InvalidSyntax))
 }
 
+/// Parse an [isotropic non-totalistic Generations rule](https://conwaylife.com/wiki/Isotropic_non-totalistic_rule)
+/// with the range-1 Moore or hexagonal neighborhood.
+///
+/// An isotropic non-totalistic Generations rule is similar to an isotropic
+/// non-totalistic rule, but it may have more than two states.
+///
+/// Three notations are supported: B/S/C notation, S/B/C notation, and the
+/// notation used by Catagolue.
+///
+/// The rule string is case-insensitive.
+///
+/// # B/S/C notation
+///
+/// The rule string is in the form `B{birth}/S{survival}/{states}`, where:
+///
+/// - `{birth}` is a sequence of counts and class letters. These are the
+///   numbers of living neighbors, and the classes of their arrangements, that
+///   cause a dead cell to become alive.
+/// - `{survival}` is a sequence of counts and class letters. These are the
+///   numbers of living neighbors, and the classes of their arrangements, that
+///   cause a live cell to survive.
+/// - `{states}` is the number of states in the cellular automaton. It must be
+///   greater than 1.
+///
+/// These sequences may be empty.
+///
+/// # S/B/C notation
+///
+/// The rule string is in the form `{survival}/{birth}/{states}`, where
+/// `{birth}`, `{survival}`, and `{states}` are the same as in the B/S/C
+/// notation.
+///
+/// # Catagolue notation
+///
+/// The rule string is in the form `g{states}b{birth}s{survival}`, where
+/// `{birth}`, `{survival}`, and `{states}` are the same as in the B/S/C
+/// notation.
+///
+/// This notation is used by [Catagolue](https://catagolue.hatsya.com/).
+///
+/// # Class letters
+///
+/// A count may be followed by a list of class letters in
+/// [Hensel notation](https://conwaylife.com/wiki/Hensel_notation) (for the
+/// Moore neighborhood) or
+/// [Callahan notation](https://conwaylife.com/wiki/Isotropic_non-totalistic_rule#Hexagonal_grid)
+/// (for the hexagonal neighborhood), e.g. `B35y/S1e2-ci3-a5i`. A count that is
+/// not followed by any letter means that all classes of that count are used.
+/// A `-` followed by a list of letters means that all classes of that count
+/// except the listed ones are used.
+///
+/// # Suffixes
+///
+/// The rule string may optionally have a suffix `H` to indicate the hexagonal
+/// neighborhood. If there is no suffix, the Moore neighborhood is assumed.
+/// Both neighborhood types have a radius of 1.
+///
+/// # Examples
+///
+/// ```
+/// use ca_rules2::parse_int_generations;
+///
+/// // The three notations are equivalent.
+/// let rule1 = parse_int_generations("g4b2c36k7s2ak34-a5-i").unwrap();
+/// let rule2 = parse_int_generations("B2c36k7/S2ak34-a5-i/4").unwrap();
+/// let rule3 = parse_int_generations("2ak34-a5-i/2c36k7/4").unwrap();
+/// assert_eq!(rule1, rule2);
+/// assert_eq!(rule1, rule3);
+/// assert_eq!(rule1.states, 4);
+///
+/// // A hexagonal rule.
+/// let rule = parse_int_generations("g3b2o6s2-o34m56h").unwrap();
+/// assert_eq!(rule.states, 3);
+/// ```
+pub fn parse_int_generations(rule_string: &str) -> Result<Rule, ParseRuleError> {
+    let mut parser = Parser::new(rule_string);
+
+    parser
+        .parse_int_generations()
+        .unwrap_or(Err(ParseRuleError::InvalidSyntax))
+}
+
 /// Parse a [Generations](https://conwaylife.com/wiki/Generations) rule string.
 ///
 /// Generations is similar to Life-like, but it may have more than two states.
@@ -1457,12 +1673,14 @@ pub fn parse_map(rule_string: &str) -> Result<Rule, ParseRuleError> {
 /// - Life-like rule, see [`parse_life_like`].
 /// - Isotropic non-totalistic rule, see [`parse_int_life`] and [`parse_int_hex`].
 /// - Generations rule, see [`parse_generations`].
+/// - Isotropic non-totalistic Generations rule, see [`parse_int_generations`].
 /// - HROT rule, see [`parse_hrot`].
 /// - MAP string, see [`parse_map`].
 ///
 /// The kind of rule is determined by the syntax of the rule string. For
 /// example, `B3/S23` is a Life-like rule, `B2e/S23` is an isotropic
-/// non-totalistic rule, and `MAPARYXfhZofugWaH7oaIDogBZofuhogOiAaIDogIAAgAAWaH7oaIDogGiA6ICAAIAAaIDogIAAgACAAIAAAAAAAA`
+/// non-totalistic rule, `B2e/S23/3` is an isotropic non-totalistic Generations
+/// rule, and `MAPARYXfhZofugWaH7oaIDogBZofuhogOiAaIDogIAAgAAWaH7oaIDogGiA6ICAAIAAaIDogIAAgACAAIAAAAAAAA`
 /// is a non-isotropic rule.
 ///
 /// See the documentation of each function for more details.
@@ -1580,6 +1798,106 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_int_generations() {
+        // "g4b2c36k7s2ak34-a5-i" as an INT Generations rule.
+        let rule = parse_int_generations("g4b2c36k7s2ak34-a5-i").unwrap();
+        assert_eq!(rule.states, 4);
+        assert_eq!(
+            rule.neighborhood,
+            Neighborhood::Nontotalistic(NeighborhoodType::Moore, 1)
+        );
+        let in_class = |digit: usize, letter: u8, mask: u64| {
+            class(&INT_LIFE_TABLE, digit, letter).contains(&(mask as u8))
+        };
+        for mask in 0..=0xffu64 {
+            let birth = in_class(2, b'c', mask)
+                || mask.count_ones() == 3
+                || in_class(6, b'k', mask)
+                || mask.count_ones() == 7;
+            let survival = in_class(2, b'a', mask)
+                || in_class(2, b'k', mask)
+                || mask.count_ones() == 3
+                || (mask.count_ones() == 4 && !in_class(4, b'a', mask))
+                || (mask.count_ones() == 5 && !in_class(5, b'i', mask));
+            assert_eq!(rule.birth.contains(&mask), birth);
+            assert_eq!(rule.survival.contains(&mask), survival);
+        }
+
+        // The three notations are equivalent.
+        let rule1 = parse_int_generations("g4b2c36k7s2ak34-a5-i").unwrap();
+        let rule2 = parse_int_generations("B2c36k7/S2ak34-a5-i/4").unwrap();
+        let rule3 = parse_int_generations("2ak34-a5-i/2c36k7/4").unwrap();
+        assert_eq!(rule1, rule2);
+        assert_eq!(rule1, rule3);
+
+        // Digits-only rules are equivalent to the totalistic ones.
+        let rule = parse_int_generations("B3/S23/4").unwrap();
+        assert_eq!(rule.states, 4);
+        for mask in 0..=0xffu64 {
+            assert_eq!(rule.birth.contains(&mask), mask.count_ones() == 3);
+            assert_eq!(
+                rule.survival.contains(&mask),
+                [2, 3].contains(&mask.count_ones())
+            );
+        }
+
+        // A hexagonal INT Generations rule.
+        let rule = parse_int_generations("g3b2o6s2-o34m56h").unwrap();
+        assert_eq!(rule.states, 3);
+        assert_eq!(
+            rule.neighborhood,
+            Neighborhood::Nontotalistic(NeighborhoodType::Hexagonal, 1)
+        );
+        let in_class = |digit: usize, letter: u8, mask: u64| {
+            class(&INT_HEX_TABLE, digit, letter).contains(&(mask as u8))
+        };
+        for mask in 0..0x40u64 {
+            let birth = in_class(2, b'o', mask) || mask.count_ones() == 6;
+            let survival = (mask.count_ones() == 2 && !in_class(2, b'o', mask))
+                || mask.count_ones() == 3
+                || in_class(4, b'm', mask)
+                || mask.count_ones() == 5
+                || mask.count_ones() == 6;
+            assert_eq!(rule.birth.contains(&mask), birth);
+            assert_eq!(rule.survival.contains(&mask), survival);
+        }
+
+        // The three notations are equivalent.
+        let rule1 = parse_int_generations("g3b2o6s2-o34m56h").unwrap();
+        let rule2 = parse_int_generations("B2o6/S2-o34m56/3H").unwrap();
+        let rule3 = parse_int_generations("2-o34m56/2o6/3H").unwrap();
+        assert_eq!(rule1, rule2);
+        assert_eq!(rule1, rule3);
+    }
+
+    #[test]
+    fn test_parse_int_generations_invalid() {
+        // Not an INT Generations rule.
+        assert!(matches!(
+            parse_int_generations("B2a/S12"),
+            Err(ParseRuleError::InvalidSyntax)
+        ));
+
+        // Too few states.
+        assert!(matches!(
+            parse_int_generations("B2a/S12/1"),
+            Err(ParseRuleError::TooFewStates)
+        ));
+
+        // Invalid suffixes.
+        assert!(parse_int_generations("B2a/S12/x").is_err());
+        assert!(parse_int_generations("B2x/S12/3").is_err());
+        assert!(parse_int_generations("B2a/S12/3x").is_err());
+        assert!(parse_int_generations("B2o/S12o/3").is_err());
+
+        // Integer overflow.
+        assert!(matches!(
+            parse_int_generations("B2a/S12/99999999999999999999"),
+            Err(ParseRuleError::IntegerOverflow)
+        ));
+    }
+
+    #[test]
     fn test_parse_rule_dispatches_int() {
         // Pure-digit strings are parsed as Life-like rules.
         assert!(matches!(
@@ -1604,6 +1922,22 @@ mod tests {
         // Generations and HROT strings are still parsed correctly.
         assert_eq!(parse_rule("B3/S23/4").unwrap().states, 4);
         assert_eq!(parse_rule("R3,C2,S2,B3,N+").unwrap().radius(), 3);
+
+        // Strings with class letters and a number of states are parsed as INT
+        // Generations rules.
+        let rule = parse_rule("B2a/S12/3").unwrap();
+        assert_eq!(rule.states, 3);
+        assert!(matches!(
+            rule.neighborhood,
+            Neighborhood::Nontotalistic(NeighborhoodType::Moore, _)
+        ));
+        let rule = parse_rule("B2o/S12o/3H").unwrap();
+        assert_eq!(rule.states, 3);
+        assert!(matches!(
+            rule.neighborhood,
+            Neighborhood::Nontotalistic(NeighborhoodType::Hexagonal, _)
+        ));
+        assert_eq!(parse_rule("g4b2c36k7s2ak34-a5-i").unwrap().states, 4);
 
         // Invalid strings are rejected.
         assert!(parse_rule("B2x/S23").is_err());
