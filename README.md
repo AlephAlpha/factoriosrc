@@ -4,7 +4,7 @@ Search for patterns in [Factorio (R3,C2,S2,B3,N+)](https://conwaylife.com/forums
 
 This program is still work in progress. Many features are still missing.
 
-Now it has a text-based UI and an egui desktop GUI. A web UI will be added in the future.
+Now it has a text-based UI, an egui desktop GUI, and an egui web UI.
 
 Since 2026, most of the development has been done by AI agents. I don't have time to review all the AI-generated code, so there may be bugs. Please report any issues you find.
 
@@ -73,6 +73,32 @@ The GUI uses native file dialogs for loading and saving search state. While view
 
 On X11, for HiDPI displays, you may need to set the `WINIT_X11_SCALE_FACTOR` environment variable to 2.
 
+### Web UI
+
+The web UI is a port of the GUI that runs entirely in the browser, compiled to WebAssembly. The search runs in a [WebWorker](https://developer.mozilla.org/docs/Web/API/Web_Workers_API), so it continues even when you switch to another tab.
+
+You need to install the `wasm32` target and [Trunk](https://trunkrs.dev/):
+
+```bash
+rustup target add wasm32-unknown-unknown
+cargo install --locked trunk
+```
+
+Run the web UI locally:
+
+```bash
+cd egui
+trunk serve
+```
+
+Build the static site (output in `egui/dist/`):
+
+```bash
+trunk build --release
+```
+
+The web UI uses browser downloads and file picking (or drag & drop) for saving and loading search state, instead of native file dialogs. Save files are compatible with the desktop GUI, but not with the TUI.
+
 ## Todo
 
 Features that rlifesrc has but factoriosrc doesn't:
@@ -97,7 +123,7 @@ Features that rlifesrc has but factoriosrc doesn't:
 - [x] GUI.
   - [x] Save and load the search state in the GUI.
 - [ ] Web UI.
-  - [ ] Port the GUI to the web. I'm using the [egui](https://github.com/emilk/egui) library, which has a web backend. I still need to figure out how to use WebWorkers, so that the search can run in the background without blocking the UI.
+  - [x] Port the GUI to the web. The search runs in a WebWorker, so it continues in the background without blocking the UI. The web UI is deployed to GitHub Pages automatically from the `main` branch.
   - [ ] Better support for mobile devices.
 - [ ] Better documentation.
   - [x] Keep lib, TUI, and GUI field descriptions and help text aligned as the interfaces evolve.

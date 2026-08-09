@@ -1,7 +1,8 @@
 # AGENTS.md
 
 ## Workspace
-- This is a Rust workspace with 4 crates: `factoriosrc-lib` in `lib/` (core search engine), `ca-rules2/` (rule parsing), `factoriosrc-tui` in `tui/` (CLI/TUI), and `factoriosrc-egui` in `egui/` (desktop GUI).
+- This is a Rust workspace with 4 crates: `factoriosrc-lib` in `lib/` (core search engine), `ca-rules2/` (rule parsing), `factoriosrc-tui` in `tui/` (CLI/TUI), and `factoriosrc-egui` in `egui/` (desktop GUI + web UI).
+- `factoriosrc-egui` also compiles to `wasm32-unknown-unknown` with Trunk (`trunk build` inside `egui/`, entry `egui/index.html`). The same binary serves two entry points: the eframe UI on the main thread and the search loop in a WebWorker (`egui/src/web.rs`, wired up by `egui/assets/worker.js`). WebWorker protocol changes must keep the `READY` handshake in `spawn_worker` and the pump loop in `worker_start`/`pump_once` in sync.
 - Most behavior changes belong in `factoriosrc-lib`. `World` in `lib/src/world.rs` owns the search state and unsafe cell graph; both frontends wrap it.
 - The non-empty front optimization in `lib/src/world.rs` depends on translation/reflection invariants and on the current 2-state non-`B0` rule subset. Read `docs/front.md` before changing `init_front()`, `front_count`, supported rule families, known-cell constraints, symmetry, transformations, or search-order logic.
 - `Config::check()` and `Config::parse_rule()` in `lib/src/config.rs` are the source of truth for validation, supported rules, and automatic search-order selection. Update UI/docs after changing them, not the other way around.
@@ -11,7 +12,7 @@
 - Normal CI uses stable Rust. Only Miri setup/tests need nightly.
 - After making changes, run `cargo fmt` to format the code before committing.
 - `just test` now matches `.github/workflows/test.yml` and runs, in order: `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test --package factoriosrc-lib --no-default-features`, `cargo test --all-features`.
-- Focused checks: `cargo test -p ca-rules2`, `cargo test -p factoriosrc-lib --no-default-features`, `cargo test -p factoriosrc-lib`, `cargo test --all-features`, `cargo test -p factoriosrc-lib test_miri -- --exact`.
+- Focused checks: `cargo test -p ca-rules2`, `cargo test -p factoriosrc-lib --no-default-features`, `cargo test -p factoriosrc-lib`, `cargo test --all-features`, `cargo test -p factoriosrc-lib test_miri -- --exact`, `cargo check -p factoriosrc-egui --target wasm32-unknown-unknown`.
 - If you touch unsafe search internals (`lib/src/world.rs`, `lib/src/search.rs`, `lib/src/cell.rs`), run Miri after `just init`: `cargo +nightly miri test test_miri`.
 
 ## Features

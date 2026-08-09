@@ -17,9 +17,14 @@ build:
 run *ARGS: build
     {{ bin }} {{ ARGS }}
 
-# Run the GUI (WIP)
+# Run the GUI
 gui: build
     RUST_LOG=factoriosrc_egui=DEBUG {{ gui }}
+
+# Build and serve the web app for development
+web:
+    if [ ! -x "$(command -v trunk)" ]; then cargo install trunk; fi
+    cd egui && trunk serve --release
 
 # Run linting and formatting checks
 lint:

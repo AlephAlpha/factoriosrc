@@ -1,8 +1,11 @@
 use factoriosrc_lib::Status;
+#[cfg(feature = "save")]
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 /// A single generation rendered in a UI-neutral format.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "save", derive(Serialize, Deserialize))]
 pub struct GenerationSnapshot {
     /// The generation index.
     pub generation: i32,
@@ -14,6 +17,7 @@ pub struct GenerationSnapshot {
 
 /// A search snapshot that frontends can render however they like.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "save", derive(Serialize, Deserialize))]
 pub struct SearchSnapshot {
     /// Search status.
     pub status: Status,

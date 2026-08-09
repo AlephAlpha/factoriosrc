@@ -1,0 +1,8 @@
+[build]
+target = "index.html"
+# Keep stable file names, so that `worker.js` can import the wasm glue.
+filehash = false
+
+[tools]
+# Must match the `wasm-bindgen` version resolved in Cargo.lock.
+wasm_bindgen = "0.2.127"

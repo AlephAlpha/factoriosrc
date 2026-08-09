@@ -7,14 +7,19 @@ use factoriosrc_lib::{Status, World};
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "save")]
 use serde_json::Error as SerdeError;
+use std::time::Duration;
+#[cfg(not(target_arch = "wasm32"))]
 use std::{
     sync::mpsc::{self, Receiver, Sender, TryRecvError},
     thread::JoinHandle,
-    time::{Duration, Instant},
 };
+// `std::time::Instant` panics on `wasm32-unknown-unknown`; `web_time::Instant`
+// uses `performance.now()` there and re-exports `std::time` on native targets.
+use web_time::Instant;
 
 /// Events that the main thread can send to the search thread.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "save", derive(Serialize, Deserialize))]
 pub enum Event {
     /// Start or resume the search.
     Start,
@@ -29,6 +34,7 @@ pub enum Event {
 
 /// Messages that the search thread can send to the main thread.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "save", derive(Serialize, Deserialize))]
 pub enum Message {
     /// A snapshot to display the current partial result.
     Snapshot(SearchSnapshot),
@@ -54,15 +60,15 @@ impl Message {
 /// The main struct of the search algorithm.
 #[derive(Debug)]
 #[cfg_attr(feature = "save", derive(Serialize, Deserialize))]
-struct Search {
+pub(crate) struct Search {
     /// The main struct of the search algorithm.
-    world: World,
+    pub(crate) world: World,
     /// Number of steps between each display of the current partial result.
-    step: usize,
+    pub(crate) step: usize,
     /// Whether to increase the world size when the search fails.
-    increase_world_size: bool,
+    pub(crate) increase_world_size: bool,
     /// Whether not to stop the search when a solution is found.
-    no_stop: bool,
+    pub(crate) no_stop: bool,
     /// Whether the search is running.
     #[cfg_attr(feature = "save", serde(skip))]
     running: bool,
@@ -80,7 +86,7 @@ struct Search {
 
 impl Search {
     /// Create a new [`Search`] from a [`AppConfig`].
-    fn new(config: AppConfig) -> Self {
+    pub(crate) fn new(config: AppConfig) -> Self {
         Self {
             world: World::new(config.config).unwrap(),
             step: config.step,
@@ -96,13 +102,13 @@ impl Search {
 
     /// Load the search state from a JSON string.
     #[cfg(feature = "save")]
-    fn load(s: &str) -> Result<Self, SerdeError> {
+    pub(crate) fn load(s: &str) -> Result<Self, SerdeError> {
         serde_json::from_str(s)
     }
 
     /// Save the search state to a JSON string.
     #[cfg(feature = "save")]
-    fn save(&self) -> String {
+    pub(crate) fn save(&self) -> String {
         serde_json::to_string(self).unwrap()
     }
 
@@ -139,8 +145,21 @@ impl Search {
         }
     }
 
+    /// Whether the search is currently running.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) const fn is_running(&self) -> bool {
+        self.running
+    }
+
+    /// Run one step batch, and return a snapshot of the result.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn step_batch(&mut self) -> Message {
+        self.step();
+        self.snapshot().into()
+    }
+
     /// Create a UI-neutral snapshot to send to the main thread.
-    fn snapshot(&self) -> SearchSnapshot {
+    pub(crate) fn snapshot(&self) -> SearchSnapshot {
         let generations = (0..self.world.config().period as i32)
             .map(|generation| GenerationSnapshot {
                 generation,
@@ -159,7 +178,7 @@ impl Search {
     }
 
     /// Handle an [`Event`] from the main thread, and return a [`Message`].
-    fn handle_event(&mut self, event: Event) -> Message {
+    pub(crate) fn handle_event(&mut self, event: Event) -> Message {
         log::debug!("Received event: {event:?}");
         match event {
             Event::Start => self.start(),
@@ -175,6 +194,7 @@ impl Search {
     }
 
     /// The main loop of the search thread.
+    #[cfg(not(target_arch = "wasm32"))]
     fn run(&mut self, rx: Receiver<Event>, tx: Sender<Message>) {
         tx.send(self.snapshot().into()).unwrap();
 
@@ -206,7 +226,11 @@ impl Search {
 }
 
 /// A struct to run the search algorithm in a separate thread.
+///
+/// On native platforms the search runs on this thread; on the web it runs
+/// in a WebWorker instead (see [`crate::web`]).
 #[derive(Debug)]
+#[cfg(not(target_arch = "wasm32"))]
 pub struct SearchThread {
     /// The search thread.
     thread: JoinHandle<()>,
@@ -216,6 +240,7 @@ pub struct SearchThread {
     rx: Receiver<Message>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl SearchThread {
     /// Create a new [`SearchThread`] from a [`AppConfig`].
     pub fn new(config: AppConfig) -> Self {
@@ -297,5 +322,79 @@ impl SearchThread {
     /// Wait for the search thread to finish.
     pub fn join(self) {
         self.thread.join().unwrap();
+    }
+}
+
+/// A handle to a running search backend.
+///
+/// On native platforms this runs the search on a separate thread, while on the web
+/// it runs the search in a WebWorker.
+pub trait SearchApi: std::fmt::Debug {
+    /// Send an [`Event`] to the search backend.
+    fn send(&self, event: Event);
+
+    /// Try to receive a [`Message`] from the search backend without blocking.
+    ///
+    /// If there are more than one messages available, it will return the
+    /// first one that is not a frame, or the last one if all of them are frames.
+    ///
+    /// If no message is available, it will return `None`.
+    fn try_recv(&self) -> Option<Message>;
+
+    /// Stop the search backend and release its resources.
+    fn terminate(self: Box<Self>);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl SearchApi for SearchThread {
+    /// Send an [`Event`] to the search thread.
+    fn send(&self, event: Event) {
+        SearchThread::send(self, event);
+    }
+
+    /// Try to receive a [`Message`] from the search thread without blocking.
+    fn try_recv(&self) -> Option<Message> {
+        SearchThread::try_recv(self)
+    }
+
+    /// Stop the search thread and wait for it to finish.
+    fn terminate(self: Box<Self>) {
+        self.send(Event::Stop);
+        self.join();
+    }
+}
+
+/// Create a new search backend from the given configuration.
+#[must_use]
+pub fn spawn_search(config: AppConfig) -> Box<dyn SearchApi> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        Box::new(SearchThread::new(config))
+    }
+    #[cfg(all(target_arch = "wasm32", feature = "save"))]
+    {
+        Box::new(crate::web::WebSearchThread::new(config))
+    }
+    #[cfg(all(target_arch = "wasm32", not(feature = "save")))]
+    {
+        unreachable!("The web build requires the `save` feature.")
+    }
+}
+
+/// Create a new search backend from a JSON string.
+///
+/// This also returns the [`AppConfig`] so that the main thread can
+/// update the UI with the new world configuration.
+#[cfg(feature = "save")]
+pub fn load_search(s: &str) -> Result<(Box<dyn SearchApi>, AppConfig), SerdeError> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let (search, config) = SearchThread::load(s)?;
+        Ok((Box::new(search), config))
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let (search, config) = crate::web::WebSearchThread::load(s)?;
+        Ok((Box::new(search), config))
     }
 }

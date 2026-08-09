@@ -1,6 +1,6 @@
 use crate::{
     app::{App, AppConfig, Mode},
-    help, platform,
+    help,
     theme::{Palette, badge_text, muted, rle_layout_job, section_title},
 };
 use egui::{
@@ -906,10 +906,8 @@ impl App {
                 .button("Load")
                 .on_hover_text(help::SEARCH_ACTIONS[1].1)
                 .clicked()
-                && let Some(path) = platform::pick_load_path()
             {
-                log::info!("Loading search from {}", path.display());
-                self.load_search(&path);
+                self.load_search_dialog();
             }
         } else {
             ui.add_enabled_ui(self.mode == Mode::Paused, |ui| {
@@ -954,11 +952,8 @@ impl App {
                     .button("Save")
                     .on_hover_text(help::SEARCH_ACTIONS[5].1)
                     .clicked()
-                    && let Some(path) = platform::pick_save_path("save.json")
                 {
-                    log::info!("Saving search to {}", path.display());
-                    self.save = Some(path);
-                    self.save();
+                    self.save_dialog();
                 }
             });
         }

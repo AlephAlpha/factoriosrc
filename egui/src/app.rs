@@ -1,6 +1,7 @@
+#[cfg(feature = "save")]
+use crate::{platform, search::load_search};
 use crate::{
-    platform,
-    search::{Event, Message, SearchThread},
+    search::{Event, Message, SearchApi, spawn_search},
     snapshot::{GenerationSnapshot, SearchSnapshot},
     theme,
 };
@@ -10,7 +11,7 @@ use egui::{CentralPanel, Context, Panel, Ui};
 use factoriosrc_lib::{CellState, Config, KnownCell, Status};
 #[cfg(feature = "save")]
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "save")]
+#[cfg(all(feature = "save", not(target_arch = "wasm32")))]
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -95,7 +96,7 @@ pub struct App {
     /// Working state for the known-cells editor.
     pub known_cells_editor: Option<KnownCellsEditor>,
     /// A thread to run the search algorithm.
-    pub search: Option<SearchThread>,
+    pub search: Option<Box<dyn SearchApi>>,
     /// The current generation to display.
     pub generation: i32,
     /// The latest live snapshot from the search thread.
@@ -113,7 +114,7 @@ pub struct App {
     /// A proxy metric for search progress.
     pub cells_checked: usize,
     /// A path to save the search state.
-    #[cfg(feature = "save")]
+    #[cfg(all(feature = "save", not(target_arch = "wasm32")))]
     pub save: Option<PathBuf>,
 }
 
@@ -139,7 +140,7 @@ impl Default for App {
             status: Status::NotStarted,
             elapsed: Duration::default(),
             cells_checked: 0,
-            #[cfg(feature = "save")]
+            #[cfg(all(feature = "save", not(target_arch = "wasm32")))]
             save: None,
         }
     }
@@ -147,6 +148,8 @@ impl Default for App {
 
 impl EframeApp for App {
     fn logic(&mut self, _ctx: &Context, _frame: &mut Frame) {
+        #[cfg(all(target_arch = "wasm32", feature = "save"))]
+        platform::poll_dropped_files(_ctx);
         self.receive();
     }
 
@@ -189,7 +192,7 @@ impl EframeApp for App {
 }
 
 impl App {
-    /// Create a new search thread from the current configuration.
+    /// Create a new search backend from the current configuration.
     pub fn new_search(&mut self) {
         assert!(self.mode == Mode::Configuring);
         self.known_cells_editor = None;
@@ -201,33 +204,58 @@ impl App {
             self.live_snapshot = None;
             self.solutions.clear();
             self.viewing_solution = None;
-            self.search = Some(SearchThread::new(config));
+            self.search = Some(spawn_search(config));
             self.mode = Mode::Paused;
             self.chrome.show_config = false;
         }
     }
 
-    /// Create a new search thread from a file.
+    /// Open a file dialog to load a search state from a file.
+    ///
+    /// On the web, the result arrives asynchronously and is picked up
+    /// by [`App::receive`].
     #[cfg(feature = "save")]
+    pub fn load_search_dialog(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if let Some(path) = platform::pick_load_path() {
+                self.load_search(path);
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        platform::request_load();
+    }
+
+    /// Create a new search backend from a file.
+    #[cfg(all(feature = "save", not(target_arch = "wasm32")))]
     pub fn load_search(&mut self, path: impl AsRef<Path>) {
         assert!(self.mode == Mode::Configuring);
         self.known_cells_editor = None;
 
         if let Ok(string) = platform::read_search_state(path) {
-            if let Ok((search, config)) = SearchThread::load(&string) {
-                self.config = config;
-                self.error = None;
-                self.live_snapshot = None;
-                self.solutions.clear();
-                self.viewing_solution = None;
-                self.search = Some(search);
-                self.mode = Mode::Paused;
-                self.chrome.show_config = false;
-            } else {
-                self.error = Some("Failed to load the search state.".to_string());
-            }
+            self.load_search_from_string(&string);
         } else {
             self.error = Some("Failed to open the save file.".to_string());
+        }
+    }
+
+    /// Create a new search backend from a JSON string.
+    #[cfg(feature = "save")]
+    pub fn load_search_from_string(&mut self, string: &str) {
+        assert!(self.mode == Mode::Configuring);
+        self.known_cells_editor = None;
+
+        if let Ok((search, config)) = load_search(string) {
+            self.config = config;
+            self.error = None;
+            self.live_snapshot = None;
+            self.solutions.clear();
+            self.viewing_solution = None;
+            self.search = Some(search);
+            self.mode = Mode::Paused;
+            self.chrome.show_config = false;
+        } else {
+            self.error = Some("Failed to load the search state.".to_string());
         }
     }
 
@@ -236,6 +264,7 @@ impl App {
         assert!(self.mode == Mode::Running || self.mode == Mode::Paused);
 
         if let Some(search) = &mut self.search {
+            log::debug!("Sending the Start event.");
             search.send(Event::Start);
         }
     }
@@ -245,6 +274,7 @@ impl App {
         assert!(self.mode == Mode::Running || self.mode == Mode::Paused);
 
         if let Some(search) = &mut self.search {
+            log::debug!("Sending the Pause event.");
             search.send(Event::Pause);
         }
     }
@@ -254,8 +284,7 @@ impl App {
         assert!(self.mode == Mode::Running || self.mode == Mode::Paused);
 
         if let Some(search) = self.search.take() {
-            search.send(Event::Stop);
-            search.join();
+            search.terminate();
         }
 
         self.mode = Mode::Configuring;
@@ -283,6 +312,22 @@ impl App {
         if let Some(search) = &mut self.search {
             search.send(Event::Save);
         }
+    }
+
+    /// Open a file dialog to save the current state to a file.
+    ///
+    /// On the web, this triggers a browser download instead.
+    #[cfg(feature = "save")]
+    pub fn save_dialog(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            if let Some(path) = platform::pick_save_path("save.json") {
+                self.save = Some(path);
+                self.save();
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        self.save();
     }
 
     /// Handle a message from the search thread and update the application state.
@@ -317,7 +362,7 @@ impl App {
                     self.mode = Mode::Paused;
                 }
             }
-            #[cfg(feature = "save")]
+            #[cfg(all(feature = "save", not(target_arch = "wasm32")))]
             Message::Save(string) => {
                 if let Some(path) = &self.save.take() {
                     if let Err(e) = platform::write_search_state(path, &string) {
@@ -328,11 +373,24 @@ impl App {
                     }
                 }
             }
+            #[cfg(all(feature = "save", target_arch = "wasm32"))]
+            Message::Save(string) => {
+                platform::download_search_state(&string);
+            }
         }
     }
 
     /// Receive and handle a message from the search thread.
     pub fn receive(&mut self) {
+        #[cfg(all(target_arch = "wasm32", feature = "save"))]
+        for string in platform::take_pending_loads() {
+            if self.mode == Mode::Configuring {
+                self.load_search_from_string(&string);
+            } else {
+                log::info!("Ignoring a dropped save file: the search is still running.");
+            }
+        }
+
         if let Some(search) = &mut self.search
             && let Some(message) = search.try_recv()
         {

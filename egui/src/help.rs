@@ -28,11 +28,11 @@ pub const SEARCH_ACTIONS: [(&str, &str); 7] = [
         "New",
         "Validate the current config and create a search session.",
     ),
-    ("Load", "Resume a saved session from disk."),
+    ("Load", "Resume a saved session from a file."),
     ("Start/Resume", "Run the current session."),
     ("Next", "Continue after a pause or a solution."),
     ("Pause", "Stop after the current step batch."),
-    ("Save", "Write the current search state to disk."),
+    ("Save", "Write the current search state to a file."),
     ("Stop", "Discard the session and return to setup mode."),
 ];
 
