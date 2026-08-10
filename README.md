@@ -10,7 +10,9 @@ Since 2026, most of the development has been done by AI agents. I don't have tim
 
 ## Usage
 
-You need to install [Rust](https://rustup.rs/) first.
+You can try factoriosrc in your browser without installing anything, at [https://alephalpha.github.io/factoriosrc/](https://alephalpha.github.io/factoriosrc/).
+
+If you want to build and run the program locally, you need to install [Rust](https://rustup.rs/) first.
 
 Build:
 
@@ -38,7 +40,7 @@ Search for a c/2 spaceship with [D2-](https://conwaylife.com/wiki/Static_symmetr
 cargo run --bin factoriosrc-tui --release -- new 30 10 2 -x 1 -s D2-
 ```
 
-Search for a c/3 spaceship in [Hash (R2,C0,S4-6,B5-6,N#)](https://conwaylife.com/forums/viewtopic.php?f=11&t=6166&start=25#p104000) in a bounding box of size 30x8, and save the search state to a file when exiting:
+Search for a c/3 spaceship in [Hash (R2,C0,S4-6,B5-6,N#)](https://conwaylife.com/forums/viewtopic.php?t=6202) in a bounding box of size 30x8, and save the search state to a file when exiting:
 
 ```bash
 cargo run --bin factoriosrc-tui --release -- new 30 8 3 -x 1 -r R2,C0,S4-6,B5-6,N# --save save.json
@@ -108,14 +110,13 @@ Features that rlifesrc has but factoriosrc doesn't:
 - [x] Count the number of living cells.
   - [x] Max population constraint.
   - [x] Dynamically adjust the max population constraint to find the smallest pattern.
-- [ ] Support more rules.
+- [x] Support more rules.
   - [x] Parse rule strings.
   - [x] Isotropic non-totalistic rules.
   - [x] Non-isotropic non-totalistic rules.
   - [x] Generations rules.
   - [x] Hexagonal rules.
   - [x] Check the symmetry of a rule. So that we can know what symmetries and transformations are compatible with the rule, and whether [the front optimization](docs/front.md) can be applied.
-  - [ ] Update (or completely rewrite) the [ca-rules](https://crates.io/crates/ca-rules) crate.
 - [x] Support trying a random state for unknown cells.
 - [x] Set some cells to be known in the configuration.
 - [ ] Fully custom search order, where the user specifies the exact cell-by-cell traversal (for example, serpentine rows or a spiral from the center).
