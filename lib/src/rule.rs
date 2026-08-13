@@ -197,7 +197,12 @@ impl Debug for Descriptor {
 
 impl Descriptor {
     /// The number of bits used to represent the number of living or dead neighbors.
-    const NEIGHBOR_COUNT_BITS: usize = 6;
+    ///
+    /// The maximum neighborhood size is [`MAX_NEIGHBORHOOD_SIZE`] = 24, so 5
+    /// bits are enough to represent the number of living or dead neighbors.
+    /// This keeps the lookup table of a totalistic rule small enough to fit in
+    /// the L1 cache.
+    const NEIGHBOR_COUNT_BITS: usize = 5;
 
     /// A bit mask for the number of living or dead neighbors.
     const NEIGHBOR_COUNT_MASK: u64 = (1 << Self::NEIGHBOR_COUNT_BITS) - 1;
@@ -563,6 +568,17 @@ impl RuleTable {
         self.num_states > 2
     }
 
+    /// Whether the rule is totalistic.
+    ///
+    /// In a totalistic rule, the state of a cell is determined by the number of
+    /// living neighbors, not their arrangement. In particular, the update of the
+    /// neighborhood descriptor of a neighbor does not depend on the position of
+    /// the neighbor in the neighborhood.
+    #[inline]
+    pub(crate) const fn is_totalistic(&self) -> bool {
+        matches!(self.impl_, RuleTableImpl::Count(_))
+    }
+
     /// Find the implication of a neighborhood descriptor.
     pub(crate) fn implies(&self, descriptor: Descriptor) -> CheckResult {
         match &self.impl_ {
@@ -571,56 +587,112 @@ impl RuleTable {
         }
     }
 
-    /// Update the descriptor of a cell when a neighbor is set to a state.
+    /// Update the descriptors of the neighbors of a cell when the cell is set to a state.
     ///
     /// # Safety
     ///
-    /// The neighbor must be in the same world as the cell.
+    /// The cell must be in the same world as `self`.
     /// Otherwise the behavior is undefined.
-    pub(crate) fn set_neighbor(&self, neighbor: &LifeCell, i: usize, state: CellState) {
-        let mut descriptor = neighbor.descriptor.get();
-
+    #[inline]
+    pub(crate) fn set_neighbors(&self, cell: &LifeCell, state: CellState) {
         match &self.impl_ {
+            // For a totalistic rule, the non-null neighbors are packed to the
+            // front of the array, so no null checks are needed.
             RuleTableImpl::Count(_) => match state {
-                CellState::Dead | CellState::Dying(_) => descriptor.increment_dead(),
-                CellState::Alive => descriptor.increment_alive(),
+                CellState::Dead | CellState::Dying(_) => {
+                    for i in 0..cell.neighborhood_len {
+                        // Safety: the neighbors must be in the same world as the cell.
+                        unsafe {
+                            let neighbor = &*cell.neighborhood[i];
+                            let mut descriptor = neighbor.descriptor.get();
+                            descriptor.increment_dead();
+                            neighbor.descriptor.set(descriptor);
+                        }
+                    }
+                }
+                CellState::Alive => {
+                    for i in 0..cell.neighborhood_len {
+                        // Safety: the neighbors must be in the same world as the cell.
+                        unsafe {
+                            let neighbor = &*cell.neighborhood[i];
+                            let mut descriptor = neighbor.descriptor.get();
+                            descriptor.increment_alive();
+                            neighbor.descriptor.set(descriptor);
+                        }
+                    }
+                }
             },
             RuleTableImpl::Mask(_) => {
-                let token = match state {
-                    CellState::Dead | CellState::Dying(_) => self.dead_tokens[i],
-                    CellState::Alive => self.alive_tokens[i],
+                let tokens = match state {
+                    CellState::Dead | CellState::Dying(_) => &self.dead_tokens,
+                    CellState::Alive => &self.alive_tokens,
                 };
-                descriptor.0 ^= token;
+                for (i, &token) in tokens.iter().enumerate().take(self.neighborhood_size) {
+                    // Safety: the neighbors must be in the same world as the cell.
+                    unsafe {
+                        if let Some(neighbor) = cell.neighborhood[i].as_ref() {
+                            let mut descriptor = neighbor.descriptor.get();
+                            descriptor.0 ^= token;
+                            neighbor.descriptor.set(descriptor);
+                        }
+                    }
+                }
             }
         }
-
-        neighbor.descriptor.set(descriptor);
     }
 
-    /// Update the descriptor of a cell when a neighbor is set to unknown.
+    /// Update the descriptors of the neighbors of a cell when the cell is set to unknown.
     ///
     /// # Safety
     ///
-    /// The neighbor must be in the same world as the cell.
+    /// The cell must be in the same world as `self`.
     /// Otherwise the behavior is undefined.
-    pub(crate) fn unset_neighbor(&self, neighbor: &LifeCell, i: usize, state: CellState) {
-        let mut descriptor = neighbor.descriptor.get();
-
+    #[inline]
+    pub(crate) fn unset_neighbors(&self, cell: &LifeCell, state: CellState) {
         match &self.impl_ {
+            // For a totalistic rule, the non-null neighbors are packed to the
+            // front of the array, so no null checks are needed.
             RuleTableImpl::Count(_) => match state {
-                CellState::Dead | CellState::Dying(_) => descriptor.decrement_dead(),
-                CellState::Alive => descriptor.decrement_alive(),
+                CellState::Dead | CellState::Dying(_) => {
+                    for i in 0..cell.neighborhood_len {
+                        // Safety: the neighbors must be in the same world as the cell.
+                        unsafe {
+                            let neighbor = &*cell.neighborhood[i];
+                            let mut descriptor = neighbor.descriptor.get();
+                            descriptor.decrement_dead();
+                            neighbor.descriptor.set(descriptor);
+                        }
+                    }
+                }
+                CellState::Alive => {
+                    for i in 0..cell.neighborhood_len {
+                        // Safety: the neighbors must be in the same world as the cell.
+                        unsafe {
+                            let neighbor = &*cell.neighborhood[i];
+                            let mut descriptor = neighbor.descriptor.get();
+                            descriptor.decrement_alive();
+                            neighbor.descriptor.set(descriptor);
+                        }
+                    }
+                }
             },
             RuleTableImpl::Mask(_) => {
-                let token = match state {
-                    CellState::Dead | CellState::Dying(_) => self.dead_tokens[i],
-                    CellState::Alive => self.alive_tokens[i],
+                let tokens = match state {
+                    CellState::Dead | CellState::Dying(_) => &self.dead_tokens,
+                    CellState::Alive => &self.alive_tokens,
                 };
-                descriptor.0 ^= token;
+                for (i, &token) in tokens.iter().take(self.neighborhood_size).enumerate() {
+                    // Safety: the neighbors must be in the same world as the cell.
+                    unsafe {
+                        if let Some(neighbor) = cell.neighborhood[i].as_ref() {
+                            let mut descriptor = neighbor.descriptor.get();
+                            descriptor.0 ^= token;
+                            neighbor.descriptor.set(descriptor);
+                        }
+                    }
+                }
             }
         }
-
-        neighbor.descriptor.set(descriptor);
     }
 
     /// Update the descriptor of a cell when one of its neighbors is outside the world.
@@ -669,7 +741,9 @@ impl CountTable {
 
     /// Find the implication of a neighborhood descriptor.
     fn implies(&self, descriptor: Descriptor) -> BitFlags<Implication> {
-        self.table[descriptor.0 as usize]
+        // Safety: the table has `1 << Descriptor::BITS` entries, and the
+        // descriptor is always smaller than that.
+        unsafe { *self.table.get_unchecked(descriptor.0 as usize) }
     }
 
     /// Deduce the implication of the successor cell.
@@ -877,7 +951,15 @@ impl MaskTable {
 
     /// Find the implication of a neighborhood descriptor.
     fn implies(&self, descriptor: Descriptor) -> CheckResult {
-        CheckResult(self.table[descriptor.0 as usize & self.index_mask as usize])
+        // Safety: the table has `1 << (4 + 2n)` entries, and the index is
+        // masked to be smaller than that.
+        unsafe {
+            CheckResult(
+                *self
+                    .table
+                    .get_unchecked((descriptor.0 & self.index_mask as u64) as usize),
+            )
+        }
     }
 
     /// The flags of a table entry.

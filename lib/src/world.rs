@@ -77,6 +77,17 @@ pub struct World {
     /// The upper bound of the population.
     pub(crate) max_population: Option<usize>,
 
+    /// The number of generations whose population is at most [`max_population`](World::max_population).
+    ///
+    /// This is used to ensure that the population is never too large: the search
+    /// fails when no generation is at or below the upper bound, i.e. when the
+    /// minimum population over all generations exceeds the bound.
+    ///
+    /// This is maintained incrementally in [`set_cell`](World::set_cell) and
+    /// [`unset_cell`](World::unset_cell), so that the check in
+    /// [`check_affected`](World::check_affected) is O(1).
+    pub(crate) below_max: usize,
+
     /// The number of unknown or living cells on the front, i.e. the first row or column,
     /// depending on the search order.
     ///
@@ -168,6 +179,9 @@ impl World {
             rng,
             population: vec![0; p as usize],
             max_population,
+            // The populations of all generations are initially 0, so they are
+            // all at or below the maximum.
+            below_max: p as usize,
             front_count: 0,
             stack: Vec::with_capacity(size),
             stack_index: 0,
@@ -390,6 +404,28 @@ impl World {
                                 self.rule.set_outside_neighbor(&*cell, i);
                             }
                         }
+                    }
+
+                    // For a totalistic rule, the state update of a neighbor does
+                    // not depend on the position of the neighbor in the array,
+                    // so the non-null neighbors can be packed to the front,
+                    // and the update loops can avoid the null checks.
+                    let is_totalistic = self.rule.is_totalistic();
+                    let neighborhood_size = self.rule.neighborhood_size;
+
+                    let cell = self.get_cell_by_coord_mut((x, y, t)).unwrap();
+                    if is_totalistic {
+                        let mut len = 0;
+                        for i in 0..neighborhood_size {
+                            let neighbor = cell.neighborhood[i];
+                            if !neighbor.is_null() {
+                                cell.neighborhood[len] = neighbor;
+                                len += 1;
+                            }
+                        }
+                        cell.neighborhood_len = len;
+                    } else {
+                        cell.neighborhood_len = neighborhood_size;
                     }
                 }
             }
@@ -676,11 +712,7 @@ impl World {
         // Update the neighborhood descriptor of the cell, its neighbors and predecessor.
         cell.update_current(state);
 
-        for i in 0..self.rule.neighborhood_size {
-            if let Some(neighbor) = unsafe { cell.neighborhood[i].as_ref() } {
-                self.rule.set_neighbor(neighbor, i, state);
-            }
-        }
+        self.rule.set_neighbors(cell, state);
 
         if let Some(predecessor) = unsafe { cell.predecessor.as_ref() } {
             predecessor.update_successor(state);
@@ -693,7 +725,16 @@ impl World {
 
         // If the cell is alive, update the population.
         if state == CellState::Alive {
-            self.population[cell.generation as usize] += 1;
+            let t = cell.generation as usize;
+            self.population[t] += 1;
+            // If the population of this generation just exceeded the maximum,
+            // one fewer generation is at or below the maximum.
+            if let Some(max_population) = self.max_population
+                && self.population[t] == max_population + 1
+            {
+                debug_assert!(self.below_max > 0);
+                self.below_max -= 1;
+            }
         }
 
         // Track the reason on the cell itself.
@@ -717,11 +758,7 @@ impl World {
         // Update the neighborhood descriptor of the cell, its neighbors and predecessor.
         cell.update_current(state);
 
-        for i in 0..self.rule.neighborhood_size {
-            if let Some(neighbor) = unsafe { cell.neighborhood[i].as_ref() } {
-                self.rule.unset_neighbor(neighbor, i, state);
-            }
-        }
+        self.rule.unset_neighbors(cell, state);
 
         if let Some(predecessor) = unsafe { cell.predecessor.as_ref() } {
             predecessor.update_successor(state);
@@ -734,7 +771,15 @@ impl World {
 
         // If the cell was alive, update the population.
         if state == CellState::Alive {
-            self.population[cell.generation as usize] -= 1;
+            let t = cell.generation as usize;
+            // If the population of this generation just fell back to the maximum,
+            // one more generation is at or below the maximum.
+            if let Some(max_population) = self.max_population
+                && self.population[t] == max_population + 1
+            {
+                self.below_max += 1;
+            }
+            self.population[t] -= 1;
         }
 
         // Clear the reason on the cell.
@@ -1181,6 +1226,16 @@ impl World {
         world.rng = serde.rng;
         world.population = serde.population;
         world.max_population = serde.max_population;
+        world.below_max =
+            world
+                .max_population
+                .map_or(world.config.period as usize, |max_population| {
+                    world
+                        .population
+                        .iter()
+                        .filter(|&&pop| pop <= max_population)
+                        .count()
+                });
         world.front_count = serde.front_count;
         world.stack_index = serde.stack_index;
         world.status = serde.status;
@@ -1627,6 +1682,66 @@ mod test {
         let mut world = World::new(config).unwrap();
         world.search(None);
         assert_eq!(world.status(), Status::Solved);
+    }
+
+    #[test]
+    fn test_below_max_invariant() {
+        // The `below_max` counter should always be the number of generations
+        // whose population is at most `max_population`.
+        let mut world = World::new(Config::new("B3/S23", 6, 6, 2).with_max_population(8)).unwrap();
+
+        for _ in 0..100 {
+            world.search(Some(1000));
+
+            let below_max =
+                world
+                    .max_population
+                    .map_or(world.config.period as usize, |max_population| {
+                        world
+                            .population
+                            .iter()
+                            .filter(|&&pop| pop <= max_population)
+                            .count()
+                    });
+            assert_eq!(world.below_max, below_max);
+
+            if world.status() != Status::Running {
+                break;
+            }
+        }
+    }
+
+    #[test]
+    fn test_below_max_invariant_with_reduce() {
+        // When reducing the maximum population after each solution, the
+        // invariant should hold between the searches, and the search should
+        // eventually finish with no solution.
+        let mut world =
+            World::new(Config::new("B3/S23", 5, 5, 1).with_reduce_max_population()).unwrap();
+
+        while world.search(None) == Status::Solved {
+            let below_max =
+                world
+                    .max_population
+                    .map_or(world.config.period as usize, |max_population| {
+                        world
+                            .population
+                            .iter()
+                            .filter(|&&pop| pop <= max_population)
+                            .count()
+                    });
+            assert_eq!(world.below_max, below_max);
+        }
+        assert_eq!(world.status(), Status::NoSolution);
+    }
+
+    #[test]
+    fn test_max_population_prunes_the_search() {
+        // In B3/S23, a single cell dies out, so there is no oscillator with a
+        // population of at most 1.
+        let mut world = World::new(Config::new("B3/S23", 4, 4, 2).with_max_population(1)).unwrap();
+        world.search(None);
+        assert_eq!(world.status(), Status::NoSolution);
     }
 
     #[test]

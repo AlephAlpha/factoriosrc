@@ -97,6 +97,10 @@ impl<'de> Deserialize<'de> for Reason {
 ///
 /// The name `LifeCell` is used to avoid confusion with the [`Cell`] type in `std::cell`.
 ///
+/// The fields are ordered (and the layout is fixed with `repr(C)`) so that
+/// the fields accessed in the hot paths of the search are in the first cache
+/// lines of the cell.
+///
 /// # Safety
 ///
 /// This struct contains raw pointers. It is safe to use as long as the following invariants are
@@ -105,18 +109,39 @@ impl<'de> Deserialize<'de> for Reason {
 /// - Raw pointers in the `symmetry` vector should be non-null.
 /// - Other raw pointers may be null.
 /// - When a pointer is non-null, it must point to a cell in the same [`World`].
+/// - The pointers in the `neighborhood` array may be null; when non-null,
+///   they must point to cells in the same [`World`].
 #[derive(Debug)]
+#[repr(C)]
 pub struct LifeCell {
-    /// The generation of the cell.
-    pub(crate) generation: i32,
+    /// The neighborhood descriptor of the cell.
+    pub(crate) descriptor: Cell<Descriptor>,
 
     /// The state of the cell.
     ///
     /// [`None`] means the cell is unknown.
     pub(crate) state: Cell<Option<CellState>>,
 
-    /// The neighborhood descriptor of the cell.
-    pub(crate) descriptor: Cell<Descriptor>,
+    /// The state of the successor of the cell.
+    ///
+    /// [`None`] if the successor is unknown. This is a cached copy of the
+    /// state of the successor cell, so that checking the cell does not need
+    /// to dereference the successor. It is kept in sync in
+    /// [`update_successor`](LifeCell::update_successor).
+    pub(crate) successor_state: Cell<Option<CellState>>,
+
+    /// The reason why this cell was set to its current state.
+    ///
+    /// [`None`] if the cell is unknown.
+    pub(crate) reason: Cell<Option<Reason>>,
+
+    /// Whether the cell is on the front, i.e. the first row or column, depending on the search order.
+    ///
+    /// This is used to ensure that the front is always non-empty.
+    pub(crate) is_front: bool,
+
+    /// The generation of the cell.
+    pub(crate) generation: i32,
 
     /// The predecessor of the cell.
     pub(crate) predecessor: *const Self,
@@ -124,26 +149,31 @@ pub struct LifeCell {
     /// The successor of the cell.
     pub(crate) successor: *const Self,
 
-    /// The neighborhood of the cell.
-    pub(crate) neighborhood: [*const Self; MAX_NEIGHBORHOOD_SIZE],
+    /// The number of entries to iterate over in [`neighborhood`](LifeCell::neighborhood).
+    ///
+    /// For a totalistic rule, this is the number of non-null neighbors.
+    /// For a non-totalistic rule, this is the size of the neighborhood,
+    /// and the entries may be null.
+    pub(crate) neighborhood_len: usize,
+
+    /// The next cell to be searched according to the search order.
+    pub(crate) next: *const Self,
 
     /// Cells that are known to be equal to this cell because of the symmetry.
     ///
     /// The pointers in this vector should be non-null.
     pub(crate) symmetry: Vec<*const Self>,
 
-    /// The next cell to be searched according to the search order.
-    pub(crate) next: *const Self,
-
-    /// Whether the cell is on the front, i.e. the first row or column, depending on the search order.
+    /// The neighborhood of the cell.
     ///
-    /// This is used to ensure that the front is always non-empty.
-    pub(crate) is_front: bool,
-
-    /// The reason why this cell was set to its current state.
+    /// For a totalistic rule, the non-null entries are packed to the front of
+    /// the array, and the entries in `0..neighborhood_len` are all non-null.
+    /// This is sound because the state updates of a totalistic rule do not
+    /// depend on the position of the neighbor in the array.
     ///
-    /// [`None`] if the cell is unknown.
-    pub(crate) reason: Cell<Option<Reason>>,
+    /// For a non-totalistic rule, the entries keep their original positions,
+    /// which may be interleaved with null entries.
+    pub(crate) neighborhood: [*const Self; MAX_NEIGHBORHOOD_SIZE],
 }
 
 impl LifeCell {
@@ -155,9 +185,11 @@ impl LifeCell {
             generation,
             state: Cell::new(None),
             descriptor: Cell::default(),
+            successor_state: Cell::new(None),
             predecessor: std::ptr::null(),
             successor: std::ptr::null(),
             neighborhood: [std::ptr::null(); MAX_NEIGHBORHOOD_SIZE],
+            neighborhood_len: 0,
             symmetry: Vec::new(),
             next: std::ptr::null(),
             is_front: false,
@@ -185,6 +217,13 @@ impl LifeCell {
         let mut descriptor = self.descriptor.get();
         descriptor.update_successor(state);
         self.descriptor.set(descriptor);
+
+        let successor_state = self.successor_state.get();
+        self.successor_state.set(if successor_state.is_none() {
+            Some(state)
+        } else {
+            None
+        });
     }
 
     /// Update the state of the current cell in the neighborhood descriptor.

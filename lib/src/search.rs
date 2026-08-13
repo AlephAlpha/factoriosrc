@@ -18,6 +18,7 @@ impl World {
     ///
     /// The cell must be in the same world as `self`.
     /// Otherwise the behavior is undefined.
+    #[inline(always)]
     unsafe fn check_descriptor(&mut self, cell: &LifeCell) -> Option<()> {
         unsafe {
             // For a Generations rule, the exact states of the cell and its
@@ -42,6 +43,26 @@ impl World {
                 return None;
             }
 
+            self.check_descriptor_implied(cell, result)
+        }
+    }
+
+    /// Check the implication of a neighborhood descriptor that is not empty.
+    ///
+    /// This is the slow path of [`check_descriptor`](World::check_descriptor),
+    /// handling the implications that require setting the states of some cells.
+    ///
+    /// # Safety
+    ///
+    /// The cell must be in the same world as `self`.
+    /// Otherwise the behavior is undefined.
+    #[inline(never)]
+    unsafe fn check_descriptor_implied(
+        &mut self,
+        cell: &LifeCell,
+        result: CheckResult,
+    ) -> Option<()> {
+        unsafe {
             // The descriptor implies that the successor is dead or alive.
             //
             // In this case, the successor was unknown, so there is no implication about the cell
@@ -87,7 +108,8 @@ impl World {
                     CellState::Dead
                 };
 
-                for i in 0..self.rule.neighborhood_size {
+                for i in 0..cell.neighborhood_len {
+                    // Safety: the neighbors are in the same world as the cell.
                     if let Some(neighbor) = cell.neighborhood[i].as_ref()
                         && neighbor.state().is_none()
                     {
@@ -137,11 +159,12 @@ impl World {
     ///
     /// The cell must be in the same world as `self`.
     /// Otherwise the behavior is undefined.
+    #[inline(always)]
     unsafe fn check_generations(&mut self, cell: &LifeCell) -> Option<()> {
         unsafe {
             let num_states = self.rule.num_states();
             let state = cell.state();
-            let successor_state = cell.successor.as_ref().and_then(LifeCell::state);
+            let successor_state = cell.successor_state.get();
 
             match state {
                 // A dying cell always transitions to the next state.
@@ -207,7 +230,8 @@ impl World {
                             self.set_cell(cell, CellState::Dead, Reason::Deduced);
                         }
                         if result.flags().contains(Implication::NeighborhoodAlive) {
-                            for i in 0..self.rule.neighborhood_size {
+                            for i in 0..cell.neighborhood_len {
+                                // Safety: the neighbors are in the same world as the cell.
                                 if let Some(neighbor) = cell.neighborhood[i].as_ref()
                                     && neighbor.state().is_none()
                                 {
@@ -242,64 +266,87 @@ impl World {
                         return None;
                     }
 
-                    // The descriptor implies that the successor is dead or alive.
-                    //
-                    // In this case, the successor was unknown, so there is no implication about
-                    // the cell itself or its neighbors. So we can return early.
-                    if result
-                        .flags()
-                        .intersects(Implication::SuccessorDead | Implication::SuccessorAlive)
-                        && let Some(successor) = cell.successor.as_ref()
-                    {
-                        let state = if result.flags().contains(Implication::SuccessorAlive) {
-                            CellState::Alive
-                        } else if matches!(state, Some(CellState::Alive)) {
-                            // An alive cell that does not survive enters the first dying state.
-                            CellState::from_number(2)
-                        } else {
-                            CellState::Dead
-                        };
-
-                        self.set_cell(successor, state, Reason::Deduced);
-
-                        return Some(());
-                    }
-
-                    // The descriptor implies that all unknown neighbors are alive.
-                    //
-                    // There is no "all unknown neighbors are dead" implication here: a neighbor
-                    // in a dying state would also behave as dead.
-                    if result.flags().contains(Implication::NeighborhoodAlive) {
-                        for i in 0..self.rule.neighborhood_size {
-                            if let Some(neighbor) = cell.neighborhood[i].as_ref()
-                                && neighbor.state().is_none()
-                            {
-                                self.set_cell(neighbor, CellState::Alive, Reason::Deduced);
-                            }
-                        }
-                    }
-
-                    // For a non-totalistic rule, set the individual unknown neighbors
-                    // that are forced to be alive.
-                    //
-                    // The neighbors forced to be dead are ignored: a neighbor in a
-                    // dying state would also behave as dead.
-                    if result.forced() != 0 {
-                        let flags = result.flags();
-                        let mut forced = result.forced();
-                        for i in 0..self.rule.neighborhood_size {
-                            if forced & (0b10 << (2 * i)) != 0 {
-                                forced &= !(0b11 << (2 * i));
-                            }
-                        }
-                        if forced != 0 {
-                            self.set_forced_neighbors(cell, CheckResult::new(flags, forced));
-                        }
-                    }
-
-                    Some(())
+                    self.check_generations_implied(cell, state, result)
                 }
             }
+        }
+    }
+
+    /// Check a non-empty implication of a neighborhood descriptor for a
+    /// Generations rule, when the cell itself is dead or alive.
+    ///
+    /// This is the slow path of [`check_generations`](World::check_generations),
+    /// handling the implications that require setting the states of some cells.
+    ///
+    /// # Safety
+    ///
+    /// The cell must be in the same world as `self`.
+    /// Otherwise the behavior is undefined.
+    #[inline(never)]
+    unsafe fn check_generations_implied(
+        &mut self,
+        cell: &LifeCell,
+        state: Option<CellState>,
+        result: CheckResult,
+    ) -> Option<()> {
+        unsafe {
+            // The descriptor implies that the successor is dead or alive.
+            //
+            // In this case, the successor was unknown, so there is no implication about
+            // the cell itself or its neighbors. So we can return early.
+            if result
+                .flags()
+                .intersects(Implication::SuccessorDead | Implication::SuccessorAlive)
+                && let Some(successor) = cell.successor.as_ref()
+            {
+                let state = if result.flags().contains(Implication::SuccessorAlive) {
+                    CellState::Alive
+                } else if matches!(state, Some(CellState::Alive)) {
+                    // An alive cell that does not survive enters the first dying state.
+                    CellState::from_number(2)
+                } else {
+                    CellState::Dead
+                };
+
+                self.set_cell(successor, state, Reason::Deduced);
+
+                return Some(());
+            }
+
+            // The descriptor implies that all unknown neighbors are alive.
+            //
+            // There is no "all unknown neighbors are dead" implication here: a neighbor
+            // in a dying state would also behave as dead.
+            if result.flags().contains(Implication::NeighborhoodAlive) {
+                for i in 0..cell.neighborhood_len {
+                    // Safety: the neighbors are in the same world as the cell.
+                    if let Some(neighbor) = cell.neighborhood[i].as_ref()
+                        && neighbor.state().is_none()
+                    {
+                        self.set_cell(neighbor, CellState::Alive, Reason::Deduced);
+                    }
+                }
+            }
+
+            // For a non-totalistic rule, set the individual unknown neighbors
+            // that are forced to be alive.
+            //
+            // The neighbors forced to be dead are ignored: a neighbor in a
+            // dying state would also behave as dead.
+            if result.forced() != 0 {
+                let flags = result.flags();
+                let mut forced = result.forced();
+                for i in 0..self.rule.neighborhood_size {
+                    if forced & (0b10 << (2 * i)) != 0 {
+                        forced &= !(0b11 << (2 * i));
+                    }
+                }
+                if forced != 0 {
+                    self.set_forced_neighbors(cell, CheckResult::new(flags, forced));
+                }
+            }
+
+            Some(())
         }
     }
 
@@ -345,6 +392,7 @@ impl World {
     ///
     /// The cell must be in the same world as `self`.
     /// Otherwise the behavior is undefined.
+    #[inline]
     unsafe fn check_affected(&mut self, cell: &LifeCell) -> Option<()> {
         unsafe {
             // Check if the front becomes empty.
@@ -353,9 +401,7 @@ impl World {
             }
 
             // Check if the population is too large.
-            if self.max_population.is_some_and(|max_population| {
-                *self.population.iter().min().unwrap() > max_population
-            }) {
+            if self.max_population.is_some() && self.below_max == 0 {
                 return None;
             }
 
@@ -379,9 +425,21 @@ impl World {
             }
 
             // Check the neighborhood descriptors of the neighbors.
-            for i in 0..self.rule.neighborhood_size {
-                if let Some(neighbor) = cell.neighborhood[i].as_ref() {
+            //
+            // For a totalistic rule, the non-null neighbors are packed to the
+            // front of the array, so no null checks are needed.
+            if self.rule.is_totalistic() {
+                for i in 0..cell.neighborhood_len {
+                    // Safety: the neighbors are in the same world as the cell.
+                    let neighbor = &*cell.neighborhood[i];
                     self.check_descriptor(neighbor)?;
+                }
+            } else {
+                for i in 0..cell.neighborhood_len {
+                    // Safety: the neighbors are in the same world as the cell.
+                    if let Some(neighbor) = cell.neighborhood[i].as_ref() {
+                        self.check_descriptor(neighbor)?;
+                    }
                 }
             }
 
@@ -574,6 +632,11 @@ impl World {
                     let population = *self.population.iter().min().unwrap();
                     self.max_population = Some(population - 1);
                     self.config.max_population = self.max_population;
+                    self.below_max = self
+                        .population
+                        .iter()
+                        .filter(|&&pop| pop < population)
+                        .count();
                 }
                 self.backtrack()
             }

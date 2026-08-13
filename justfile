@@ -53,7 +53,9 @@ help: build
 # Run the benchmark
 bench: build
     hyperfine --warmup 3 '{{ bin }} new --no-tui -r B3/S23 26 8 4 -y 1 -n a'
+    hyperfine --warmup 3 '{{ bin }} new --no-tui -r 3457/357/5 20 16 7 -x 3 -s D2- -n a'
 
 # Run the benchmark, comparing with rlifesrc
 bench-compare: build
     hyperfine --warmup 3 '{{ bin }} new --no-tui -r B3/S23 26 8 4 -y 1 -n a' 'rlifesrc 26 8 4 0 1 --no-tui'
+    hyperfine --warmup 3 '{{ bin }} new --no-tui -r 3457/357/5 20 16 7 -x 3 -s D2- -n a' 'rlifesrc 20 16 7 3 0 -s D2- -r 3457/357/5 --no-tui'
