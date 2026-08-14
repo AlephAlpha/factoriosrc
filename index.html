@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <!-- Disable zooming: -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>factoriosrc</title>
+
+    <!-- config for our rust wasm binary -->
+    
+<script type="module">
+import init, * as bindings from 'https://alephalpha.github.io/factoriosrc/factoriosrc-egui.js';
+const wasm = await init({ module_or_path: 'https://alephalpha.github.io/factoriosrc/factoriosrc-egui_bg.wasm' });
+
+
+window.wasmBindings = bindings;
+
+
+dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
+
+</script>
+    <!-- this is the base url relative to which other urls will be constructed -->
+    <base href="https://alephalpha.github.io/factoriosrc/" />
+
+    
+
+    <style>
+        html {
+            /* Remove touch delay: */
+            touch-action: manipulation;
+        }
+
+        body {
+            /* Light mode background color for what is not covered by the egui canvas. */
+            background: #909090;
+        }
+
+        @media (prefers-color-scheme: dark) {
+            body {
+                background: #404040;
+            }
+        }
+
+        /* Allow canvas to fill entire web page: */
+        html,
+        body {
+            overflow: hidden;
+            margin: 0 !important;
+            padding: 0 !important;
+            height: 100%;
+            width: 100%;
+        }
+
+        /* Make canvas fill entire document: */
+        canvas {
+            margin-right: auto;
+            margin-left: auto;
+            display: block;
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+
+        .centered {
+            margin-right: auto;
+            margin-left: auto;
+            display: block;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #f0f0f0;
+            font-size: 24px;
+            font-family: Ubuntu-Light, Helvetica, sans-serif;
+            text-align: center;
+        }
+    </style>
+<link rel="modulepreload" href="https://alephalpha.github.io/factoriosrc/factoriosrc-egui.js" crossorigin="anonymous" integrity="sha384-Ndd5ABSF41DCrInEktI6t4tL9LHyPbULsF4C9tl3A+dKLwmS+9rJ57pQiNNdoDKm"><link rel="preload" href="https://alephalpha.github.io/factoriosrc/factoriosrc-egui_bg.wasm" crossorigin="anonymous" integrity="sha384-pLoNLUlNHrfBKFIBdcjwXAAQz/6cPXU1Cs7qGQT5bks766NY2jDlfJpXcLGN1xPQ" as="fetch" type="application/wasm"></head>
+
+<body>
+    <!-- The WASM code will resize the canvas dynamically -->
+    <!-- the id is hardcoded in main.rs, so make sure both match. -->
+    <canvas id="the_canvas_id"></canvas>
+
+    <div class="centered" id="loading_text">
+        <noscript>You need JavaScript to use this website</noscript>
+        <p style="font-size:16px">Loading…</p>
+    </div>
+</body>
+
+</html>
