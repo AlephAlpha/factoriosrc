@@ -131,6 +131,9 @@ Features that rlifesrc has but factoriosrc doesn't:
 
 Features that rlifesrc doesn't have and factoriosrc may add:
 
+- [ ] Improve the search algorithm, or support multiple search algorithms.
+  - [ ] Taking inspiration from SAT solvers (the CDCL algorithm) and constraint programming. See [docs/sat-ideas.md](docs/sat-ideas.md).
+  - [ ] Taking inspiration from row-by-row searchers, like [qfind](https://github.com/Matthias-Merzenich/qfind).
 - [ ] Support searching non-periodic patterns. For example, find a parent of a given pattern.
 - [ ] Support more symmetries and transformations. (https://github.com/AlephAlpha/rlifesrc/issues/51)
   - [ ] Support hexagonal symmetries and transformations.
