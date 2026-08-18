@@ -749,6 +749,11 @@ impl App {
                                     });
                                 });
                                 ui.end_row();
+
+                                ui.label("phase saving")
+                                    .on_hover_text(ConfigHelpField::PhaseSaving.short_help());
+                                ui.checkbox(&mut config.phase_saving, "");
+                                ui.end_row();
                             });
 
                         if let Some(search_order) = &preview.auto_search_order {

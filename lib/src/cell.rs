@@ -174,6 +174,15 @@ pub struct LifeCell {
     /// For a non-totalistic rule, the entries keep their original positions,
     /// which may be interleaved with null entries.
     pub(crate) neighborhood: [*const Self; MAX_NEIGHBORHOOD_SIZE],
+
+    /// The last state of the cell.
+    ///
+    /// This is used by the phase saving heuristic: when a cell is guessed
+    /// again, the last state it was set to is tried first.
+    ///
+    /// This is set in [`World::set_cell`] when phase saving is enabled, and
+    /// is not cleared when the cell is unset.
+    pub(crate) phase: Cell<Option<CellState>>,
 }
 
 impl LifeCell {
@@ -194,6 +203,7 @@ impl LifeCell {
             next: std::ptr::null(),
             is_front: false,
             reason: Cell::new(None),
+            phase: Cell::new(None),
         }
     }
 

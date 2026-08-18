@@ -269,6 +269,23 @@ pub struct Config {
     #[cfg_attr(feature = "serde", serde(default))]
     pub new_state: NewState,
 
+    /// Whether to remember the last state of each cell and guess it first.
+    ///
+    /// When this is `true`, each cell remembers the last state it was set to
+    /// (by guessing, deduction, or from the configuration), and the next time
+    /// the cell is guessed, the remembered state is tried first.
+    ///
+    /// This is an experimental heuristic inspired by the phase saving
+    /// heuristic of SAT solvers; it does not always help. Whether it helps
+    /// depends on the rule and the [`new_state`](Config::new_state) strategy:
+    /// on the default rule `R3,C2,S2,B3,N+` it gives a small speedup (about
+    /// 5%) with the default dead strategy and a larger one (about 2x) with
+    /// the random strategy, but it can also slow the search down for other
+    /// rules and strategies. The default is `false`.
+    #[cfg_attr(feature = "clap", arg(long))]
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub phase_saving: bool,
+
     /// Random seed for guessing the state of an unknown cell.
     ///
     /// This is only used when [`new_state`](Config::new_state) is [`Random`](NewState::Random).
@@ -326,6 +343,7 @@ impl Config {
             transformation: Transformation::R0,
             search_order: None,
             new_state: NewState::Dead,
+            phase_saving: false,
             seed: None,
             known_cells: Vec::new(),
             max_population: None,
@@ -391,6 +409,16 @@ impl Config {
     #[must_use]
     pub const fn with_new_state(mut self, new_state: NewState) -> Self {
         self.new_state = new_state;
+        self
+    }
+
+    /// Enable remembering the last state of each cell and guessing it first.
+    ///
+    /// See [`phase_saving`](Config::phase_saving) for more details.
+    #[inline]
+    #[must_use]
+    pub const fn with_phase_saving(mut self) -> Self {
+        self.phase_saving = true;
         self
     }
 

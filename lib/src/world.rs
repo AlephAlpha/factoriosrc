@@ -740,6 +740,12 @@ impl World {
         // Track the reason on the cell itself.
         cell.reason.set(Some(reason));
 
+        // If phase saving is enabled, remember the state of the cell.
+        // The remembered state is not cleared when the cell is unset.
+        if self.config.phase_saving {
+            cell.phase.set(Some(state));
+        }
+
         // Push the cell to the stack.
         self.stack.push((cell, reason));
     }
@@ -1779,6 +1785,66 @@ mod test {
             world.get_cell_state((1, 0, 0)),
             world2.get_cell_state((1, 0, 0))
         );
+    }
+
+    /// Count the number of solutions of a configuration.
+    fn count_solutions(config: &Config) -> usize {
+        let mut world = World::new(config.clone()).unwrap();
+        let mut count = 0;
+        while world.search(None) == Status::Solved {
+            count += 1;
+        }
+        count
+    }
+
+    #[test]
+    fn test_phase_saving_finds_solution() {
+        // With phase saving enabled, the search should still find solutions
+        // for 2-state and Generations rules.
+        for config in [
+            Config::new("B3/S23", 3, 3, 2).with_phase_saving(),
+            Config::new("B2a/S12", 3, 3, 1).with_phase_saving(),
+            Config::new("B3/S23/4", 4, 4, 1).with_phase_saving(),
+            Config::new("B2o/S23oH", 3, 3, 2).with_phase_saving(),
+        ] {
+            let mut world = World::new(config).unwrap();
+            world.search(None);
+            assert_eq!(world.status(), Status::Solved);
+        }
+    }
+
+    #[test]
+    fn test_phase_saving_enumerates_same_solutions() {
+        // Phase saving changes the search order, but not the set of solutions.
+        for config in [
+            Config::new("B3/S23", 3, 3, 2),
+            Config::new("B3/S23/4", 3, 3, 1),
+            Config::new("B3/S23", 2, 2, 1),
+        ] {
+            assert_eq!(
+                count_solutions(&config),
+                count_solutions(&config.clone().with_phase_saving()),
+                "phase saving changes the solution count for {config:?}"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn test_phase_saving_round_trip_through_serde() {
+        // The phase saving option should survive a save/load round trip.
+        // The phases of the cells in the stack are restored when the stack is
+        // replayed, but the phases of cells that were unset are lost. This
+        // only affects the heuristic, not the correctness of the search.
+        let mut world = World::new(Config::new("B3/S23", 3, 3, 2).with_phase_saving()).unwrap();
+        world.search(Some(1000));
+
+        let mut world2 = World::try_from(world.to_serde()).unwrap();
+        assert!(world2.config().phase_saving);
+
+        world.search(None);
+        world2.search(None);
+        assert_eq!(world.status(), world2.status());
     }
 }
 

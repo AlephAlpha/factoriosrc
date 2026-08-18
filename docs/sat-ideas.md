@@ -1,9 +1,10 @@
 # SAT Solver Techniques for factoriosrc
 
-> **Status**: This note is a collection of ideas and a preliminary analysis. **Nothing has been
-> implemented yet.** Every direction below is at the "worth trying" stage; the concrete designs,
-> data structures, and integration with the existing code all remain to be discussed and
-> experimented with.
+> **Status**: This note is a collection of ideas and a preliminary analysis. Idea 3 (phase
+> saving) has been implemented as an opt-in experiment (see its section below); **everything
+> else in this note has not been implemented yet.** Every direction is at the "worth trying"
+> stage; the concrete designs, data structures, and integration with the existing code all
+> remain to be discussed and experimented with.
 
 ## Background and purpose
 
@@ -154,7 +155,48 @@ that can be used to evaluate the hit rate and query cost before building the ful
 
 ## Idea 3: Phase saving and decision heuristics
 
-Lowest risk, a good first experiment.
+**Status: implemented as an experiment.** `Config::phase_saving` (CLI `--phase-saving`, plus
+toggles in the TUI and the egui UI) remembers the last state of each cell and guesses it first.
+It is off by default, so existing behavior is unchanged. Phase saving is stored per cell in
+`LifeCell::phase` (`lib/src/cell.rs`), written in `World::set_cell` when enabled, and consulted
+in `World::guess` (`lib/src/search.rs`). On save/load the phases of the cells on the stack are
+rebuilt by replaying `set_cell`; the phases of cells that were unset are lost, which only affects
+the heuristic.
+
+### Experiment results (2026-08, release build, hyperfine)
+
+| Case | Without phase saving | With phase saving | Ratio |
+| --- | --- | --- | --- |
+| `B3/S23 26 8 4 -y 1 -n a` (justfile bench 1, spaceship) | 1.10 s | 3.41 s | 0.32x (3.1x slower) |
+| `3457/357/5 20 16 7 -x 3 -s D2- -n a` (justfile bench 2, Generations) | 2.00 s | 2.99 s | 0.67x (1.5x slower) |
+| `B3/S23 26 8 4 -y 1` (default new state) | 35.5 s | 37.5 s | 0.94x (slightly slower) |
+| `B3/S23 26 8 4 -y 1 -n r --seed 42` (random) | 2.56 s | 2.42 s | 1.06x (slightly faster) |
+| `3457/357/5 20 16 7 -x 3 -s D2-` (default new state) | 2.46 s | 2.93 s | 0.84x (slightly slower) |
+| `R3,C2,S2,B3,N+ 50 10 4 -x 2 -s D2-` (default rule, solves) | 26.7 s | 13.4 s | **2.0x faster** |
+| `R3,C2,S2,B3,N+ 50 12 3 -x 1 -s D2-` (default new state) | 139.0 s / 139.6 s | 131.8 s / 132.2 s | **1.05x faster** |
+| `R3,C2,S2,B3,N+ 50 12 3 -x 1 -s D2- -n r --seed 42` (random) | 34.1 s | 16.5 s | **2.1x faster** |
+
+Notes:
+
+- The effect depends strongly on the fixed `new_state` strategy. When the fixed strategy is
+  already well matched to the task (guessing alive for spaceship searches, or dead in general),
+  phase saving interferes and is slower. With random guessing it is mildly faster.
+- On the default factorio rule `R3,C2,S2,B3,N+` — the rule this project is built around — phase
+  saving helps: about 2x on the solving searches tested (26.7 s vs 13.4 s for
+  `50 10 4 -x 2 -s D2-`, and 34.1 s vs 16.5 s for `50 12 3 -x 1 -s D2-` with the random
+  strategy), but only about 5% on `50 12 3 -x 1 -s D2-` with the default dead strategy (139 s vs
+  132 s, finding the same solution with population 124). The two runs of `50 10 4` find different
+  solutions (population 72 vs 82), both valid.
+- The user-proposed large case was originally mis-typed as `50 12 3 -x 2 -s D2-`, which turns
+  out to be instant (~15 ms, NoSolution) in the current code, both before and after this change,
+  so it cannot serve as a slow benchmark. The correct `50 12 3 -x 1 -s D2-` (~139 s, solves) is
+  a realistic large case. R3 searches show a sharp difficulty cliff: some D2- period-3 cases are
+  instantaneous (a structural no-solution argument), while period-4 or C1 cases easily exceed
+  15 minutes.
+
+Verdict: mixed, but the factorio-rule results make it worth keeping as an opt-in, especially
+with the random `new_state` strategy. A follow-up could try restricting phase saving to certain
+rules or new-state strategies, or combining it with idea 4 (probing).
 
 ### Phase saving (the MiniSat idea)
 
@@ -236,8 +278,8 @@ resolution in SAT preprocessing.
 
 ## Suggested order of exploration
 
-1. Idea 3 (phase saving): purely incremental, zero structural risk; first measure the payoff of
-   heuristics at this scale;
+1. Idea 3 (phase saving): **done** — implemented as an opt-in `Config::phase_saving` and
+   benchmarked (see the results above). Kept as opt-in because the payoff is rule-dependent;
 2. The foundation of idea 1: attach antecedents to `Reason::Deduced` (record only, do not change
    the algorithm yet) — all later CDCL-style techniques depend on it;
 3. Idea 4 (probing-based ranking): an easier win on top of that foundation than full conflict

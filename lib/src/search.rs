@@ -530,16 +530,24 @@ impl World {
         unsafe {
             while let Some(cell) = self.start.as_ref() {
                 if cell.state().is_none() {
-                    let state = match self.config.new_state {
-                        NewState::Alive => CellState::Alive,
-                        NewState::Dead => CellState::Dead,
-                        NewState::Random => {
-                            if self.rule.is_generations() {
-                                CellState::from_number(
-                                    self.rng.random_range(0..self.rule.num_states()),
-                                )
-                            } else {
-                                self.rng.random()
+                    // If phase saving is enabled and the cell has been set
+                    // before, guess its last state first.
+                    let state = if self.config.phase_saving
+                        && let Some(phase) = cell.phase.get()
+                    {
+                        phase
+                    } else {
+                        match self.config.new_state {
+                            NewState::Alive => CellState::Alive,
+                            NewState::Dead => CellState::Dead,
+                            NewState::Random => {
+                                if self.rule.is_generations() {
+                                    CellState::from_number(
+                                        self.rng.random_range(0..self.rule.num_states()),
+                                    )
+                                } else {
+                                    self.rng.random()
+                                }
                             }
                         }
                     };
