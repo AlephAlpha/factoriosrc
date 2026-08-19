@@ -1,10 +1,12 @@
 # SAT Solver Techniques for factoriosrc
 
-> **Status**: This note is a collection of ideas and a preliminary analysis. Idea 3 (phase
-> saving) has been implemented as an opt-in experiment (see its section below); **everything
-> else in this note has not been implemented yet.** Every direction is at the "worth trying"
-> stage; the concrete designs, data structures, and integration with the existing code all
-> remain to be discussed and experimented with.
+> **Status**: This note is a collection of ideas and a preliminary analysis. The phase saving
+> part of idea 3 and idea 4 (lookahead, polarity selection only) have been implemented as
+> opt-in experiments (see their sections below); **everything else in this note — including the
+> VSIDS-style activity part of idea 3 and the cell-selection variant of idea 4 — has not been
+> implemented yet.** Every direction is at the "worth trying" stage; the concrete designs, data
+> structures, and integration with the existing code all remain to be discussed and experimented
+> with.
 
 ## Background and purpose
 
@@ -155,6 +157,11 @@ that can be used to evaluate the hit rate and query cost before building the ful
 
 ## Idea 3: Phase saving and decision heuristics
 
+This idea has two parts. **Only the first part (phase saving) is implemented; the second part
+(VSIDS-style activity) is not.**
+
+### Phase saving
+
 **Status: implemented as an experiment.** `Config::phase_saving` (CLI `--phase-saving`, plus
 toggles in the TUI and the egui UI) remembers the last state of each cell and guesses it first.
 It is off by default, so existing behavior is unchanged. Phase saving is stored per cell in
@@ -207,6 +214,10 @@ enumerating multiple solutions (it is only a heuristic, not a correctness issue)
 
 ### VSIDS-style activity
 
+**Status: not implemented.** This is still only an idea; it was deliberately left out of the
+phase saving experiment so that the two heuristics could be evaluated separately (see the
+"suggested order of exploration" section below).
+
 Give cells that participate in conflicts a score bump, and branch on the most active cell. The
 risk: the fixed spatial order of the `next` chain is an important synergy with the front
 optimization and local propagation (the front argument in `docs/front.md` does not depend on the
@@ -215,6 +226,16 @@ only within a local window of the current order, or to make it an experimental s
 against the fixed order.
 
 ## Idea 4: Probing before branching (lookahead)
+
+**Status: implemented as an experiment** (polarity selection only; the cell-selection variant is
+not implemented). `Config::lookahead` (CLI `--lookahead`, plus toggles in the TUI and the egui
+UI) probes both states of the next unknown cell before guessing it, and guesses the better state
+(or the only non-conflicting one). It is off by default. It only applies to 2-state rules;
+Generations rules are skipped (verified to be unaffected by a benchmark). Probing is implemented
+in `World::probe` (`lib/src/search.rs`): it temporarily sets the cell, propagates with a cap of
+256 deductions (`MAX_PROBE_DEDUCTIONS`), scores the probe, and rolls it back. The rollback reuses
+the existing set/unset + stack machinery; `World::in_probe` prevents probes from corrupting phase
+saving when both are enabled.
 
 The CA version of SatZ-style lookahead / DLIS.
 
@@ -229,6 +250,35 @@ The CA version of SatZ-style lookahead / DLIS.
   well.
 - This needs a snapshot/rollback mechanism: the existing set/unset + stack machinery can be
   reused, or probing can run on a separate small stack.
+
+### Experiment results (2026-08, release build, hyperfine)
+
+| Case | Without lookahead | With lookahead | Ratio |
+| --- | --- | --- | --- |
+| `B3/S23 26 8 4 -y 1` (default new state) | 39.0 s | 5.66 s | **6.9x faster** |
+| `B3/S23 26 8 4 -y 1 -n a` (spaceship, alive) | 1.20 s | 5.67 s | 0.21x (4.7x slower) |
+| `3457/357/5 20 16 7 -x 3 -s D2- -n a` (Generations control) | 2.12 s | 2.14 s | 1.01x (no effect) |
+| `R3,C2,S2,B3,N+ 50 10 4 -x 2 -s D2-` (default rule) | 27.8 s | 32.3 s | 0.86x (1.16x slower) |
+| `R3,C2,S2,B3,N+ 50 12 3 -x 1 -s D2-` (default rule) | 141.7 s / 143.6 s | 230.8 s / 231.1 s | 0.62x (1.6x slower) |
+| `R3,C2,S2,B3,N+ 50 12 3 -x 1 -s D2- -n r --seed 42` (random) | 35.7 s | 232.3 s | 0.15x (6.5x slower) |
+
+Notes:
+
+- Lookahead gives a dramatic win on the `B3/S23` default-strategy search (6.9x faster): with
+  dead-first guessing, probes immediately discover failed literals and pick alive first, avoiding
+  long dead branches.
+- It is a clear loss on the default factorio rule searches (1.6x to 6.5x slower). Lowering the
+  probe cap from 256 to 32 deductions did not change this (238 s vs 231 s on the 50x12 case), so
+  the overhead is the fixed per-guess probe cost, not the propagation depth.
+- The Generations control is unchanged, confirming that lookahead is correctly skipped there.
+- The two runs of `50 12 3 -x 1 -s D2-` find the same solution (population 124) with and without
+  lookahead; the probe overhead is pure loss on that search.
+
+Verdict: mixed, and on the whole a net loss for the searches this project cares about most (the
+default factorio rule). It is kept as an opt-in because the `B3/S23` default-strategy case shows
+a large potential win. A follow-up could probe less often (e.g. only every k-th guess, or only
+when the preferred state would be the default guess), probe a single state instead of both, or
+only probe small neighborhoods where the check is cheap.
 
 ## Idea 5: Consistency across overlapping neighborhoods (an arc-consistency analogue)
 
@@ -278,12 +328,16 @@ resolution in SAT preprocessing.
 
 ## Suggested order of exploration
 
-1. Idea 3 (phase saving): **done** — implemented as an opt-in `Config::phase_saving` and
-   benchmarked (see the results above). Kept as opt-in because the payoff is rule-dependent;
-2. The foundation of idea 1: attach antecedents to `Reason::Deduced` (record only, do not change
+1. Idea 3, phase saving part: **done** — implemented as an opt-in `Config::phase_saving` and
+   benchmarked (see the results above). Kept as opt-in because the payoff is rule-dependent. The
+   VSIDS-style activity part of idea 3 is **not** done; it is an open follow-up, possibly as an
+   experimental switch compared against the fixed order;
+2. Idea 4, polarity-selection part: **done** — implemented as an opt-in `Config::lookahead` and
+   benchmarked (see the results above). Kept as opt-in; it is a large win on the `B3/S23`
+   default-strategy search but a loss on the default factorio rule. The cell-selection variant of
+   idea 4 (which needs a small search-order refactor to stay sound) is **not** done;
+3. The foundation of idea 1: attach antecedents to `Reason::Deduced` (record only, do not change
    the algorithm yet) — all later CDCL-style techniques depend on it;
-3. Idea 4 (probing-based ranking): an easier win on top of that foundation than full conflict
-   analysis;
 4. The full idea 1 (1-UIP backjumping) → idea 2 (cross-size nogoods): the long-term goals;
 5. Ideas 5 and 6 as needed; idea 7 last.
 

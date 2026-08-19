@@ -7,6 +7,20 @@ use crate::{
     world::{Status, World},
 };
 
+/// The maximum number of cells that a lookahead probe may set before it stops.
+const MAX_PROBE_DEDUCTIONS: usize = 256;
+
+/// The result of a guess.
+enum GuessResult {
+    /// A guess was made, and the search continues.
+    Guessed,
+    /// All cells are known, so a solution was found.
+    Solved,
+    /// Lookahead found that no state of the next unknown cell is possible,
+    /// so the search should backtrack.
+    Conflict,
+}
+
 impl World {
     /// Check the neighborhood descriptor for a cell to see what it implies.
     ///
@@ -451,7 +465,23 @@ impl World {
     ///
     /// If a conflict is found, return [`None`].
     fn check_stack(&mut self) -> Option<()> {
+        self.check_stack_with_cap(None)
+    }
+
+    /// Check all cells in the stack that have not been checked yet.
+    ///
+    /// If a conflict is found, return [`None`].
+    ///
+    /// If `cap` is [`Some`], stop checking after `cap` cells have been set
+    /// since the beginning of the call, even if there are more cells to check.
+    fn check_stack_with_cap(&mut self, cap: Option<usize>) -> Option<()> {
+        let stack_len = self.stack.len();
+
         while self.stack_index < self.stack.len() {
+            if cap.is_some_and(|cap| self.stack.len() - stack_len > cap) {
+                break;
+            }
+
             unsafe {
                 let cell = &*self.stack[self.stack_index].0;
                 self.check_affected(cell)?;
@@ -525,11 +555,28 @@ impl World {
 
     /// Find a cell whose state is unknown, and make a guess.
     ///
-    /// If no cell is found, return [`None`].
-    fn guess(&mut self) -> Option<()> {
+    /// If lookahead is enabled for a 2-state rule, the two states of the cell
+    /// are probed first, and the result determines the state to guess, or
+    /// whether the search should backtrack.
+    fn guess(&mut self) -> GuessResult {
         unsafe {
             while let Some(cell) = self.start.as_ref() {
                 if cell.state().is_none() {
+                    // If lookahead is enabled for a 2-state rule, probe both
+                    // states of the cell before guessing.
+                    if self.config.lookahead && !self.rule.is_generations() {
+                        match self.probe(cell) {
+                            Some(state) => {
+                                self.set_cell(cell, state, Reason::Guessed);
+                                self.start = cell.next;
+                                return GuessResult::Guessed;
+                            }
+                            // Neither state is possible: the current partial
+                            // assignment is contradictory.
+                            None => return GuessResult::Conflict,
+                        }
+                    }
+
                     // If phase saving is enabled and the cell has been set
                     // before, guess its last state first.
                     let state = if self.config.phase_saving
@@ -553,13 +600,79 @@ impl World {
                     };
                     self.set_cell(cell, state, Reason::Guessed);
                     self.start = cell.next;
-                    return Some(());
+                    return GuessResult::Guessed;
                 }
                 self.start = cell.next;
             }
         }
 
-        None
+        GuessResult::Solved
+    }
+
+    /// Probe the two states of a cell to see which one is better to guess.
+    ///
+    /// For each state, the cell is temporarily set to that state, and the
+    /// propagation is run until the queue is empty or
+    /// [`MAX_PROBE_DEDUCTIONS`] cells have been set. The probe is then rolled
+    /// back.
+    ///
+    /// Return the state that should be guessed:
+    /// - If one state leads to a conflict, return the other state.
+    /// - If both states are consistent, return the state that led to more
+    ///   deductions (dead on ties).
+    /// - If both states lead to a conflict, return [`None`], meaning that the
+    ///   current partial assignment is contradictory.
+    ///
+    /// This is only called for 2-state rules.
+    ///
+    /// # Safety
+    ///
+    /// The cell must be in the same world as `self`, and its state must be
+    /// unknown. Otherwise the behavior is undefined.
+    unsafe fn probe(&mut self, cell: &LifeCell) -> Option<CellState> {
+        let mut scores = [0usize; 2];
+        let mut conflict = [false; 2];
+
+        let states = [CellState::Dead, CellState::Alive];
+        for (i, &state) in states.iter().enumerate() {
+            let stack_len = self.stack.len();
+            let stack_index = self.stack_index;
+
+            self.in_probe = true;
+            unsafe {
+                self.set_cell(cell, state, Reason::Guessed);
+            }
+            let ok = self
+                .check_stack_with_cap(Some(MAX_PROBE_DEDUCTIONS))
+                .is_some();
+            self.in_probe = false;
+
+            let score = self.stack.len() - stack_len;
+
+            // Roll back the probe.
+            while self.stack.len() > stack_len {
+                unsafe {
+                    let probe_cell = &*self.stack.pop().unwrap().0;
+                    self.unset_cell(probe_cell);
+                }
+            }
+            self.stack_index = stack_index;
+
+            scores[i] = score;
+            conflict[i] = !ok;
+        }
+
+        if conflict[0] && conflict[1] {
+            None
+        } else if conflict[0] {
+            Some(CellState::Alive)
+        } else if conflict[1] {
+            Some(CellState::Dead)
+        } else if scores[1] > scores[0] {
+            Some(CellState::Alive)
+        } else {
+            Some(CellState::Dead)
+        }
     }
 
     /// One step of the search.
@@ -569,12 +682,14 @@ impl World {
     fn step(&mut self) -> Status {
         if self.check_stack().is_some() {
             // All cells have been checked.
-            if self.guess().is_some() {
+            match self.guess() {
                 // A guess was made.
-                Status::Running
-            } else {
+                GuessResult::Guessed => Status::Running,
                 // All cells are known.
-                Status::Solved
+                GuessResult::Solved => Status::Solved,
+                // Lookahead found that the current partial assignment is
+                // contradictory.
+                GuessResult::Conflict => self.backtrack(),
             }
         } else {
             // Backtrack.

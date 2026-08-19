@@ -286,6 +286,22 @@ pub struct Config {
     #[cfg_attr(feature = "serde", serde(default))]
     pub phase_saving: bool,
 
+    /// Whether to probe the states of an unknown cell before guessing it.
+    ///
+    /// When this is `true`, before guessing the state of an unknown cell,
+    /// both possible states are temporarily set and propagated for a bounded
+    /// number of deductions, and the probe is then rolled back. If a state
+    /// leads to a conflict, the other state is guessed; if both states lead
+    /// to a conflict, the search backtracks; otherwise, the state that led to
+    /// more deductions is guessed first.
+    ///
+    /// This is an experimental heuristic inspired by the lookahead / failed
+    /// literal technique of SAT solvers; it does not always help. It only
+    /// applies to rules with 2 states. The default is `false`.
+    #[cfg_attr(feature = "clap", arg(long))]
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub lookahead: bool,
+
     /// Random seed for guessing the state of an unknown cell.
     ///
     /// This is only used when [`new_state`](Config::new_state) is [`Random`](NewState::Random).
@@ -344,6 +360,7 @@ impl Config {
             search_order: None,
             new_state: NewState::Dead,
             phase_saving: false,
+            lookahead: false,
             seed: None,
             known_cells: Vec::new(),
             max_population: None,
@@ -419,6 +436,16 @@ impl Config {
     #[must_use]
     pub const fn with_phase_saving(mut self) -> Self {
         self.phase_saving = true;
+        self
+    }
+
+    /// Enable probing the states of an unknown cell before guessing it.
+    ///
+    /// See [`lookahead`](Config::lookahead) for more details.
+    #[inline]
+    #[must_use]
+    pub const fn with_lookahead(mut self) -> Self {
+        self.lookahead = true;
         self
     }
 

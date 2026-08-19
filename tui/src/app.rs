@@ -57,6 +57,7 @@ pub enum ConfigField {
     SearchOrder,
     NewState,
     PhaseSaving,
+    Lookahead,
     Seed,
     MaxPopulation,
     ReduceMaxPopulation,
@@ -82,6 +83,7 @@ impl ConfigField {
             Self::SearchOrder,
             Self::NewState,
             Self::PhaseSaving,
+            Self::Lookahead,
             Self::Seed,
             Self::MaxPopulation,
             Self::ReduceMaxPopulation,
@@ -107,6 +109,7 @@ impl ConfigField {
             Self::SearchOrder => "Order",
             Self::NewState => "New state",
             Self::PhaseSaving => "Phase saving",
+            Self::Lookahead => "Lookahead",
             Self::Seed => "Seed",
             Self::MaxPopulation => "Max pop",
             Self::ReduceMaxPopulation => "Reduce pop",
@@ -139,6 +142,7 @@ impl ConfigField {
                 | Self::Transformation
                 | Self::NewState
                 | Self::PhaseSaving
+                | Self::Lookahead
                 | Self::SearchOrder
                 | Self::ReduceMaxPopulation
                 | Self::IncreaseWorldSize
@@ -217,6 +221,7 @@ impl ConfigState {
             ConfigField::SearchOrder => cfg.search_order.map_or(String::new(), |o| o.to_string()),
             ConfigField::NewState => cfg.new_state.to_string(),
             ConfigField::PhaseSaving => cfg.phase_saving.to_string(),
+            ConfigField::Lookahead => cfg.lookahead.to_string(),
             ConfigField::Seed => cfg.seed.map_or(String::new(), |s| s.to_string()),
             ConfigField::MaxPopulation => {
                 cfg.max_population.map_or(String::new(), |p| p.to_string())
@@ -398,6 +403,9 @@ impl ConfigState {
             }
             ConfigField::PhaseSaving => {
                 self.working_config.phase_saving = !self.working_config.phase_saving;
+            }
+            ConfigField::Lookahead => {
+                self.working_config.lookahead = !self.working_config.lookahead;
             }
             ConfigField::IncreaseWorldSize => {
                 self.increase_world_size = !self.increase_world_size;
@@ -1788,7 +1796,7 @@ mod tests {
         app.update(TermEvent::Mouse(MouseInput {
             action: MouseAction::LeftDown,
             column: 3,
-            row: 15,
+            row: 16,
         }));
 
         let state = app

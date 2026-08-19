@@ -117,6 +117,14 @@ pub struct World {
     /// The starting point to look for an unknown cell according to the search order.
     pub(crate) start: *const LifeCell,
 
+    /// Whether the search is currently running a lookahead probe.
+    ///
+    /// A probe temporarily sets the states of some cells and rolls them back
+    /// immediately. This flag prevents the probe from updating the phases of
+    /// the cells for phase saving, since the assignments of a probe are not
+    /// real.
+    pub(crate) in_probe: bool,
+
     /// The search status.
     pub(crate) status: Status,
 }
@@ -186,6 +194,7 @@ impl World {
             stack: Vec::with_capacity(size),
             stack_index: 0,
             start: std::ptr::null(),
+            in_probe: false,
             status: Status::NotStarted,
         };
         world.init(&rule_symmetry)?;
@@ -742,7 +751,9 @@ impl World {
 
         // If phase saving is enabled, remember the state of the cell.
         // The remembered state is not cleared when the cell is unset.
-        if self.config.phase_saving {
+        // The assignments of a lookahead probe are not real, so they do not
+        // update the phase.
+        if self.config.phase_saving && !self.in_probe {
             cell.phase.set(Some(state));
         }
 
@@ -1841,6 +1852,75 @@ mod test {
 
         let mut world2 = World::try_from(world.to_serde()).unwrap();
         assert!(world2.config().phase_saving);
+
+        world.search(None);
+        world2.search(None);
+        assert_eq!(world.status(), world2.status());
+    }
+
+    #[test]
+    fn test_lookahead_finds_solution() {
+        // With lookahead enabled, the search should still find solutions for
+        // 2-state rules. Generations rules are not affected by lookahead.
+        for config in [
+            Config::new("B3/S23", 3, 3, 2).with_lookahead(),
+            Config::new("B2a/S12", 3, 3, 1).with_lookahead(),
+            Config::new("B2o/S23oH", 3, 3, 2).with_lookahead(),
+        ] {
+            let mut world = World::new(config).unwrap();
+            world.search(None);
+            assert_eq!(world.status(), Status::Solved);
+        }
+    }
+
+    #[test]
+    fn test_lookahead_enumerates_same_solutions() {
+        // Lookahead changes the states that are guessed first, but not the
+        // set of solutions.
+        for config in [
+            Config::new("B3/S23", 3, 3, 2),
+            Config::new("B3/S23/4", 3, 3, 1),
+            Config::new("B3/S23", 2, 2, 1),
+        ] {
+            assert_eq!(
+                count_solutions(&config),
+                count_solutions(&config.clone().with_lookahead()),
+                "lookahead changes the solution count for {config:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_lookahead_with_max_population() {
+        // The population check must still work with lookahead enabled.
+        let mut world = World::new(
+            Config::new("B3/S23", 4, 4, 2)
+                .with_max_population(1)
+                .with_lookahead(),
+        )
+        .unwrap();
+        world.search(None);
+        assert_eq!(world.status(), Status::NoSolution);
+
+        let mut world = World::new(
+            Config::new("B3/S23", 4, 4, 2)
+                .with_max_population(8)
+                .with_lookahead(),
+        )
+        .unwrap();
+        world.search(None);
+        assert_eq!(world.status(), Status::Solved);
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn test_lookahead_round_trip_through_serde() {
+        // The lookahead option should survive a save/load round trip.
+        let mut world = World::new(Config::new("B3/S23", 3, 3, 2).with_lookahead()).unwrap();
+        world.search(Some(1000));
+
+        let mut world2 = World::try_from(world.to_serde()).unwrap();
+        assert!(world2.config().lookahead);
 
         world.search(None);
         world2.search(None);

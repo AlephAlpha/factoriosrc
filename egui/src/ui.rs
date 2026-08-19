@@ -754,6 +754,11 @@ impl App {
                                     .on_hover_text(ConfigHelpField::PhaseSaving.short_help());
                                 ui.checkbox(&mut config.phase_saving, "");
                                 ui.end_row();
+
+                                ui.label("lookahead")
+                                    .on_hover_text(ConfigHelpField::Lookahead.short_help());
+                                ui.checkbox(&mut config.lookahead, "");
+                                ui.end_row();
                             });
 
                         if let Some(search_order) = &preview.auto_search_order {
