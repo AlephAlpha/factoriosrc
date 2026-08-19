@@ -17,15 +17,19 @@ rlifesrc discusses.
 
 At the app level, `Config::parse_rule()` currently accepts only:
 
-- non-`B0` rules
-- 2-state rules, or Generations rules with up to 255 states
+- rules with 2 states, or Generations rules with up to 255 states
 - totalistic neighborhoods with size at most 24
 - isotropic non-totalistic rules with a range-1 Moore or hexagonal neighborhood (size at most 8)
 - non-isotropic (MAP) rules with a range-1 Moore, von Neumann, or hexagonal neighborhood
 
-Within that subset, a front cell is empty exactly when it is dead. That lets the current code use
-one simple counter: `front_count` is the number of front cells that are still unknown or alive.
-Dying cells are counted as non-empty, which is conservative but sound for Generations rules.
+`B0` rules are supported: the cells outside the search range are assumed to follow a uniform
+periodic background, and a front cell is empty exactly when it is equal to that background state.
+See ["B0 rules"](#b0-rules) below for details.
+
+Within that subset, a front cell is empty exactly when it is in the background state. That lets the
+current code use one simple counter: `front_count` is the number of front cells that are still
+unknown or not in the background state. Dying cells are counted as non-empty, which is
+conservative but sound for Generations rules.
 
 ## Why the optimization works
 
@@ -107,6 +111,51 @@ That means:
 This is why `front_count` is the value used for pruning, while `is_front` is just the structural
 definition of the front.
 
+## B0 rules
+
+A rule contains `B0` when a dead cell with no living neighbors becomes alive in the next
+generation. In that case, the cells outside the search range cannot be assumed to be dead, since
+they would all become alive in the next generation. Instead, they are assumed to follow a uniform
+periodic background, which is a periodic orbit of the rule:
+
+- for a rule without `B0`, the background is always dead (period 1);
+- for a rule with `B0` but not the maximum survival condition (`S-max`, e.g. `S8`), the
+  background cycles through all the states of the rule (period `num_states`; for a 2-state rule,
+  it alternates between dead and alive);
+- for a rule with both `B0` and `S-max`, the background is always alive (period 1).
+
+The period of the searched pattern must be a multiple of the background period, otherwise the
+pattern cannot be embedded in an infinite periodic universe. This is checked by `Config::check()`.
+
+For a `B0` rule, "empty" means being equal to the background state of that generation, so a front
+cell is not necessarily dead. `front_count` is decremented exactly when a front cell is set to its
+background state.
+
+### The front covers the first `background_period` generations
+
+The strengthened fronts that are restricted to the first generation (the `dy >= 0` row-first case,
+the `dx >= 0` column-first case, and the `dx == dy` diagonal case) rely on the generation-rotation
+argument: a pattern whose front is empty can be rotated in time so that a front cell becomes
+non-empty on the first generation.
+
+For a `B0` rule, rotating the pattern in time changes the phase of the background, so a rotated
+pattern is only valid if the background is constant (i.e. the rule has `S-max`). Otherwise, the
+first `background_period` generations are used instead of the first generation: a pattern whose
+front is empty on the first `background_period` generations is empty on every generation, so it
+can be shifted toward the front. This matches rlifesrc's `fn_is_front` (`t < max_t` with
+`max_t = gen()` for `B0` rules).
+
+For a rule with both `B0` and `S-max`, the background is constant, so the generation-rotation
+argument holds and the front covers only the first generation, like for a rule without `B0`.
+
+### The fallback is still sound for `B0` rules
+
+The fallback front (the whole first generation) is used when the translation or reflection
+argument for the stronger fronts does not apply. For a `B0` rule, a pattern whose first generation
+is entirely in the background state evolves into the pure background (the unique orbit through the
+background state, since the period is a multiple of the background period), so the whole pattern is
+trivial. The fallback therefore rejects only the trivial pattern, and remains sound.
+
 ## What future features need to preserve
 
 ### Known cells
@@ -126,12 +175,13 @@ with the relevant translation or reflection argument.
 
 ### More rules
 
-factoriosrc now supports Generations rules with up to 255 states. The notion of an empty
-front cell is handled conservatively: `front_count` is decremented only when a front cell is
-set to the dead state, exactly like rlifesrc does. A front cell in a dying state is still
-counted as non-empty, so the front optimization is weaker for patterns that contain dying
-cells, but it never rejects a valid pattern. Since a dying cell can never become alive, this
-is still sound.
+factoriosrc now supports Generations rules with up to 255 states, and `B0` rules (including
+`B0S8` rules, where the background is alive). The notion of an empty front cell is defined by the
+background state: `front_count` is decremented exactly when a front cell is set to its background
+state (which is the dead state for a rule without `B0`). A front cell in a dying state is still
+counted as non-empty, so the front optimization is weaker for patterns that contain dying cells,
+but it never rejects a valid pattern. Since a dying cell can never become alive, this is still
+sound.
 
 There is also a rule-symmetry assumption in the current implementation. Most rules that
 factoriosrc currently supports are fully symmetric on the square grid, so their symmetry can be

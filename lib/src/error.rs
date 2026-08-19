@@ -19,6 +19,14 @@ pub enum ConfigError {
     #[error("The population upper bound is zero")]
     InvalidMaxPopulation,
 
+    /// The period is not a multiple of the background period.
+    ///
+    /// For a B0 rule, the cells outside the search range are assumed to follow
+    /// a uniform background of the given period, and the period of the
+    /// searched pattern must be a multiple of it.
+    #[error("The period must be a multiple of the background period ({0}) for a B0 rule")]
+    InvalidPeriod(u32),
+
     /// The world is not a square when it should be.
     #[error("The world is not a square when it should be")]
     NotSquare,

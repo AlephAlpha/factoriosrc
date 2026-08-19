@@ -106,7 +106,7 @@ impl ConfigHelpField {
             Self::Dx => "Horizontal translation applied over one full period.",
             Self::Dy => "Vertical translation applied over one full period.",
             Self::DiagonalWidth => {
-                "Optional diagonal band that constrains cells outside it to be dead."
+                "Optional diagonal band that constrains cells outside it to be in the background state."
             }
             Self::Symmetry => "Required symmetry of the searched pattern.",
             Self::Transformation => "Transformation applied before translation each period.",

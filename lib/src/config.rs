@@ -160,7 +160,10 @@ pub struct Config {
     /// - [Generations rules](https://conwaylife.com/wiki/Generations),
     ///   with at most 255 states. All the neighborhoods above are supported.
     ///
-    /// Rules whose birth conditions contain `0` are not supported.
+    /// Rules whose birth conditions contain `0` (`B0`) are supported, but
+    /// the cells outside the search range are then assumed to follow a uniform
+    /// periodic background instead of being dead. The period of the pattern
+    /// must be a multiple of the background period.
     ///
     /// The default rule is [factorio (R3,C2,S2,B3,N+)](https://conwaylife.com/forums/viewtopic.php?f=11&t=6166).
     #[cfg_attr(feature = "clap", arg(short, long, default_value = "R3,C2,S2,B3,N+"))]
@@ -209,7 +212,7 @@ pub struct Config {
     /// Diagonal width of the world.
     ///
     /// If the diagonal width is `n`, then cells at positions `(x, y)`
-    /// where `abs(x - y) >= n` are always dead.
+    /// where `abs(x - y) >= n` are always in the background state.
     ///
     /// This is useful for finding diagonal spaceships.
     ///
@@ -538,12 +541,15 @@ impl Config {
     /// - [Generations rules](https://conwaylife.com/wiki/Generations),
     ///   with at most 255 states. All the neighborhoods above are supported.
     ///
-    /// Rules whose birth conditions contain `0` are not supported.
+    /// Rules whose birth conditions contain `0` (`B0`) are supported, but
+    /// the cells outside the search range are then assumed to follow a uniform
+    /// periodic background instead of being dead. The period of the pattern
+    /// must be a multiple of the background period.
     #[inline]
     pub fn parse_rule(&self) -> Result<Rule, ConfigError> {
         let rule = Rule::from_str(&self.rule_str).map_err(|_| ConfigError::InvalidRule)?;
 
-        if rule.contains_b0() || rule.states > 255 {
+        if rule.states > 255 {
             return Err(ConfigError::UnsupportedRule);
         }
 
@@ -564,6 +570,20 @@ impl Config {
     pub fn check(&mut self) -> Result<(), ConfigError> {
         let rule = self.parse_rule()?;
         check_rule_symmetry(&rule, self.symmetry, self.transformation)?;
+
+        // For a B0 rule, the cells outside the search range are assumed to
+        // follow a uniform background of period `background_period`. The
+        // period of the searched pattern must be a multiple of it, otherwise
+        // the pattern cannot be embedded in an infinite periodic universe.
+        let background_period =
+            if rule.contains_b0() && !rule.survival.contains(&rule.neighborhood.max_condition()) {
+                rule.states as u32
+            } else {
+                1
+            };
+        if !self.period.is_multiple_of(background_period) {
+            return Err(ConfigError::InvalidPeriod(background_period));
+        }
 
         if self.width == 0
             || self.height == 0
@@ -716,6 +736,10 @@ mod tests {
         assert!(Config::new("3457/357/5", 3, 3, 1).parse_rule().is_ok());
         assert!(Config::new("B2a/S12/3", 3, 3, 1).parse_rule().is_ok());
         assert!(Config::new("B2/S/3", 3, 3, 1).parse_rule().is_ok());
+        assert!(Config::new("B03/S23", 3, 3, 1).parse_rule().is_ok());
+        assert!(Config::new("B0/S8", 3, 3, 1).parse_rule().is_ok());
+        assert!(Config::new("B0/S23/3", 3, 3, 1).parse_rule().is_ok());
+        assert!(Config::new("MAP/////w==", 3, 3, 1).parse_rule().is_ok());
     }
 
     #[test]
@@ -728,18 +752,38 @@ mod tests {
 
     #[test]
     fn test_parse_rule_rejects_unsupported_rules() {
-        for rule in [
-            "B03/S23",
-            "B2/S/300",
-            "R3,C2,S2,B3",
-            "MAP/////w==",
-            "B2a/S12/256",
-        ] {
+        for rule in ["B2/S/300", "R3,C2,S2,B3", "B2a/S12/256"] {
             assert!(matches!(
                 Config::new(rule, 3, 3, 1).parse_rule(),
                 Err(ConfigError::UnsupportedRule)
             ));
         }
+    }
+
+    #[test]
+    fn test_check_rejects_invalid_period_for_b0_rules() {
+        // The period of a B0 rule must be a multiple of the background period:
+        // 2 for a 2-state rule, and the number of states for a Generations rule.
+        assert!(matches!(
+            Config::new("B026/S1", 3, 3, 3).check(),
+            Err(ConfigError::InvalidPeriod(2))
+        ));
+        assert!(matches!(
+            Config::new("B0/S23/3", 3, 3, 4).check(),
+            Err(ConfigError::InvalidPeriod(3))
+        ));
+        assert!(matches!(
+            Config::new("B026/S1", 3, 3, 1).check(),
+            Err(ConfigError::InvalidPeriod(2))
+        ));
+
+        // Even periods and periods divisible by the number of states are fine.
+        assert!(Config::new("B026/S1", 3, 3, 4).check().is_ok());
+        assert!(Config::new("B0/S23/3", 3, 3, 3).check().is_ok());
+
+        // A B0S8 rule has a background of period 1, so any period is fine.
+        assert!(Config::new("B0/S8", 3, 3, 3).check().is_ok());
+        assert!(Config::new("B3678/S34678", 3, 3, 5).check().is_ok());
     }
 
     #[test]

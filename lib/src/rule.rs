@@ -458,6 +458,39 @@ pub struct RuleTable {
     /// For a Generations rule, this is at least 3. A cell in a dying state
     /// transitions to the next state in each generation, regardless of the rule.
     pub(crate) num_states: u8,
+
+    /// Whether the rule contains `B0`.
+    ///
+    /// In this case, a dead cell with no living neighbors becomes alive in the
+    /// next generation, so the cells outside the search range cannot be assumed
+    /// to be dead. Instead, they are assumed to follow the uniform background.
+    pub(crate) has_b0: bool,
+
+    /// Whether the rule contains the "S-max" survival condition, i.e. whether
+    /// an alive cell with a fully alive neighborhood stays alive.
+    ///
+    /// Together with [`has_b0`](RuleTable::has_b0), this determines the
+    /// background state: a rule with `B0` but not `S-max` has an alternating
+    /// background, and a rule with both `B0` and `S-max` has a permanently
+    /// alive background.
+    pub(crate) has_s_max: bool,
+
+    /// The background period of the rule.
+    ///
+    /// This is the period of the uniform background state that the cells
+    /// outside the search range are assumed to follow:
+    ///
+    /// - For a rule without `B0`, the background is always dead, so the period
+    ///   is 1.
+    /// - For a rule with `B0` but not `S-max`, the background alternates
+    ///   through all the states, so the period is the number of states.
+    /// - For a rule with both `B0` and `S-max`, the background is always
+    ///   alive, so the period is 1.
+    ///
+    /// The period of the searched pattern must be a multiple of the background
+    /// period, otherwise the pattern cannot be embedded in an infinite
+    /// periodic universe. This is checked by [`Config::check`](crate::Config::check).
+    pub(crate) background_period: u32,
 }
 
 impl Debug for RuleTable {
@@ -491,7 +524,7 @@ enum RuleTableImpl {
 impl RuleTable {
     /// Create and initialize a rule table from a [`Rule`].
     pub fn new(rule: &Rule) -> Result<Self, ConfigError> {
-        if rule.contains_b0() || rule.states > 255 {
+        if rule.states > 255 {
             return Err(ConfigError::UnsupportedRule);
         }
 
@@ -503,6 +536,20 @@ impl RuleTable {
 
         let offsets = rule.neighbor_coords();
         let radius = rule.radius();
+
+        // The background state of the cells outside the search range.
+        //
+        // For a rule without `B0`, it is always dead. For a rule with `B0`
+        // but not `S-max`, it cycles through all the states, so the period is
+        // the number of states. For a rule with both `B0` and `S-max`, it is
+        // always alive, so the period is 1.
+        let has_b0 = rule.contains_b0();
+        let has_s_max = rule.survival.contains(&rule.neighborhood.max_condition());
+        let background_period = if has_b0 && !has_s_max {
+            rule.states as u32
+        } else {
+            1
+        };
 
         // Find the index of the opposite offset of each offset.
         //
@@ -550,6 +597,9 @@ impl RuleTable {
             alive_tokens,
             dead_tokens,
             num_states: rule.states as u8,
+            has_b0,
+            has_s_max,
+            background_period,
         })
     }
 
@@ -566,6 +616,50 @@ impl RuleTable {
     #[inline]
     pub const fn is_generations(&self) -> bool {
         self.num_states > 2
+    }
+
+    /// Whether the rule contains `B0`.
+    ///
+    /// In this case, a dead cell with no living neighbors becomes alive in the
+    /// next generation, so the cells outside the search range are assumed to
+    /// follow the uniform background instead of being dead.
+    #[inline]
+    pub const fn has_b0(&self) -> bool {
+        self.has_b0
+    }
+
+    /// Whether the rule contains the "S-max" survival condition.
+    ///
+    /// Together with [`has_b0`](RuleTable::has_b0), this determines the
+    /// background state of the rule.
+    #[inline]
+    pub const fn has_s_max(&self) -> bool {
+        self.has_s_max
+    }
+
+    /// The period of the uniform background of the rule.
+    ///
+    /// The period of the searched pattern must be a multiple of this number.
+    #[inline]
+    pub const fn background_period(&self) -> u32 {
+        self.background_period
+    }
+
+    /// The background state of the cells outside the search range on the
+    /// given generation.
+    ///
+    /// For a rule without `B0`, it is always dead. For a rule with `B0` but
+    /// not `S-max`, it cycles through all the states of the rule. For a rule
+    /// with both `B0` and `S-max`, it is always alive.
+    #[inline]
+    pub const fn background(&self, t: i32) -> CellState {
+        if !self.has_b0 {
+            CellState::Dead
+        } else if self.has_s_max {
+            CellState::Alive
+        } else {
+            CellState::from_number((t.rem_euclid(self.background_period as i32)) as u8)
+        }
     }
 
     /// Whether the rule is totalistic.
@@ -697,16 +791,27 @@ impl RuleTable {
 
     /// Update the descriptor of a cell when one of its neighbors is outside the world.
     ///
-    /// The neighbor is permanently dead.
+    /// The neighbor is permanently in the background state.
     pub(crate) fn set_outside_neighbor(&self, cell: &LifeCell, i: usize) {
         let mut descriptor = cell.descriptor.get();
 
         match &self.impl_ {
-            RuleTableImpl::Count(_) => descriptor.increment_dead(),
+            RuleTableImpl::Count(_) => match self.background(cell.generation).base_code() {
+                // For the underlying 2-state rule, dead and dying cells are equivalent.
+                0b01 => descriptor.increment_dead(),
+                0b10 => descriptor.increment_alive(),
+                _ => unreachable!(),
+            },
             RuleTableImpl::Mask(_) => {
                 // The state of the neighbor is stored in the bits
                 // `NEIGHBOR_STATE_SHIFT + 2i` and `NEIGHBOR_STATE_SHIFT + 2i + 1`.
-                descriptor.0 |= 1 << (Descriptor::NEIGHBOR_STATE_SHIFT + 2 * i + 1);
+                // `0b01` means alive, and `0b10` means dead (or dying, which is
+                // dead for the underlying rule).
+                match self.background(cell.generation).base_code() {
+                    0b10 => descriptor.0 |= 1 << (Descriptor::NEIGHBOR_STATE_SHIFT + 2 * i),
+                    0b01 => descriptor.0 |= 1 << (Descriptor::NEIGHBOR_STATE_SHIFT + 2 * i + 1),
+                    _ => unreachable!(),
+                }
             }
         }
 

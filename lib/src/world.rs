@@ -223,6 +223,24 @@ impl World {
     fn init_front(&mut self, rule_symmetry: &[Transformation]) {
         let mut use_front = false;
 
+        // The number of generations of the front when the front is restricted
+        // to the first few generations by the generation-rotation argument.
+        //
+        // For a rule without `B0`, an empty front on the first generation
+        // implies that the whole pattern is empty, so only the first
+        // generation is needed.
+        //
+        // For a B0 rule, the pattern is a deviation from a periodic background,
+        // and rotating the pattern in time changes the phase of the background.
+        // So the first `background_period` generations are needed. For a rule
+        // with both `B0` and `S-max`, the background is constant, so only the
+        // first generation is needed.
+        let max_t = if self.rule.has_b0() {
+            self.rule.background_period() as i32
+        } else {
+            1
+        };
+
         if self.config.known_cells.is_empty() {
             match self.config.search_order.unwrap() {
                 // If the search order is row-first, the front is the first row.
@@ -252,13 +270,15 @@ impl World {
                         // the first, and so on. So we only need to consider the first generation.
 
                         // If `dx` is zero, `dy` is positive, a similar argument still applies.
-                        // But the front becomes the `dy-1`-th row of the first generation.
+                        // But the front becomes the `dy-1`-th row of the first few generations.
 
                         if self.config.dx == 0 && self.config.dy >= 0 {
                             let y = self.config.dy.max(1) - 1;
                             for x in 0..w as i32 {
-                                self.get_cell_by_coord_mut((x, y, 0)).unwrap().is_front = true;
-                                self.front_count += 1;
+                                for t in 0..max_t {
+                                    self.get_cell_by_coord_mut((x, y, t)).unwrap().is_front = true;
+                                    self.front_count += 1;
+                                }
                             }
                         } else {
                             for x in 0..w as i32 {
@@ -298,13 +318,15 @@ impl World {
                         // the first, and so on. So we only need to consider the first generation.
 
                         // If `dy` is zero, `dx` is positive, a similar argument still applies.
-                        // But the front becomes the `dx-1`-th column of the first generation.
+                        // But the front becomes the `dx-1`-th column of the first few generations.
 
                         if self.config.dx >= 0 && self.config.dy == 0 {
                             let x = self.config.dx.max(1) - 1;
                             for y in 0..h as i32 {
-                                self.get_cell_by_coord_mut((x, y, 0)).unwrap().is_front = true;
-                                self.front_count += 1;
+                                for t in 0..max_t {
+                                    self.get_cell_by_coord_mut((x, y, t)).unwrap().is_front = true;
+                                    self.front_count += 1;
+                                }
                             }
                         } else {
                             for y in 0..h as i32 {
@@ -340,13 +362,15 @@ impl World {
                         // the first, and so on. So we only need to consider the first generation.
 
                         // If `dx` equals `dy` and is positive, a similar argument still applies.
-                        // But the front becomes the `dy-1`-th row of the first generation.
+                        // But the front becomes the `dy-1`-th row of the first few generations.
 
                         if self.config.dx == self.config.dy && self.config.dx >= 0 {
                             let y = self.config.dy.max(1) - 1;
                             for x in 0..d as i32 {
-                                self.get_cell_by_coord_mut((x, y, 0)).unwrap().is_front = true;
-                                self.front_count += 1;
+                                for t in 0..max_t {
+                                    self.get_cell_by_coord_mut((x, y, t)).unwrap().is_front = true;
+                                    self.front_count += 1;
+                                }
                             }
                         } else {
                             for x in 0..d as i32 {
@@ -407,8 +431,8 @@ impl World {
                         unsafe {
                             (*cell).neighborhood[i] = neighbor;
 
-                            // If some neighbor is outside the world, the state of that neighbor is assumed to be dead.
-                            // So we update the neighborhood descriptor of the cell here.
+                            // If some neighbor is outside the world, the state of that neighbor is assumed to be in the
+                            // background state. So we update the neighborhood descriptor of the cell here.
                             if neighbor.is_null() {
                                 self.rule.set_outside_neighbor(&*cell, i);
                             }
@@ -460,12 +484,14 @@ impl World {
                     let predecessor = self.get_cell_by_coord_ptr(predecessor_coord);
                     let successor = self.get_cell_by_coord_ptr(successor_coord);
 
+                    // If the successor is outside the world, the state of the successor is assumed to be the
+                    // background state. So we update the neighborhood descriptor of the cell here.
+                    let successor_background = self.rule.background(successor_coord.2);
+
                     let cell = self.get_cell_by_coord_mut((x, y, t)).unwrap();
 
-                    // If the successor is outside the world, the state of the successor is assumed to be dead.
-                    // So we update the neighborhood descriptor of the cell here.
                     if successor.is_null() {
-                        cell.update_successor(CellState::Dead);
+                        cell.update_successor(successor_background);
                     }
 
                     cell.predecessor = predecessor;
@@ -599,11 +625,12 @@ impl World {
 
     /// Set the state of known cells.
     ///
-    /// The cells outside the bounding box are known to be dead.
+    /// The cells outside the bounding box are known to be in the background state.
     ///
-    /// If the predecessor of a cell is outside the world, that cell is also known to be dead.
+    /// If the predecessor of a cell is outside the world, that cell is also known to be
+    /// in the background state.
     ///
-    /// User-specified known cells are applied after the implicit dead cells.
+    /// User-specified known cells are applied after the implicit background cells.
     fn init_known(&mut self) -> Result<(), ConfigError> {
         let (w, h, p) = (
             self.config.width as i32,
@@ -626,7 +653,7 @@ impl World {
                                 .is_some_and(|d| (x - y).abs() >= d as i32)
                             || (*cell).predecessor.is_null()
                         {
-                            self.set_known_cell(&*cell, CellState::Dead)?;
+                            self.set_known_cell(&*cell, self.rule.background(t))?;
                         }
                     }
                 }
@@ -728,12 +755,21 @@ impl World {
         }
 
         // If the cell is on the front, update the front count.
-        if cell.is_front && state == CellState::Dead {
+        // A front cell is empty when its state equals the background state.
+        if cell.is_front && state == self.rule.background(cell.generation) {
             self.front_count -= 1;
         }
 
-        // If the cell is alive, update the population.
-        if state == CellState::Alive {
+        // If the cell is part of the pattern, update the population.
+        //
+        // For a B0S8 rule, the background is alive, so the pattern consists of
+        // the dead cells. For other rules, it consists of the alive cells.
+        let pattern_state = if self.rule.has_b0() && self.rule.has_s_max() {
+            CellState::Dead
+        } else {
+            CellState::Alive
+        };
+        if state == pattern_state {
             let t = cell.generation as usize;
             self.population[t] += 1;
             // If the population of this generation just exceeded the maximum,
@@ -782,12 +818,21 @@ impl World {
         }
 
         // If the cell is on the front, update the front count.
-        if cell.is_front && state == CellState::Dead {
+        // A front cell is empty when its state equals the background state.
+        if cell.is_front && state == self.rule.background(cell.generation) {
             self.front_count += 1;
         }
 
-        // If the cell was alive, update the population.
-        if state == CellState::Alive {
+        // If the cell is part of the pattern, update the population.
+        //
+        // For a B0S8 rule, the background is alive, so the pattern consists of
+        // the dead cells. For other rules, it consists of the alive cells.
+        let pattern_state = if self.rule.has_b0() && self.rule.has_s_max() {
+            CellState::Dead
+        } else {
+            CellState::Alive
+        };
+        if state == pattern_state {
             let t = cell.generation as usize;
             // If the population of this generation just fell back to the maximum,
             // one more generation is at or below the maximum.
@@ -841,13 +886,15 @@ impl World {
     ///
     /// The coordinates are [canonicalized](World::canonicalize_coord) before getting the state.
     ///
-    /// If the cell is outside the world after canonicalization, it is considered to be dead.
+    /// If the cell is outside the world after canonicalization, it is considered to be in the
+    /// background state.
     ///
     /// If the cell is unknown, return [`None`].
     #[inline]
     pub fn get_cell_state(&self, coord: Coord) -> Option<CellState> {
-        self.get_cell_by_coord(self.canonicalize_coord(coord))
-            .map_or(Some(CellState::Dead), LifeCell::state)
+        let coord = self.canonicalize_coord(coord);
+        self.get_cell_by_coord(coord)
+            .map_or_else(|| Some(self.rule.background(coord.2)), LifeCell::state)
     }
 
     /// Get the reason why a cell is set to its current state.
@@ -855,7 +902,7 @@ impl World {
     /// The coordinates are [canonicalized](World::canonicalize_coord) before getting the reason.
     ///
     /// If the cell is outside the world after canonicalization, returns [`Some(Reason::Known)`]
-    /// (cells outside the world are implicitly dead from the configuration).
+    /// (cells outside the world are implicitly in the background state from the configuration).
     ///
     /// If the cell is unknown, return [`None`].
     #[inline]
@@ -1297,10 +1344,27 @@ mod test {
             .collect()
     }
 
+    /// The background state of the cells outside the search range on the given generation.
+    ///
+    /// For a rule without `B0`, it is always dead. For a rule with `B0` but
+    /// not `S-max`, it cycles through all the states of the rule. For a rule
+    /// with both `B0` and `S-max`, it is always alive.
+    fn background(rule: &ca_rules2::Rule, t: i32) -> CellState {
+        let has_b0 = rule.contains_b0();
+        let has_s_max = rule.survival.contains(&rule.neighborhood.max_condition());
+        if !has_b0 {
+            CellState::Dead
+        } else if has_s_max {
+            CellState::Alive
+        } else {
+            CellState::from_number((t.rem_euclid(rule.states as i32)) as u8)
+        }
+    }
+
     /// Simulate one generation of a rule.
     ///
     /// This is an independent implementation used to verify the search results.
-    /// Cells outside the given grid are assumed to be dead.
+    /// Cells outside the given grid are assumed to be in the given background state.
     ///
     /// For a totalistic rule, the state of a cell is determined by the number
     /// of living neighbors. For a non-totalistic rule, it is determined by the
@@ -1308,7 +1372,11 @@ mod test {
     ///
     /// For a Generations rule, a dying cell transitions to the next state,
     /// regardless of the rule.
-    fn simulate(rule: &ca_rules2::Rule, states: &[Vec<CellState>]) -> Vec<Vec<CellState>> {
+    fn simulate(
+        rule: &ca_rules2::Rule,
+        states: &[Vec<CellState>],
+        background: CellState,
+    ) -> Vec<Vec<CellState>> {
         let (w, h) = (states[0].len() as i32, states.len() as i32);
         let coords = rule.neighbor_coords();
         let mut result = vec![vec![CellState::Dead; w as usize]; h as usize];
@@ -1327,10 +1395,14 @@ mod test {
                 let mut mask = 0u64;
                 for (i, (ox, oy)) in coords.iter().enumerate() {
                     let (nx, ny) = (x + ox, y + oy);
-                    if (0..w).contains(&nx)
-                        && (0..h).contains(&ny)
-                        && states[ny as usize][nx as usize] == CellState::Alive
-                    {
+                    let alive = if (0..w).contains(&nx) && (0..h).contains(&ny) {
+                        states[ny as usize][nx as usize] == CellState::Alive
+                    } else {
+                        // The cell is outside the grid, so it is in the background state.
+                        // Dying background cells count as dead for the underlying rule.
+                        background == CellState::Alive
+                    };
+                    if alive {
                         mask |= 1 << i;
                     }
                 }
@@ -1402,9 +1474,10 @@ mod test {
         for t in 0..p {
             let generation = read_generation(&world, t);
             let next = read_generation(&world, t + 1);
+            let background = background(&rule, t);
             assert_eq!(
                 next,
-                simulate(&rule, &generation),
+                simulate(&rule, &generation, background),
                 "generation {t} of {rule_str}"
             );
         }
@@ -1457,6 +1530,34 @@ mod test {
         // A glider-like spaceship in the Generations rule B3/S23/4.
         // The solution contains dying cells as well.
         search_and_verify_with_translations("B3/S23/4", 9, 9, 4, 1, 1);
+    }
+
+    #[test]
+    fn test_search_b0_rule() {
+        // A single cell is a period-2 oscillator on the alternating background
+        // of the B0 rule B026/S1.
+        search_and_verify("B026/S1", 4, 4, 2);
+    }
+
+    #[test]
+    fn test_search_b0_generations_rule() {
+        // There are period-3 oscillators on the period-3 background of the
+        // Generations B0 rule B0/S23/3.
+        search_and_verify("B0/S23/3", 7, 7, 3);
+    }
+
+    #[test]
+    fn test_search_b0_s8_rule() {
+        // In a B0S8 rule, the background is alive, and the pattern consists of
+        // the dead cells. A 2x2 dead block is a still life in Day & Night.
+        search_and_verify("B3678/S34678", 4, 4, 1);
+    }
+
+    #[test]
+    fn test_search_b0_s8_generations_rule() {
+        // A 2x2 dead block is also a still life in the Generations version of
+        // Day & Night.
+        search_and_verify("B3678/S34678/3", 4, 4, 1);
     }
 
     #[test]
@@ -1531,6 +1632,36 @@ mod test {
         .unwrap();
 
         assert_eq!(front_coords(&world), vec![(0, 1, 0), (1, 1, 0)]);
+    }
+
+    #[test]
+    fn test_init_front_covers_background_period_for_b0() {
+        // For a B0 rule, the front covers the first `background_period`
+        // generations instead of just the first generation, because rotating
+        // the pattern in time changes the phase of the background.
+        let world = World::new(
+            Config::new("B026/S1", 4, 5, 4)
+                .with_translations(0, 1)
+                .with_search_order(SearchOrder::RowFirst),
+        )
+        .unwrap();
+
+        assert_eq!(
+            front_coords(&world),
+            vec![(0, 0, 0), (1, 0, 0), (0, 0, 1), (1, 0, 1),]
+        );
+        assert_eq!(world.front_count, 4);
+
+        // A B0S8 rule has a constant background, so the front covers only the
+        // first generation.
+        let world = World::new(
+            Config::new("B3678/S34678", 4, 5, 4)
+                .with_translations(0, 1)
+                .with_search_order(SearchOrder::RowFirst),
+        )
+        .unwrap();
+
+        assert_eq!(front_coords(&world), vec![(0, 0, 0), (1, 0, 0)]);
     }
 
     #[test]
@@ -1676,6 +1807,69 @@ mod test {
     }
 
     #[test]
+    fn test_below_max_invariant_b0() {
+        // The `below_max` invariant should also hold for B0 rules. The
+        // population of a B0 rule counts the alive cells, which on the
+        // alternating background is the number of pattern cells on the even
+        // generations.
+        let mut world = World::new(Config::new("B026/S1", 6, 6, 2).with_max_population(3)).unwrap();
+
+        for _ in 0..100 {
+            world.search(Some(1000));
+
+            let below_max =
+                world
+                    .max_population
+                    .map_or(world.config.period as usize, |max_population| {
+                        world
+                            .population
+                            .iter()
+                            .filter(|&&pop| pop <= max_population)
+                            .count()
+                    });
+            assert_eq!(world.below_max, below_max);
+
+            if world.status() != Status::Running {
+                break;
+            }
+        }
+
+        // A single cell is a period-2 oscillator with population 1, so a
+        // solution should be found even with the bound of 3.
+        assert_eq!(world.status(), Status::Solved);
+    }
+
+    #[test]
+    fn test_below_max_invariant_b0_s8() {
+        // In a B0S8 rule, the background is alive, so the population counts
+        // the dead cells instead.
+        let mut world =
+            World::new(Config::new("B3678/S34678", 4, 4, 1).with_max_population(12)).unwrap();
+
+        for _ in 0..100 {
+            world.search(Some(1000));
+
+            let below_max =
+                world
+                    .max_population
+                    .map_or(world.config.period as usize, |max_population| {
+                        world
+                            .population
+                            .iter()
+                            .filter(|&&pop| pop <= max_population)
+                            .count()
+                    });
+            assert_eq!(world.below_max, below_max);
+
+            if world.status() != Status::Running {
+                break;
+            }
+        }
+
+        assert_eq!(world.status(), Status::Solved);
+    }
+
+    #[test]
     fn test_search_rejects_known_cells_conflicting_with_symmetry() {
         let mut world = World::new(
             Config::new("B3/S23", 2, 1, 1)
@@ -1696,6 +1890,22 @@ mod test {
     #[test]
     fn test_miri() {
         let config = Config::new("B3/S23", 3, 3, 2);
+        let mut world = World::new(config).unwrap();
+        world.search(None);
+        assert_eq!(world.status(), Status::Solved);
+    }
+
+    #[test]
+    fn test_miri_b0() {
+        let config = Config::new("B026/S1", 3, 3, 2);
+        let mut world = World::new(config).unwrap();
+        world.search(None);
+        assert_eq!(world.status(), Status::Solved);
+    }
+
+    #[test]
+    fn test_miri_b0_generations() {
+        let config = Config::new("B0/S23/3", 5, 5, 3);
         let mut world = World::new(config).unwrap();
         world.search(None);
         assert_eq!(world.status(), Status::Solved);

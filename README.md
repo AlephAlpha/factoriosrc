@@ -110,12 +110,13 @@ Features that rlifesrc has but factoriosrc doesn't:
 - [x] Count the number of living cells.
   - [x] Max population constraint.
   - [x] Dynamically adjust the max population constraint to find the smallest pattern.
-- [x] Support more rules.
+- [ ] Support more rules.
   - [x] Parse rule strings.
   - [x] Isotropic non-totalistic rules.
   - [x] Non-isotropic non-totalistic rules.
   - [x] Generations rules.
   - [x] Hexagonal rules.
+  - [x] Rules with B0.
   - [x] Check the symmetry of a rule. So that we can know what symmetries and transformations are compatible with the rule, and whether [the front optimization](docs/front.md) can be applied.
 - [x] Support trying a random state for unknown cells.
 - [x] Set some cells to be known in the configuration.
@@ -148,6 +149,8 @@ Features that rlifesrc doesn't have and factoriosrc may add:
   - [x] Set cells to be known by clicking, in both the TUI and the GUI.
   - [ ] Automatically save the search state in the browser cache. (https://github.com/AlephAlpha/rlifesrc/issues/366)
 - [ ] Set some cells to be known during the search.
+- [ ] Extend the `increase_world_size` feature, allowing the user to specify how the world size should be increased, or even more complex search strategies, maybe using a DSL.
+- [ ] Automatically save the results to files, using a user-specified naming scheme, including the search parameters and the index of the result.
 - [ ] More. See rlifesrc's issues.
 
 And finally:
