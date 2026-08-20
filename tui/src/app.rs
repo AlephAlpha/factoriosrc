@@ -8,8 +8,11 @@ use crate::{
 };
 use color_eyre::Result;
 use crossterm::event::KeyCode;
+#[cfg(not(target_arch = "wasm32"))]
+use factoriosrc_lib::save_generation;
 use factoriosrc_lib::{
-    CellState, Config, KnownCell, NewState, SearchOrder, Status, Symmetry, Transformation, World,
+    CellState, Config, ExportFields, KnownCell, NewState, SearchOrder, Status, Symmetry, Template,
+    Transformation, World,
 };
 use ratatui::{
     layout::{Margin, Rect},
@@ -64,6 +67,7 @@ pub enum ConfigField {
     KnownCells,
     IncreaseWorldSize,
     NoStop,
+    ExportResults,
     Apply,
     Cancel,
 }
@@ -90,6 +94,7 @@ impl ConfigField {
             Self::KnownCells,
             Self::IncreaseWorldSize,
             Self::NoStop,
+            Self::ExportResults,
             Self::Apply,
             Self::Cancel,
         ]
@@ -116,6 +121,7 @@ impl ConfigField {
             Self::KnownCells => "Known cells",
             Self::IncreaseWorldSize => "Increase size",
             Self::NoStop => "No stop",
+            Self::ExportResults => "Export results",
             Self::Apply | Self::Cancel => "",
         }
     }
@@ -132,6 +138,7 @@ impl ConfigField {
                 | Self::DiagonalWidth
                 | Self::Seed
                 | Self::MaxPopulation
+                | Self::ExportResults
         )
     }
 
@@ -185,6 +192,7 @@ pub struct ConfigState {
     pub working_config: Config,
     pub increase_world_size: bool,
     pub no_stop: bool,
+    pub export: Option<String>,
     pub fields: Vec<ConfigField>,
     pub focus_index: usize,
     pub edit_buffer: String,
@@ -230,6 +238,7 @@ impl ConfigState {
             ConfigField::KnownCells => format!("{}", cfg.known_cells.len()),
             ConfigField::IncreaseWorldSize => self.increase_world_size.to_string(),
             ConfigField::NoStop => self.no_stop.to_string(),
+            ConfigField::ExportResults => self.export.clone().unwrap_or_default(),
             ConfigField::Apply | ConfigField::Cancel => String::new(),
         }
     }
@@ -318,6 +327,9 @@ impl ConfigState {
                     };
                     self.working_config.max_population = Some(v);
                 }
+            }
+            ConfigField::ExportResults => {
+                self.export = Some(self.edit_buffer.clone());
             }
             _ => {}
         }
@@ -472,6 +484,14 @@ pub struct App {
     pub increase_world_size: bool,
     /// Whether not to stop the search when a solution is found.
     pub no_stop: bool,
+    /// A file-name template for exporting found solutions to RLE files.
+    ///
+    /// [`None`] or an empty string means that result export is disabled.
+    #[serde(default)]
+    pub export: Option<String>,
+    /// The most recent result-export message, shown in the status bar.
+    #[serde(skip)]
+    pub export_message: Option<String>,
     /// A path to save the application state.
     #[serde(skip)]
     pub save: Option<PathBuf>,
@@ -513,6 +533,8 @@ impl App {
         let should_quit = false;
         let increase_world_size = args.increase_world_size;
         let no_stop = args.no_stop;
+        let export = args.export;
+        let export_message = None;
         let save = args.save;
         let config_state = None;
         let mark_state = None;
@@ -531,6 +553,8 @@ impl App {
             should_quit,
             increase_world_size,
             no_stop,
+            export,
+            export_message,
             save,
             config_state,
             mark_state,
@@ -560,6 +584,9 @@ impl App {
         }
         if let Some(increase_world_size) = args.increase_world_size {
             app.increase_world_size = increase_world_size;
+        }
+        if let Some(export) = args.export {
+            app.export = Some(export);
         }
 
         Ok(app)
@@ -1085,6 +1112,7 @@ impl App {
                 .map(|t| self.world.rle(t as i32, true))
                 .collect();
             self.solutions.push(gen_rles);
+            self.export_solution();
         }
         if status == Status::NoSolution && self.increase_world_size {
             self.world.increase_world_size();
@@ -1092,6 +1120,48 @@ impl App {
         }
         if status != Status::Running && !self.no_stop || status == Status::NoSolution {
             self.pause();
+        }
+    }
+
+    /// Save the last found solution to files, if result export is enabled.
+    ///
+    /// Each generation of the solution is written to its own file, using the
+    /// export template in [`App::export`]. The index of the solution is
+    /// 1-based and equals the number of stored solutions. The outcome is
+    /// reported in [`App::export_message`].
+    fn export_solution(&mut self) {
+        let Some(template_str) = self.export.as_deref().filter(|s| !s.is_empty()) else {
+            return;
+        };
+        let Ok(template) = Template::parse(template_str) else {
+            self.export_message = Some(format!("Invalid export template: {template_str}"));
+            return;
+        };
+        let config = self.world.config().clone();
+        let index = self.solutions.len();
+        let mut paths = Vec::new();
+        let mut error = None;
+        for t in 0..config.period {
+            let fields =
+                ExportFields::from_config(&config, index, t, self.world.population(t as i32));
+            let rle = self.world.rle(t as i32, true);
+            match save_generation(&template, &fields, &rle) {
+                Ok(path) => paths.push(path),
+                Err(e) => error = Some(e),
+            }
+        }
+        if let Some(error) = error {
+            self.export_message = Some(format!("Failed to export solution {index}: {error}"));
+        } else if let Some(first) = paths.first() {
+            let count = paths.len();
+            self.export_message = Some(if count > 1 {
+                format!(
+                    "Exported solution {index} ({count} files) to {}",
+                    first.display()
+                )
+            } else {
+                format!("Exported solution {index} to {}", first.display())
+            });
         }
     }
 
@@ -1167,6 +1237,7 @@ impl App {
             working_config,
             increase_world_size: self.increase_world_size,
             no_stop: self.no_stop,
+            export: self.export.clone(),
             fields,
             focus_index: 0,
             edit_buffer: String::new(),
@@ -1223,6 +1294,7 @@ impl App {
                 self.world = world;
                 self.increase_world_size = state.increase_world_size;
                 self.no_stop = state.no_stop;
+                self.export = state.export.clone();
                 self.generation = 0;
                 self.solutions.clear();
                 self.elapsed = Duration::default();
@@ -1606,6 +1678,7 @@ mod tests {
             working_config: Config::new("B3/S23", 8, 6, 1),
             increase_world_size: false,
             no_stop: false,
+            export: None,
             fields: ConfigField::all(),
             focus_index: 0,
             edit_buffer: String::new(),
@@ -1621,6 +1694,7 @@ mod tests {
             step: None,
             increase_world_size: false,
             no_stop: false,
+            export: None,
             no_tui: false,
             save: None,
             known_cells: Vec::new(),
@@ -1672,6 +1746,67 @@ mod tests {
             .as_ref()
             .expect("config state should remain active");
         assert!(state.working_config.reduce_max_population);
+    }
+
+    #[test]
+    fn export_solution_writes_files() {
+        let mut app = test_app();
+        let dir = std::env::temp_dir().join(format!(
+            "factoriosrc-tui-export-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        app.export = Some(format!("{}/{{rule}}_{{index:04}}.rle", dir.display()));
+        app.solutions.push(vec![app.world.rle(0, true)]);
+        app.export_solution();
+
+        let message = app.export_message.as_deref().expect("export message");
+        assert!(message.starts_with("Exported solution 1"));
+        assert!(dir.join("B3_S23_0001.rle").is_file());
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn export_solution_reports_invalid_template() {
+        let mut app = test_app();
+        app.export = Some("{unknown}".to_string());
+        app.solutions.push(vec![app.world.rle(0, true)]);
+        app.export_solution();
+        assert!(
+            app.export_message
+                .as_deref()
+                .expect("export message")
+                .contains("Invalid export template")
+        );
+    }
+
+    #[test]
+    fn app_serialization_round_trip_preserves_export() {
+        let mut app = test_app();
+        app.export = Some("results/{index}.rle".to_string());
+        let json = serde_json::to_string(&app).unwrap();
+        let loaded: App = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.export, app.export);
+        assert!(loaded.export_message.is_none());
+    }
+
+    #[test]
+    fn app_deserializes_old_save_without_export_field() {
+        let app = test_app();
+        let json = serde_json::to_string(&app).unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("export")
+            .expect("serialized app should contain export");
+        let json = serde_json::to_string(&value).unwrap();
+        let loaded: App = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.export, None);
     }
 
     #[test]

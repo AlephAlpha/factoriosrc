@@ -138,6 +138,7 @@ const fn config_field_help(field: ConfigField) -> &'static str {
         ConfigField::KnownCells => ConfigHelpField::KnownCells.short_help(),
         ConfigField::IncreaseWorldSize => SearchControlHelpField::IncreaseWorldSize.short_help(),
         ConfigField::NoStop => SearchControlHelpField::NoStop.short_help(),
+        ConfigField::ExportResults => SearchControlHelpField::ExportResults.short_help(),
         ConfigField::Apply => "Validate the current settings and rebuild the search world.",
         ConfigField::Cancel => "Discard configuration edits and return to the search view.",
     }
@@ -364,7 +365,7 @@ impl App {
         let palette = Palette::new();
         let chunks = Layout::horizontal([Constraint::Min(24), Constraint::Length(34)]).split(area);
 
-        let status_str = self.viewing_solution.map_or_else(
+        let mut status_text = self.viewing_solution.map_or_else(
             || match self.world.status() {
                 Status::NotStarted => "Not started yet.".to_string(),
                 Status::Running => {
@@ -385,10 +386,14 @@ impl App {
             },
             |i| format!("Viewing solution {}/{}", i + 1, self.solutions.len()),
         );
+        if let Some(message) = &self.export_message {
+            status_text.push_str("  |  ");
+            status_text.push_str(message);
+        }
 
         let status = Paragraph::new(Line::from(vec![
             Span::styled("Status: ", palette.chrome),
-            Span::styled(status_str, palette.emphasis),
+            Span::styled(status_text, palette.emphasis),
         ]))
         .style(palette.chrome);
         frame.render_widget(status, chunks[0]);

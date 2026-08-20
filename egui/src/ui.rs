@@ -8,8 +8,8 @@ use egui::{
     ScrollArea, Sense, Slider, Stroke, StrokeKind, TextEdit, Ui, Window, vec2,
 };
 use factoriosrc_lib::{
-    CellState, Config, ConfigHelpField, KnownCell, NewState, SearchControlHelpField, SearchOrder,
-    Status, Symmetry, Transformation, TranslationCondition,
+    CellState, Config, ConfigHelpField, DEFAULT_EXPORT_TEMPLATE, KnownCell, NewState,
+    SearchControlHelpField, SearchOrder, Status, Symmetry, Transformation, TranslationCondition,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -481,6 +481,7 @@ impl App {
                         step,
                         increase_world_size,
                         no_stop,
+                        export,
                     } = &mut self.config;
 
                     config_section(ui, "Rule", |ui| {
@@ -881,6 +882,29 @@ impl App {
                                 ui.checkbox(no_stop, "");
                                 ui.end_row();
 
+                                ui.label("export results").on_hover_text(
+                                    SearchControlHelpField::ExportResults.short_help(),
+                                );
+                                ui.horizontal(|ui| {
+                                    let mut checked =
+                                        export.as_ref().is_some_and(|s| !s.is_empty());
+                                    ui.checkbox(&mut checked, "");
+                                    if !checked && export.is_some() {
+                                        *export = None;
+                                    }
+                                    if checked {
+                                        if export.as_ref().is_none_or(String::is_empty) {
+                                            *export = Some(DEFAULT_EXPORT_TEMPLATE.to_string());
+                                        }
+                                        ui.add(
+                                            TextEdit::singleline(export.as_mut().unwrap())
+                                                .id_salt("export_template_input")
+                                                .desired_width(180.0),
+                                        );
+                                    }
+                                });
+                                ui.end_row();
+
                                 ui.label("step")
                                     .on_hover_text(SearchControlHelpField::Step.short_help());
                                 ui.add(DragValue::new(step).speed(1.0));
@@ -1135,6 +1159,7 @@ impl App {
                             for field in [
                                 SearchControlHelpField::IncreaseWorldSize,
                                 SearchControlHelpField::NoStop,
+                                SearchControlHelpField::ExportResults,
                                 SearchControlHelpField::Step,
                             ] {
                                 ui.label(RichText::new(field.label()).strong());

@@ -69,6 +69,15 @@ pub(crate) struct Search {
     pub(crate) increase_world_size: bool,
     /// Whether not to stop the search when a solution is found.
     pub(crate) no_stop: bool,
+    /// A file-name template for exporting found solutions to RLE files.
+    ///
+    /// [`None`] or an empty string means that result export is disabled.
+    /// Only used on native platforms; on the web it is ignored.
+    #[cfg_attr(feature = "save", serde(default))]
+    pub(crate) export: Option<String>,
+    /// The number of solutions that have been exported.
+    #[cfg_attr(feature = "save", serde(skip))]
+    exported: usize,
     /// Whether the search is running.
     #[cfg_attr(feature = "save", serde(skip))]
     running: bool,
@@ -92,6 +101,8 @@ impl Search {
             step: config.step,
             increase_world_size: config.increase_world_size,
             no_stop: config.no_stop,
+            export: config.export,
+            exported: 0,
             running: false,
             should_quit: false,
             start: None,
@@ -133,6 +144,10 @@ impl Search {
     fn step(&mut self) {
         self.status = self.world.search(self.step);
 
+        if self.status == Status::Solved {
+            self.export_solution();
+        }
+
         if self.status == Status::NoSolution && self.increase_world_size {
             log::info!("Increasing world size.");
             self.world.increase_world_size();
@@ -142,6 +157,38 @@ impl Search {
         if self.status != Status::Running && !self.no_stop || self.status == Status::NoSolution {
             log::info!("Search status: {:?}", self.status);
             self.pause();
+        }
+    }
+
+    /// Save the solution that was just found to files, if export is enabled.
+    ///
+    /// Each generation of the solution is written to its own compact RLE
+    /// file, using the export template. The solution index is 1-based. On
+    /// the web there is no file system, so this does nothing there.
+    fn export_solution(&mut self) {
+        self.exported += 1;
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            use factoriosrc_lib::{ExportFields, Template, save_generation};
+
+            let Some(template_str) = self.export.as_deref().filter(|s| !s.is_empty()) else {
+                return;
+            };
+            let Ok(template) = Template::parse(template_str) else {
+                log::error!("Invalid export template: {template_str}");
+                return;
+            };
+            let config = self.world.config().clone();
+            let index = self.exported;
+            for t in 0..config.period {
+                let fields =
+                    ExportFields::from_config(&config, index, t, self.world.population(t as i32));
+                let rle = self.world.rle(t as i32, true);
+                match save_generation(&template, &fields, &rle) {
+                    Ok(path) => log::info!("Saved result to {}", path.display()),
+                    Err(e) => log::error!("Failed to save result: {e}"),
+                }
+            }
         }
     }
 
@@ -275,6 +322,7 @@ impl SearchThread {
             step: search.step,
             increase_world_size: search.increase_world_size,
             no_stop: search.no_stop,
+            export: search.export.clone(),
         };
 
         let (tx, rx) = mpsc::channel();

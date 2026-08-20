@@ -46,6 +46,15 @@ Search for a c/3 spaceship in [Hash (R2,C0,S4-6,B5-6,N#)](https://conwaylife.com
 cargo run --bin factoriosrc-tui --release -- new 30 8 3 -x 1 -r R2,C0,S4-6,B5-6,N# --save save.json
 ```
 
+Search for c/2 spaceships without stopping, and save every found solution as compact RLE files using a file-name template:
+
+```bash
+cargo run --bin factoriosrc-tui --release -- new 30 10 2 -x 1 -s D2- --no-stop \
+  --export-results "results/{rule}_{width}x{height}_{dx},{dy}_{symmetry}_{index:04}.rle"
+```
+
+The template may contain the placeholders `{rule}`, `{width}`, `{height}`, `{period}`, `{dx}`, `{dy}`, `{symmetry}`, `{transformation}`, `{index}`, `{generation}`, and `{population}`. Numeric fields can be zero-padded, e.g. `{index:04}`. Characters that are not allowed in file names are replaced with `_` automatically (use `{rule:raw}` and similar to keep them as-is). If the period is greater than 1, each generation is saved to its own file with a `_g<generation>` suffix, unless the template already contains `{generation}`. The same option is available in the GUI's configuration sidebar; the web UI does not support it.
+
 Resume the search from the saved state, and save it again when exiting:
 
 ```bash
@@ -150,7 +159,7 @@ Features that rlifesrc doesn't have and factoriosrc may add:
   - [ ] Automatically save the search state in the browser cache. (https://github.com/AlephAlpha/rlifesrc/issues/366)
 - [ ] Set some cells to be known during the search.
 - [ ] Extend the `increase_world_size` feature, allowing the user to specify how the world size should be increased, or even more complex search strategies, maybe using a DSL.
-- [ ] Automatically save the results to files, using a user-specified naming scheme, including the search parameters and the index of the result.
+- [x] Automatically save the results to files, using a user-specified naming scheme, including the search parameters and the index of the result.
 - [ ] More. See rlifesrc's issues.
 
 And finally:

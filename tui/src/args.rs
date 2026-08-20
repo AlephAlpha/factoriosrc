@@ -80,6 +80,29 @@ pub struct NewArgs {
     #[arg(long)]
     pub no_stop: bool,
 
+    /// Save every found solution to files as compact RLE.
+    ///
+    /// The value is a file-name template. It may contain `{placeholder}`
+    /// fields: `rule`, `width`, `height`, `period`, `dx`, `dy`, `symmetry`,
+    /// `transformation`, `index`, `generation`, and `population`. Numeric
+    /// fields can be zero-padded with a format spec, e.g. `{index:04}`.
+    ///
+    /// The `rule`, `symmetry`, and `transformation` fields are sanitized so
+    /// that the file name does not contain characters that are not allowed in
+    /// file names; use the `raw` spec (e.g. `{rule:raw}`) to keep them as-is.
+    ///
+    /// Parent directories are created if necessary, and the `.rle` extension
+    /// is appended if the name does not already end with it. If the period is
+    /// greater than 1 and the template does not contain `{generation}`, a
+    /// `_g<generation>` suffix is added before the extension.
+    ///
+    /// Leave this empty or omit it to disable result export.
+    ///
+    /// This only applies in TUI mode; in non-TUI mode the search stops at the
+    /// first solution and nothing is exported.
+    #[arg(long = "export-results", value_name = "TEMPLATE")]
+    pub export: Option<String>,
+
     /// Force non-TUI output.
     ///
     /// If the program is run in a non-interactive environment (e.g. when stdout is not a TTY),
@@ -147,6 +170,12 @@ pub struct LoadArgs {
     /// Override whether to enlarge the world after an exhausted search.
     #[arg(long)]
     pub increase_world_size: Option<bool>,
+
+    /// Override the export template for saving found solutions to files.
+    ///
+    /// See the `--export-results` option of `new` for the template syntax.
+    #[arg(long = "export-results")]
+    pub export: Option<String>,
 
     /// Force non-TUI output.
     ///

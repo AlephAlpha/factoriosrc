@@ -69,6 +69,7 @@ impl WebSearchThread {
             step: search.step,
             increase_world_size: search.increase_world_size,
             no_stop: search.no_stop,
+            export: search.export.clone(),
         };
 
         let queue = std::rc::Rc::new(std::cell::RefCell::new(std::collections::VecDeque::new()));

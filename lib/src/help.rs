@@ -180,6 +180,8 @@ pub enum SearchControlHelpField {
     IncreaseWorldSize,
     /// The continue-after-solution toggle.
     NoStop,
+    /// The result-export template field.
+    ExportResults,
     /// The step-size field.
     Step,
 }
@@ -191,6 +193,7 @@ impl SearchControlHelpField {
         match self {
             Self::IncreaseWorldSize => "Increase size",
             Self::NoStop => "No stop",
+            Self::ExportResults => "Export results",
             Self::Step => "Step",
         }
     }
@@ -203,6 +206,11 @@ impl SearchControlHelpField {
                 "Restart with a slightly larger world after an exhausted search."
             }
             Self::NoStop => "Keep searching after the first solution instead of pausing.",
+            Self::ExportResults => {
+                "Save every found solution to compact RLE files. A file-name template with \
+                 {rule}, {width}, {height}, {period}, {dx}, {dy}, {symmetry}, {transformation}, \
+                 {index}, {generation}, and {population} placeholders. Leave empty to disable."
+            }
             Self::Step => "Display and update interval in search steps.",
         }
     }

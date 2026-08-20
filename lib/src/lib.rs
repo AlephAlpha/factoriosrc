@@ -10,6 +10,7 @@
 mod cell;
 mod config;
 mod error;
+mod export;
 mod help;
 mod rule;
 mod search;
@@ -19,6 +20,9 @@ pub use ca_symmetry::{Symmetry, Transformation, TranslationCondition};
 pub use cell::Reason;
 pub use config::{Config, KnownCell, NewState, SearchOrder};
 pub use error::ConfigError;
+#[cfg(not(target_arch = "wasm32"))]
+pub use export::save_generation;
+pub use export::{DEFAULT_EXPORT_TEMPLATE, ExportError, ExportFields, Template, TemplateError};
 pub use help::{ConfigHelpField, SearchControlHelpField};
 pub use rule::{CellState, RuleTable};
 pub use world::{Coord, Status, World};

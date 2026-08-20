@@ -42,6 +42,24 @@ pub struct AppConfig {
     ///
     /// The search will continue until no more solutions exist, or paused by the user.
     pub no_stop: bool,
+
+    /// A file-name template for exporting found solutions to compact RLE files.
+    ///
+    /// [`None`] or an empty string means that result export is disabled.
+    ///
+    /// The template may contain `{placeholder}` fields: `rule`, `width`,
+    /// `height`, `period`, `dx`, `dy`, `symmetry`, `transformation`, `index`,
+    /// `generation`, and `population`. Numeric fields can be zero-padded with
+    /// a format spec, e.g. `{index:04}`. The `rule`, `symmetry`, and
+    /// `transformation` fields are sanitized for file names unless the `raw`
+    /// spec is used. Parent directories are created as needed, and the
+    /// `.rle` extension is appended if missing. If the period is greater than
+    /// 1 and the template does not contain `{generation}`, a `_g<generation>`
+    /// suffix is added before the extension.
+    ///
+    /// Only used on native platforms; the web UI cannot write files.
+    #[cfg_attr(feature = "save", serde(default))]
+    pub export: Option<String>,
 }
 
 /// Application modes.
@@ -125,6 +143,7 @@ impl Default for App {
             step: 100_000,
             increase_world_size: false,
             no_stop: false,
+            export: None,
         };
         Self {
             config,
