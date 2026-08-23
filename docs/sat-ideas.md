@@ -1,10 +1,16 @@
 # SAT Solver Techniques for factoriosrc
 
 > **Status**: This note is a collection of ideas and a preliminary analysis. The phase saving
-> part of idea 3 and idea 4 (lookahead, polarity selection only) have been implemented as
-> opt-in experiments (see their sections below); **everything else in this note — including the
-> VSIDS-style activity part of idea 3 and the cell-selection variant of idea 4 — has not been
-> implemented yet.** Every direction is at the "worth trying" stage; the concrete designs, data
+> part of idea 3, idea 4 (lookahead, polarity selection only), the idea 1 foundation (recording
+> the antecedents of deductions), and the **full idea 1 (1-UIP conflict analysis and
+> non-chronological backtracking) have been implemented as opt-in experiments** (see their
+> sections below); the full idea 1 is correct (verified by a 16,200-configuration differential
+> matrix) but **a loss on typical searches without idea 2** (the analysis re-treads closed
+> branches without a persistent nogood database) — with the notable exception of very large
+> searches like `B3/S23 64 64 1 -n a` where backjumping is a decisive win (see the idea 1
+> section). **Everything else in this note — idea 2 (nogood database), the
+> VSIDS-style activity part of idea 3, and the cell-selection variant of idea 4 — has not been
+> implemented.** Every direction is at the "worth trying" stage; the concrete designs, data
 > structures, and integration with the existing code all remain to be discussed and experimented
 > with.
 
@@ -88,6 +94,120 @@ solving that decide which techniques transfer directly and which need adaptation
 
 The core CDCL idea, and the foundation for most of the others.
 
+### Status: implemented as an opt-in experiment
+
+`Config::backjump` (CLI `--backjump`, plus toggles in the TUI and the egui UI; restricted to
+2-state rules by `Config::check`) enables two things: the **recording** of antecedents and
+decision levels (the foundation), and the **full 1-UIP conflict analysis** with
+non-chronological backtracking on top of it.
+
+**The recording layer**
+
+- Each cell set by a rule-based deduction remembers its antecedent as the source cell
+  (whose neighborhood descriptor produced the deduction), and each symmetry deduction
+  remembers the mirrored cell (`Antecedent`, `lib/src/cell.rs`).
+- The search stack records a parallel `TrailMeta` (`level`, `decision`, `antecedent`) in
+  lockstep, plus a `current_level` counter. All pop sites (`backtrack`, the lookahead probe
+  rollback) keep the metadata in sync, so the implication graph of the current partial
+  assignment is always reconstructible.
+- The exact antecedent of a deduction is *not* stored as a set of cells: it is recovered
+  from the source cell by walking the known cells of its current neighborhood descriptor,
+  excluding the deduced cell itself, and — importantly — filtering to the cells whose stack
+  positions precede the deduction. The position filter is soundness-critical: a cell set
+  after the deduction may not be part of the deduction's reason (it could even have changed
+  the deduction; if it had, the search would have conflicted when it was set).
+- The recording itself costs about 2.5-3% when enabled (measured on
+  `B3/S23 26 8 4 -y 1 -n a` and `R3,C2,S2,B3,N+ 50 10 4 -x 2 -s D2-`), and nothing when
+  disabled (the code path is unchanged; the side structures are all empty). The analysis
+  costs much more — see the performance paragraph below.
+
+**The analysis** — a standard MiniSat-style 1-UIP conflict analysis on top of the recording.
+It was implemented twice:
+
+- **First attempt (reverted).** The analysis looked correct on the test suite, but a
+  differential enumeration test against the default search (`B3/S23 3x3x1` with diagonal
+  order and the `R1` transformation) showed it was **incomplete**: it enumerated a strict
+  subset of the solutions (e.g. 2 of 3). It found the first two issues below and was
+  reverted rather than shipped broken.
+- **Second attempt (the current code).** The investigation narrowed the causes to structures
+  that SAT solvers do not have, and the second attempt fixed all of them:
+
+  1. **Decision-carrier levels.** When the search backtracks chronologically, the popped
+     guess is re-set to its opposite state as a deduction with no antecedent
+     (`Reason::Deduced`, `Antecedent::None`). These "flip" entries are conceptually re-tries
+     of earlier decisions, so they are now recorded as **decision carriers**: each carrier
+     occupies a whole level, `current_level` counts carriers (not guesses), and every level
+     above the root has exactly one reasonless decision. This restores the standard
+     invariant of one decision per level that the 1-UIP analysis relies on.
+  2. **Stop at the decision carrier.** The resolution never replaces a reasonless literal
+     by an empty reason: as soon as the walk reaches the current level's decision carrier,
+     the analysis stops and uses it as the 1-UIP. (Resolving it "with an empty reason" was
+     the resolution-rule mistake of the first attempt, which derived invalid nogoods.)
+  3. **The chain position of the resumption point.** The search chain (the `next` links of
+     the search order) is in a fixed spatial order that differs from the trail order, and
+     the backjump truncation pops trail entries whose chain positions lie *before* the
+     chain resumption point. The search then resumes behind those cells without ever
+     visiting them again, which previously let the search report `Solved` with unknown
+     cells (spotted by the same differential test on a `D2H`/`S0` configuration). The fix:
+     each cell in the chain gets a rank (computed in chain order), the truncation resumes at
+     the chain-earliest popped cell, and it additionally re-checks the trail entries whose
+     descriptors were changed by the pops (a targeted re-queue instead of re-checking the
+     whole trail).
+  4. **The learned-clause reason as (cell, position) pairs.** The reason of a backjump flip
+     (a clause) is only valid while its cells are set to the recorded values; the cells can
+     be re-set by later backjumps, so the analysis must verify (by recorded stack positions)
+     that the clause is still current, and fall back to chronological backtracking when it is
+     not.
+
+**Result (2026-08)**: **correctness is achieved** — the differential enumeration matrix
+(8 rules x 2-3 world sizes x periods x 3 search orders x 6 symmetries x 6 transformations x
+3 new-state strategies, 16,200 configurations) matches the default search exactly, including
+the two corner cases that caught the first attempt. On the usual benchmarks it is **not a
+performance win**: on `B3/S23 26 8 4 -y 1 -n a` it is ~30x slower than the default (38 s vs
+1.25 s; with a depth gate even worse), and the default factorio-rule benchmark does not
+finish in 120 s. The cause is re-treading: without the persistent nogood database (idea 2),
+every learned clause is discarded as soon as its cells are popped, so the analysis regularly
+re-explores already closed branches (on a tiny configuration the same solution was re-found
+16 times). However, on very large searches the analysis wins decisively, matching the old
+rlifesrc observation — see
+*[Where backjumping shines](#where-backjumping-shines-b3s23-64-64-1--n-a)* below.
+
+**What remains**: the analysis is kept behind the `Config::backjump` flag for
+experimentation, and the recording layer (the foundation of idea 2) is verified sound. The
+natural next step is idea 2 — a persistent nogood database — which is the only way to
+recover the closed-branch knowledge that the re-treading loses; for typical (small and
+medium) searches idea 1 is only useful as this foundation, while its greatest visible win
+so far is the large-search regime (see below).
+
+### Where backjumping shines: `B3/S23 64 64 1 -n a`
+
+The exception that confirms the rlifesrc 2021 observation: searches over a **large world**
+with **shallow local cascades**, where the analysis's jump distance is huge compared to the
+re-propagated work. The case is a 64x64 period-1 search (a 64x64 still-life-like pattern in
+Conway's Life), with the alive-first `new_state` strategy:
+
+| Configuration | Time | Result |
+| --- | --- | --- |
+| (no flags) | > 90 s, no result | — |
+| `--backjump` | **19 ms** | a 64x64 still-life-like pattern |
+| `--lookahead` | 44 ms | **a different** 64x64 pattern |
+| `--phase-saving` | 1.9 s | a slightly different 64x64 pattern |
+
+Notes:
+
+- This is the same qualitative picture as the old rlifesrc result ("backjumping is only
+  useful for large (e.g., 64x64) still lifes"): on this case the conflicts are deep and the
+  search space is huge, so the non-chronological jumps dominate the re-treading that makes
+  backjumping a loss on small and medium cases.
+- All three heuristics help here, but they find (slightly) different solutions: backjump and
+  lookahead land on different patterns within milliseconds, and phase saving needs almost 2
+  seconds for another one. The lookahead one is the most different. This matters when the
+  tool is used to *search* for examples, not to enumerate: the found pattern depends on the
+  heuristic.
+- The case is a convenient sanity check for the idea-1 machinery: a few-millisecond run
+  that produces a valid (period-1) pattern, compared to a search that does not finish within
+  any reasonable time in the default configuration.
+
 ### What the antecedent is
 
 When `check_descriptor_implied` (`lib/src/search.rs:60`) deduces the state of a successor,
@@ -117,6 +237,11 @@ often decided far above the current guess.
 - Conflicts from global constraints (front, population) and from symmetry must be marked as
   non-learnable and excluded from the analysis;
 - Generations asymmetry (see above).
+- The flip-level issue described above: the backtracking thread of the search rewrites
+  trail entries (a popped guess becomes a reasonless "deduction"), and the level metadata
+  must make this sound for the analysis. This was the main risk, it caused the first 1-UIP
+  attempt to be reverted, and it is now addressed by the decision-carrier levels and the
+  stop-at-the-carrier rule (see the status section).
 
 ## Idea 2: Forbidden pattern memory (a nogood database)
 
@@ -230,8 +355,10 @@ against the fixed order.
 **Status: implemented as an experiment** (polarity selection only; the cell-selection variant is
 not implemented). `Config::lookahead` (CLI `--lookahead`, plus toggles in the TUI and the egui
 UI) probes both states of the next unknown cell before guessing it, and guesses the better state
-(or the only non-conflicting one). It is off by default. It only applies to 2-state rules;
-Generations rules are skipped (verified to be unaffected by a benchmark). Probing is implemented
+(or the only non-conflicting one). It is off by default. It only applies to 2-state rules and is
+rejected for Generations rules by `Config::check` (the probe has no analogue for the dying
+states; the old "Generations rules are skipped" behavior — verified to be unaffected by a
+benchmark — was replaced by the explicit check). Probing is implemented
 in `World::probe` (`lib/src/search.rs`): it temporarily sets the cell, propagates with a cap of
 256 deductions (`MAX_PROBE_DEDUCTIONS`), scores the probe, and rolls it back. The rollback reuses
 the existing set/unset + stack machinery; `World::in_probe` prevents probes from corrupting phase
@@ -270,7 +397,9 @@ Notes:
 - It is a clear loss on the default factorio rule searches (1.6x to 6.5x slower). Lowering the
   probe cap from 256 to 32 deductions did not change this (238 s vs 231 s on the 50x12 case), so
   the overhead is the fixed per-guess probe cost, not the propagation depth.
-- The Generations control is unchanged, confirming that lookahead is correctly skipped there.
+- The Generations control ran before the `Config::check` change: lookahead is now rejected
+  for Generations rules, so this control cannot be reproduced with the current code (the
+  old behavior — the probe was skipped — was the "no effect" that the row shows).
 - The two runs of `50 12 3 -x 1 -s D2-` find the same solution (population 124) with and without
   lookahead; the probe overhead is pure loss on that search.
 
@@ -337,8 +466,18 @@ resolution in SAT preprocessing.
    default-strategy search but a loss on the default factorio rule. The cell-selection variant of
    idea 4 (which needs a small search-order refactor to stay sound) is **not** done;
 3. The foundation of idea 1: attach antecedents to `Reason::Deduced` (record only, do not change
-   the algorithm yet) — all later CDCL-style techniques depend on it;
-4. The full idea 1 (1-UIP backjumping) → idea 2 (cross-size nogoods): the long-term goals;
+   the algorithm yet) — **done** — implemented as an opt-in `Config::backjump` (the flag records
+   antecedents and decision levels, and also enables the full analysis; see the next item). The
+   recording costs about 2.5-3% when enabled and nothing when disabled. This is the prerequisite
+   for all later CDCL-style techniques;
+4. The full idea 1 (1-UIP backjumping): **done, correctness verified** — implemented and made
+   sound (three fixes: decision-carrier levels, stop-at-reasonless, chain-rank resumption +
+   targeted re-check; see the idea 1 section). The differential matrix (16,200 configurations)
+   matches the default search. Performance: a **loss on small and medium searches** (the analysis
+   re-treads closed branches without a persistent nogood database, ~30x slower on the spaceship
+   benchmark), but a **decisive win on very large searches** (e.g. `B3/S23 64 64 1 -n a` finds a
+   pattern in 19 ms where the default search does not finish — the same regime rlifesrc
+   observed). The flag stays opt-in for experimentation.
 5. Ideas 5 and 6 as needed; idea 7 last.
 
 ## Things to re-check before implementing
@@ -355,3 +494,7 @@ resolution in SAT preprocessing.
 - Each idea must be validated separately for the combination of "enumerate all solutions +
   reduce_max_population + incrementally larger worlds": is the learned information still valid
   after backtracking and after rebuilding the world?
+- For the idea-1 machinery in particular, validate by comparing the *sets* of enumerated
+  solutions against the default search (the raw solution counts differ even without backjumping,
+  since the search may legitimately re-find a solution, e.g. a pattern and its generation
+  rotation). This differential test caught the incompleteness bug in the first 1-UIP attempt.

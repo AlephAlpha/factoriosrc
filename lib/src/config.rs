@@ -285,7 +285,7 @@ pub struct Config {
     /// 5%) with the default dead strategy and a larger one (about 2x) with
     /// the random strategy, but it can also slow the search down for other
     /// rules and strategies. The default is `false`.
-    #[cfg_attr(feature = "clap", arg(long))]
+    #[cfg_attr(feature = "clap", arg(long, help_heading = "Experimental"))]
     #[cfg_attr(feature = "serde", serde(default))]
     pub phase_saving: bool,
 
@@ -300,10 +300,28 @@ pub struct Config {
     ///
     /// This is an experimental heuristic inspired by the lookahead / failed
     /// literal technique of SAT solvers; it does not always help. It only
-    /// applies to rules with 2 states. The default is `false`.
-    #[cfg_attr(feature = "clap", arg(long))]
+    /// applies to rules with 2 states, and it is rejected for Generations
+    /// rules by [`check`](Config::check). The default is `false`.
+    #[cfg_attr(feature = "clap", arg(long, help_heading = "Experimental"))]
     #[cfg_attr(feature = "serde", serde(default))]
     pub lookahead: bool,
+
+    /// Whether to enable the CDCL-style conflict analysis with
+    /// non-chronological backtracking.
+    ///
+    /// When this is `true`, each deduction remembers the cells it was deduced
+    /// from, and when a conflict is found, the search analyzes it, jumps to
+    /// the decision that caused it, and remembers the learned clause as long
+    /// as it is valid.
+    ///
+    /// This is an experimental feature inspired by the CDCL conflict analysis
+    /// of SAT solvers; it does not always help and is usually slower than the
+    /// default chronological backtracking, because without a persistent
+    /// nogood database the analysis re-explores closed branches. It only
+    /// applies to rules with 2 states. The default is `false`.
+    #[cfg_attr(feature = "clap", arg(long, help_heading = "Experimental"))]
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub backjump: bool,
 
     /// Random seed for guessing the state of an unknown cell.
     ///
@@ -364,6 +382,7 @@ impl Config {
             new_state: NewState::Dead,
             phase_saving: false,
             lookahead: false,
+            backjump: false,
             seed: None,
             known_cells: Vec::new(),
             max_population: None,
@@ -449,6 +468,17 @@ impl Config {
     #[must_use]
     pub const fn with_lookahead(mut self) -> Self {
         self.lookahead = true;
+        self
+    }
+
+    /// Enable the CDCL-style conflict analysis with non-chronological
+    /// backtracking.
+    ///
+    /// See [`backjump`](Config::backjump) for more details.
+    #[inline]
+    #[must_use]
+    pub const fn with_backjump(mut self) -> Self {
+        self.backjump = true;
         self
     }
 
@@ -570,6 +600,20 @@ impl Config {
     pub fn check(&mut self) -> Result<(), ConfigError> {
         let rule = self.parse_rule()?;
         check_rule_symmetry(&rule, self.symmetry, self.transformation)?;
+
+        // Backjumping only applies to rules with 2 states: the Generations
+        // rules branch over the dying states, and the implication graph of a
+        // deduction is asymmetric there (see `check_generations_implied`).
+        if self.backjump && rule.states > 2 {
+            return Err(ConfigError::BackjumpUnsupported);
+        }
+
+        // Lookahead only applies to rules with 2 states: it probes the two
+        // possible states of a cell, which has no analogue for the dying
+        // states of a Generations rule.
+        if self.lookahead && rule.states > 2 {
+            return Err(ConfigError::LookaheadUnsupported);
+        }
 
         // For a B0 rule, the cells outside the search range are assumed to
         // follow a uniform background of period `background_period`. The

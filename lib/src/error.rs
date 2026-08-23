@@ -47,6 +47,14 @@ pub enum ConfigError {
     #[error("The transformation is not compatible with the rule")]
     TransformationIncompatibleWithRule,
 
+    /// Backjumping is enabled for a Generations rule.
+    #[error("Backjumping is only supported for rules with 2 states")]
+    BackjumpUnsupported,
+
+    /// Lookahead is enabled for a Generations rule.
+    #[error("Lookahead is only supported for rules with 2 states")]
+    LookaheadUnsupported,
+
     /// A known cell is outside the world.
     #[error("A known cell is outside the world")]
     InvalidKnownCell,

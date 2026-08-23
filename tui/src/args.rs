@@ -57,7 +57,7 @@ pub struct NewArgs {
     ///
     /// If the TUI interface is enabled, the program will display the current partial result
     /// every `step` steps. If `step` is not specified, it will default to 100000.
-    #[arg(long)]
+    #[arg(long, help_heading = "Search control")]
     pub step: Option<usize>,
 
     /// Restart with a slightly larger world after an exhausted search.
@@ -71,13 +71,13 @@ pub struct NewArgs {
     ///
     /// When the world size is increased, the search will be restarted, and the current search
     /// status will be lost.
-    #[arg(long)]
+    #[arg(long, help_heading = "Search control")]
     pub increase_world_size: bool,
 
     /// Continue searching after the first solution.
     ///
     /// The search will continue until no more solutions exist, or paused by the user.
-    #[arg(long)]
+    #[arg(long, help_heading = "Search control")]
     pub no_stop: bool,
 
     /// Save every found solution to files as compact RLE.
@@ -100,7 +100,11 @@ pub struct NewArgs {
     ///
     /// This only applies in TUI mode; in non-TUI mode the search stops at the
     /// first solution and nothing is exported.
-    #[arg(long = "export-results", value_name = "TEMPLATE")]
+    #[arg(
+        long = "export-results",
+        value_name = "TEMPLATE",
+        help_heading = "Search control"
+    )]
     pub export: Option<String>,
 
     /// Force non-TUI output.
@@ -110,7 +114,7 @@ pub struct NewArgs {
     ///
     /// WARNING: the search may take a very long time. It is not possible to pause the search
     /// or save the state of the search in non-TUI mode.
-    #[arg(long)]
+    #[arg(long, help_heading = "Output")]
     pub no_tui: bool,
 
     /// Save search state to this file on exit.
@@ -118,7 +122,7 @@ pub struct NewArgs {
     /// If not specified, the state will not be saved.
     ///
     /// The state will be saved when quitting the application.
-    #[arg(long)]
+    #[arg(long, help_heading = "Output")]
     pub save: Option<PathBuf>,
 
     /// Pin a cell to a known state as `x,y,t,state`.
@@ -136,11 +140,22 @@ pub struct NewArgs {
     pub known_cells_file: Option<PathBuf>,
 
     /// Output format for non-TUI mode.
-    #[arg(long, value_name = "FORMAT", default_value = "rle")]
+    #[arg(
+        long,
+        value_name = "FORMAT",
+        default_value = "rle",
+        help_heading = "Output"
+    )]
     pub format: OutputFormat,
 
     /// Generation to print in non-TUI mode.
-    #[arg(short = 'g', long, value_name = "GEN", default_value_t = 0)]
+    #[arg(
+        short = 'g',
+        long,
+        value_name = "GEN",
+        default_value_t = 0,
+        help_heading = "Output"
+    )]
     pub generation: i32,
 }
 
@@ -156,25 +171,25 @@ pub struct LoadArgs {
     /// If not specified, it will default to the path of the loaded state.
     ///
     /// The state will be saved when quitting the application.
-    #[arg(long)]
+    #[arg(long, help_heading = "Output")]
     pub save: Option<PathBuf>,
 
     /// Override the display/update interval for the loaded search.
-    #[arg(long)]
+    #[arg(long, help_heading = "Search control")]
     pub step: Option<usize>,
 
     /// Override whether to continue searching after finding a solution.
-    #[arg(long)]
+    #[arg(long, help_heading = "Search control")]
     pub no_stop: Option<bool>,
 
     /// Override whether to enlarge the world after an exhausted search.
-    #[arg(long)]
+    #[arg(long, help_heading = "Search control")]
     pub increase_world_size: Option<bool>,
 
     /// Override the export template for saving found solutions to files.
     ///
     /// See the `--export-results` option of `new` for the template syntax.
-    #[arg(long = "export-results")]
+    #[arg(long = "export-results", help_heading = "Search control")]
     pub export: Option<String>,
 
     /// Force non-TUI output.
@@ -184,15 +199,20 @@ pub struct LoadArgs {
     ///
     /// WARNING: the search may take a very long time. It is not possible to pause the search
     /// or save the state of the search in non-TUI mode.
-    #[arg(long)]
+    #[arg(long, help_heading = "Output")]
     pub no_tui: bool,
 
     /// Output format for non-TUI mode.
-    #[arg(long, value_name = "FORMAT", default_value = "rle")]
+    #[arg(
+        long,
+        value_name = "FORMAT",
+        default_value = "rle",
+        help_heading = "Output"
+    )]
     pub format: OutputFormat,
 
     /// Generation to print in non-TUI mode.
-    #[arg(short = 'g', long, value_name = "GEN")]
+    #[arg(short = 'g', long, value_name = "GEN", help_heading = "Output")]
     pub generation: Option<i32>,
 }
 
@@ -364,5 +384,94 @@ impl Cli {
         }
 
         args
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    /// Collects a map from long-flag name to its help heading.
+    fn help_headings(cmd: &clap::Command) -> HashMap<String, Option<String>> {
+        cmd.get_arguments()
+            .filter_map(|arg| {
+                arg.get_long()
+                    .map(|long| (long.to_owned(), arg.get_help_heading().map(str::to_owned)))
+            })
+            .collect()
+    }
+
+    fn heading<'a>(map: &'a HashMap<String, Option<String>>, flag: &str) -> Option<&'a str> {
+        map.get(flag)
+            .unwrap_or_else(|| panic!("flag --{flag} should exist"))
+            .as_deref()
+    }
+
+    #[test]
+    fn cli_help_groups() {
+        let command = Cli::command();
+        let new = command
+            .find_subcommand("new")
+            .expect("new subcommand should exist");
+        let map = help_headings(new);
+
+        for flag in ["phase-saving", "lookahead", "backjump"] {
+            assert_eq!(
+                heading(&map, flag),
+                Some("Experimental"),
+                "unexpected heading for --{flag}"
+            );
+        }
+        for flag in ["step", "increase-world-size", "no-stop", "export-results"] {
+            assert_eq!(
+                heading(&map, flag),
+                Some("Search control"),
+                "unexpected heading for --{flag}"
+            );
+        }
+        for flag in ["save", "no-tui", "format", "generation"] {
+            assert_eq!(
+                heading(&map, flag),
+                Some("Output"),
+                "unexpected heading for --{flag}"
+            );
+        }
+        // Ungrouped config and known-cell options stay in the default section.
+        for flag in [
+            "rule-str",
+            "diagonal-width",
+            "symmetry",
+            "transformation",
+            "search-order",
+            "new-state",
+            "seed",
+            "max-population",
+            "reduce-max-population",
+            "known-cell",
+            "known-cells-file",
+        ] {
+            assert_eq!(heading(&map, flag), None, "unexpected heading for --{flag}");
+        }
+
+        let load_command = Cli::command();
+        let load = load_command
+            .find_subcommand("load")
+            .expect("load subcommand should exist");
+        let load_map = help_headings(load);
+        for flag in ["step", "no-stop", "increase-world-size", "export-results"] {
+            assert_eq!(
+                heading(&load_map, flag),
+                Some("Search control"),
+                "unexpected heading for --{flag}"
+            );
+        }
+        for flag in ["save", "no-tui", "format", "generation"] {
+            assert_eq!(
+                heading(&load_map, flag),
+                Some("Output"),
+                "unexpected heading for --{flag}"
+            );
+        }
     }
 }

@@ -61,6 +61,7 @@ pub enum ConfigField {
     NewState,
     PhaseSaving,
     Lookahead,
+    Backjump,
     Seed,
     MaxPopulation,
     ReduceMaxPopulation,
@@ -86,8 +87,6 @@ impl ConfigField {
             Self::Transformation,
             Self::SearchOrder,
             Self::NewState,
-            Self::PhaseSaving,
-            Self::Lookahead,
             Self::Seed,
             Self::MaxPopulation,
             Self::ReduceMaxPopulation,
@@ -95,6 +94,9 @@ impl ConfigField {
             Self::IncreaseWorldSize,
             Self::NoStop,
             Self::ExportResults,
+            Self::PhaseSaving,
+            Self::Lookahead,
+            Self::Backjump,
             Self::Apply,
             Self::Cancel,
         ]
@@ -115,6 +117,7 @@ impl ConfigField {
             Self::NewState => "New state",
             Self::PhaseSaving => "Phase saving",
             Self::Lookahead => "Lookahead",
+            Self::Backjump => "Backjump",
             Self::Seed => "Seed",
             Self::MaxPopulation => "Max pop",
             Self::ReduceMaxPopulation => "Reduce pop",
@@ -150,6 +153,7 @@ impl ConfigField {
                 | Self::NewState
                 | Self::PhaseSaving
                 | Self::Lookahead
+                | Self::Backjump
                 | Self::SearchOrder
                 | Self::ReduceMaxPopulation
                 | Self::IncreaseWorldSize
@@ -159,6 +163,11 @@ impl ConfigField {
 
     pub const fn is_button(self) -> bool {
         matches!(self, Self::Apply | Self::Cancel)
+    }
+
+    /// Whether this field belongs to the experimental group.
+    pub const fn is_experimental(self) -> bool {
+        matches!(self, Self::PhaseSaving | Self::Lookahead | Self::Backjump)
     }
 }
 
@@ -230,6 +239,7 @@ impl ConfigState {
             ConfigField::NewState => cfg.new_state.to_string(),
             ConfigField::PhaseSaving => cfg.phase_saving.to_string(),
             ConfigField::Lookahead => cfg.lookahead.to_string(),
+            ConfigField::Backjump => cfg.backjump.to_string(),
             ConfigField::Seed => cfg.seed.map_or(String::new(), |s| s.to_string()),
             ConfigField::MaxPopulation => {
                 cfg.max_population.map_or(String::new(), |p| p.to_string())
@@ -418,6 +428,9 @@ impl ConfigState {
             }
             ConfigField::Lookahead => {
                 self.working_config.lookahead = !self.working_config.lookahead;
+            }
+            ConfigField::Backjump => {
+                self.working_config.backjump = !self.working_config.backjump;
             }
             ConfigField::IncreaseWorldSize => {
                 self.increase_world_size = !self.increase_world_size;
@@ -728,6 +741,7 @@ impl App {
         let state = self.config_state.as_ref()?;
         let mut lines = 0usize;
         let mut indices = vec![0usize; state.fields.len()];
+        let mut prev_experimental = false;
 
         for (i, field) in state.fields.iter().enumerate() {
             if field.is_button() {
@@ -739,9 +753,18 @@ impl App {
                 if matches!(field, ConfigField::Cancel) {
                     lines += 1;
                 }
+                prev_experimental = false;
             } else {
+                // Keep in sync with the caption inserted in `render_config_form`:
+                // a blank line plus the group title before the first experimental
+                // field of a contiguous run.
+                let experimental = field.is_experimental();
+                if experimental && !prev_experimental {
+                    lines += 2;
+                }
                 indices[i] = lines;
                 lines += 1;
+                prev_experimental = experimental;
             }
         }
 
@@ -1720,6 +1743,83 @@ mod tests {
     }
 
     #[test]
+    fn config_field_order_groups_experimental_fields() {
+        let fields = ConfigField::all();
+        let position = |field| {
+            fields
+                .iter()
+                .position(|f| *f == field)
+                .expect("field exists")
+        };
+
+        // Seed belongs to the new-state strategy and comes before the group.
+        assert!(position(ConfigField::Seed) < position(ConfigField::PhaseSaving));
+        // The three experimental toggles form a contiguous run.
+        assert_eq!(
+            position(ConfigField::Lookahead),
+            position(ConfigField::PhaseSaving) + 1
+        );
+        assert_eq!(
+            position(ConfigField::Backjump),
+            position(ConfigField::PhaseSaving) + 2
+        );
+        // The group sits at the end of the form, right before the buttons, so
+        // no other field can be mistaken for part of it.
+        assert!(position(ConfigField::ExportResults) < position(ConfigField::PhaseSaving));
+        assert!(position(ConfigField::Backjump) < position(ConfigField::Apply));
+    }
+
+    #[test]
+    fn config_field_line_indices_skip_experimental_caption() {
+        let mut app = test_app();
+        app.enter_config_mode();
+
+        let field_positions = {
+            let fields = &app.config_state.as_ref().expect("config state").fields;
+            let position = |field| {
+                fields
+                    .iter()
+                    .position(|f| *f == field)
+                    .expect("field exists")
+            };
+            (
+                position(ConfigField::ExportResults),
+                position(ConfigField::PhaseSaving),
+                position(ConfigField::Lookahead),
+                position(ConfigField::Backjump),
+            )
+        };
+        let (export, phase_saving, lookahead, backjump) = field_positions;
+
+        // The caption (a blank line plus the title) is inserted between them:
+        // two extra lines plus the field's own line.
+        let before = app.config_field_line_indices().expect("indices");
+        assert_eq!(before[phase_saving], before[export] + 3);
+
+        // The rest of the run is contiguous: no extra lines inside the group.
+        assert_eq!(before[lookahead], before[phase_saving] + 1);
+        assert_eq!(before[backjump], before[lookahead] + 1);
+
+        // No caption appears when the experimental fields are removed.
+        if let Some(state) = app.config_state.as_mut() {
+            state.fields.retain(|field| !field.is_experimental());
+        }
+        let fields = app
+            .config_state
+            .as_ref()
+            .expect("config state")
+            .fields
+            .clone();
+        let without = app.config_field_line_indices().expect("indices");
+        for (i, pair) in without.windows(2).enumerate() {
+            // Buttons keep their own blank-line spacing.
+            if !fields[i].is_button() && !fields[i + 1].is_button() {
+                assert_eq!(pair[1] - pair[0], 1);
+            }
+        }
+    }
+
+    #[test]
     fn enter_cycles_direct_edit_boolean_fields_in_config_mode() {
         let mut app = test_app();
         app.enter_config_mode();
@@ -1928,10 +2028,23 @@ mod tests {
         app.enter_config_mode();
         app.sync_terminal_area(Rect::new(0, 0, 80, 24));
 
+        let reduce_line = {
+            let state = app
+                .config_state
+                .as_ref()
+                .expect("config state should exist");
+            let reduce_index = state
+                .fields
+                .iter()
+                .position(|field| *field == ConfigField::ReduceMaxPopulation)
+                .expect("reduce pop field should exist");
+            app.config_field_line_indices().expect("indices")[reduce_index]
+        };
+
         app.update(TermEvent::Mouse(MouseInput {
             action: MouseAction::LeftDown,
             column: 3,
-            row: 16,
+            row: reduce_line as u16 + 1,
         }));
 
         let state = app

@@ -1,7 +1,7 @@
 #[cfg(feature = "serde")]
 use crate::error::SerdeError;
 use crate::{
-    cell::{LifeCell, Reason},
+    cell::{Antecedent, LifeCell, Reason},
     config::{Config, KnownCell, SearchOrder},
     error::ConfigError,
     rule::{CellState, RuleTable},
@@ -34,6 +34,58 @@ pub enum Status {
     Solved,
     /// No more solutions.
     NoSolution,
+}
+
+/// A piece of metadata of a stack entry, used for conflict analysis when
+/// backjumping is enabled.
+///
+/// When [`Config::backjump`](crate::Config::backjump) is `false` (the default),
+/// no metadata is recorded, and the search behaves exactly like before.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrailMeta {
+    /// The decision level of the entry: the number of decision carriers in
+    /// the part of the stack up to and including this entry.
+    ///
+    /// A decision carrier is a guessed cell, or a guess flipped by
+    /// [`backtrack`](World::backtrack) which is a new value of the same
+    /// decision and therefore occupies the same level.
+    pub(crate) level: u32,
+
+    /// Whether this entry is a decision carrier.
+    ///
+    /// This is `true` for guessed cells and for the re-tried states of guessed
+    /// cells in `backtrack`; the level counter counts these entries only, so
+    /// that every level has exactly one decision carrier. This is what the
+    /// conflict analysis relies on.
+    pub(crate) decision: bool,
+
+    /// The antecedent of the deduction that set the cell.
+    ///
+    /// This is [`None`] for [`Known`](Reason::Known),
+    /// [`Guessed`](Reason::Guessed), and re-tried guessed cells.
+    pub(crate) antecedent: Option<Antecedent>,
+}
+
+/// Why a conflict occurred while checking a cell.
+///
+/// When backjumping is enabled, a [`Rule`](Confl::Rule) or
+/// [`Symmetry`](Confl::Symmetry) conflict is analyzed to backjump; a
+/// [`Global`](Confl::Global) conflict is a global constraint failure and is
+/// handled by chronological backtracking.
+#[derive(Debug, Clone, Copy)]
+pub enum Confl {
+    /// The rule lookup on the neighborhood descriptor of a cell found a conflict.
+    ///
+    /// The cell must be in the same world as `self`.
+    Rule(*const LifeCell),
+
+    /// Two symmetry-equivalent cells have different states.
+    ///
+    /// The cells must be in the same world as `self`.
+    Symmetry(*const LifeCell, *const LifeCell),
+
+    /// A global constraint failed: the front is empty or the population is too large.
+    Global,
 }
 
 /// The main struct of the search algorithm.
@@ -109,6 +161,65 @@ pub struct World {
     /// and the reason why they are set to that state.
     pub(crate) stack: Vec<(*const LifeCell, Reason)>,
 
+    /// The metadata of the entries in [`stack`](World::stack).
+    ///
+    /// This is only used when [`Config::backjump`](crate::Config::backjump) is
+    /// enabled; the entries are pushed and popped in lockstep with the stack.
+    /// When it is disabled, this vector is always empty.
+    pub(crate) trail_meta: Vec<TrailMeta>,
+
+    /// The current decision level: the number of decision carriers in the
+    /// stack.
+    ///
+    /// A decision carrier is a guessed cell, or a guess flipped by
+    /// [`backtrack`](World::backtrack) which is a new value of the same
+    /// decision. Every level has exactly one decision carrier.
+    ///
+    /// This is only maintained when [`Config::backjump`](crate::Config::backjump)
+    /// is enabled.
+    pub(crate) current_level: u32,
+
+    /// The decision level of each cell, indexed by the cell index in the world.
+    ///
+    /// This is only used when [`Config::backjump`](crate::Config::backjump) is
+    /// enabled. When it is disabled, this vector is always empty.
+    pub(crate) cell_level: Vec<u32>,
+
+    /// The position of each cell in the stack, indexed by the cell index in
+    /// the world; meaningless for cells that are not in the stack.
+    ///
+    /// This is only used when [`Config::backjump`](crate::Config::backjump) is
+    /// enabled. It is used by the conflict analysis to recover the exact
+    /// antecedent of a deduction: a deduction is based on the cells that were
+    /// already in the stack when the deduction happened, so the antecedent is
+    /// the known part of the descriptor with stack positions before the
+    /// deduced cell. When it is disabled, this vector is always empty.
+    pub(crate) cell_pos: Vec<u32>,
+
+    /// The rank of each cell in the search-order chain, indexed by the cell
+    /// index in the world; meaningless for cells not in the chain.
+    ///
+    /// This is only used when [`Config::backjump`](crate::Config::backjump) is
+    /// enabled. The conflict analysis resumes the search in the chain after a
+    /// backjump: since the chain order and the trail order differ, the
+    /// resumption point is the smallest chain rank among the popped cells,
+    /// not the deepest trail position.
+    pub(crate) chain_pos: Vec<u32>,
+
+    /// The timestamp of the last conflict analysis, used to mark the cells
+    /// that have been seen by the analysis.
+    ///
+    /// This is only used when [`Config::backjump`](crate::Config::backjump) is
+    /// enabled. When it is disabled, this vector is always empty.
+    pub(crate) seen_stamp: Vec<u32>,
+
+    /// The current [`analysis_stamp`](World::analysis_stamp).
+    ///
+    /// A cell is marked as seen when its stamp equals this number. The stamp
+    /// is increased for each analysis, so the marks do not need to be cleared
+    /// between analyses.
+    pub(crate) analysis_stamp: u32,
+
     /// The index of the next cell to be checked in the stack.
     ///
     /// The part of the stack starting from this index can be seen as a queue.
@@ -179,6 +290,8 @@ impl World {
             Xoshiro256PlusPlus::seed_from_u64,
         );
 
+        let backjump = config.backjump;
+
         let mut world = Self {
             config,
             rule,
@@ -192,6 +305,17 @@ impl World {
             below_max: p as usize,
             front_count: 0,
             stack: Vec::with_capacity(size),
+            trail_meta: Vec::new(),
+            current_level: 0,
+            cell_level: if backjump { vec![0; size] } else { Vec::new() },
+            cell_pos: if backjump { vec![0; size] } else { Vec::new() },
+            chain_pos: if backjump {
+                vec![u32::MAX; size]
+            } else {
+                Vec::new()
+            },
+            seen_stamp: if backjump { vec![0; size] } else { Vec::new() },
+            analysis_stamp: 0,
             stack_index: 0,
             start: std::ptr::null(),
             in_probe: false,
@@ -621,6 +745,22 @@ impl World {
                 }
             }
         }
+
+        // The ranks of the cells in the chain, in chain order. The chain is
+        // built by pushing cells to the front, so the order of the chain is
+        // the reverse of the order of the build loops.
+        if self.config.backjump {
+            let mut rank = 0u32;
+            let mut cell = self.start;
+            while !cell.is_null() {
+                unsafe {
+                    let index = self.cell_index(cell);
+                    self.chain_pos[index] = rank;
+                    cell = (*cell).next;
+                }
+                rank += 1;
+            }
+        }
     }
 
     /// Set the state of known cells.
@@ -698,6 +838,19 @@ impl World {
         }
     }
 
+    /// The index of a cell in the world.
+    ///
+    /// # Safety
+    ///
+    /// The pointer must be valid and point to a cell in the world.
+    /// Otherwise the behavior is undefined.
+    pub(crate) const unsafe fn cell_index(&self, cell: *const LifeCell) -> usize {
+        unsafe {
+            let offset = cell.offset_from(self.cells_ptr as *const LifeCell);
+            offset as usize
+        }
+    }
+
     /// Get a cell by its coordinates.
     ///
     /// Return [`None`] if the cell is outside the world.
@@ -726,7 +879,7 @@ impl World {
         match cell.state() {
             None => {
                 unsafe {
-                    self.set_cell(cell, state, Reason::Known);
+                    self.set_cell(cell, state, Reason::Known, None, false);
                 }
                 Ok(())
             }
@@ -737,11 +890,30 @@ impl World {
 
     /// Set the state of a cell. The cell should be unknown.
     ///
+    /// The `antecedent` argument records the cells that caused the set: the
+    /// source cell of a rule-based deduction or the source cell of a symmetry
+    /// deduction, or none for a guess or a known cell. It is only used when
+    /// [`Config::backjump`](crate::Config::backjump) is enabled, in which case
+    /// it is stored on the stack for the conflict analysis.
+    ///
+    /// The `decision` argument is whether the set starts a new decision level
+    /// (in the sense of the conflict analysis): this is `true` for a guessed
+    /// cell and for the re-tried value of a guessed cell in
+    /// [`backtrack`](World::backtrack), which is the same decision with the
+    /// opposite state. It is only used when backjumping is enabled.
+    ///
     /// # Safety
     ///
     /// The cell must be in the same world as `self`.
     /// Otherwise the behavior is undefined.
-    pub(crate) unsafe fn set_cell(&mut self, cell: &LifeCell, state: CellState, reason: Reason) {
+    pub(crate) unsafe fn set_cell(
+        &mut self,
+        cell: &LifeCell,
+        state: CellState,
+        reason: Reason,
+        antecedent: Option<Antecedent>,
+        decision: bool,
+    ) {
         debug_assert!(cell.state().is_none());
         cell.state.set(Some(state));
 
@@ -795,6 +967,47 @@ impl World {
 
         // Push the cell to the stack.
         self.stack.push((cell, reason));
+
+        // Record the metadata for the conflict analysis.
+        //
+        // A decision carrier (a guess or the re-tried value of a guess)
+        // starts a new decision level; a deduced cell inherits the current
+        // one.
+        if self.config.backjump {
+            if decision {
+                self.current_level += 1;
+            }
+            self.trail_meta.push(TrailMeta {
+                level: self.current_level,
+                decision,
+                antecedent,
+            });
+            let index = unsafe { self.cell_index(cell) };
+            self.cell_level[index] = self.current_level;
+            self.cell_pos[index] = (self.stack.len() - 1) as u32;
+            debug_assert_eq!(self.stack.len(), self.trail_meta.len());
+        } else {
+            debug_assert!(self.trail_meta.is_empty());
+        }
+    }
+
+    /// Update the backjump metadata when a cell is popped from the stack.
+    ///
+    /// This must be called for every cell popped (and then unset) from the
+    /// stack. It keeps the metadata in lockstep with the stack, and adjusts
+    /// [`current_level`](World::current_level) when the popped entry is a
+    /// decision carrier.
+    ///
+    /// If backjumping is disabled, this is a no-op.
+    pub(crate) fn pop_meta(&mut self) {
+        if self.config.backjump {
+            let meta = self.trail_meta.pop().unwrap();
+            debug_assert_eq!(meta.level, self.current_level);
+            if meta.decision {
+                self.current_level -= 1;
+            }
+            debug_assert_eq!(self.stack.len(), self.trail_meta.len());
+        }
     }
 
     /// Unset the state of a cell. The cell should be known.
@@ -1271,7 +1484,7 @@ impl World {
 
                 // Skip the cell if it already has a state.
                 if (*cell).state().is_none() {
-                    world.set_cell(&*cell, state, reason);
+                    world.set_cell(&*cell, state, reason, None, false);
                 }
             }
         }
@@ -1763,12 +1976,24 @@ mod test {
         let dead_front_cell = world.get_cell_by_coord_ptr((0, 1, 0));
 
         unsafe {
-            world.set_cell(&*alive_front_cell, CellState::Alive, Reason::Guessed);
+            world.set_cell(
+                &*alive_front_cell,
+                CellState::Alive,
+                Reason::Guessed,
+                None,
+                false,
+            );
         }
         assert_eq!(world.front_count, initial);
 
         unsafe {
-            world.set_cell(&*dead_front_cell, CellState::Dead, Reason::Guessed);
+            world.set_cell(
+                &*dead_front_cell,
+                CellState::Dead,
+                Reason::Guessed,
+                None,
+                false,
+            );
         }
         assert_eq!(world.front_count, initial - 1);
 
@@ -2071,7 +2296,8 @@ mod test {
     #[test]
     fn test_lookahead_finds_solution() {
         // With lookahead enabled, the search should still find solutions for
-        // 2-state rules. Generations rules are not affected by lookahead.
+        // 2-state rules. Generations rules are rejected by `Config::check`
+        // when lookahead is enabled.
         for config in [
             Config::new("B3/S23", 3, 3, 2).with_lookahead(),
             Config::new("B2a/S12", 3, 3, 1).with_lookahead(),
@@ -2086,11 +2312,12 @@ mod test {
     #[test]
     fn test_lookahead_enumerates_same_solutions() {
         // Lookahead changes the states that are guessed first, but not the
-        // set of solutions.
+        // set of solutions. Generations rules are rejected by
+        // `Config::check` when lookahead is enabled.
         for config in [
             Config::new("B3/S23", 3, 3, 2),
-            Config::new("B3/S23/4", 3, 3, 1),
             Config::new("B3/S23", 2, 2, 1),
+            Config::new("B2o/S23oH", 3, 3, 2),
         ] {
             assert_eq!(
                 count_solutions(&config),
@@ -2136,7 +2363,227 @@ mod test {
         world2.search(None);
         assert_eq!(world.status(), world2.status());
     }
-}
 
-// Temporary test appended to world.rs
-// Temporary test appended to world.rs
+    #[test]
+    fn test_backjump_rejects_generations() {
+        // Backjumping is restricted to rules with 2 states, because the
+        // implication graph of a Generations deduction is asymmetric.
+        assert!(matches!(
+            World::new(Config::new("3457/357/5", 3, 3, 1).with_backjump()),
+            Err(ConfigError::BackjumpUnsupported)
+        ));
+        assert!(World::new(Config::new("B3/S23", 3, 3, 2).with_backjump()).is_ok());
+    }
+
+    #[test]
+    fn test_lookahead_rejects_generations() {
+        // Lookahead is restricted to rules with 2 states, because it probes
+        // the two possible states of a cell, which has no analogue for the
+        // dying states of a Generations rule.
+        assert!(matches!(
+            World::new(Config::new("3457/357/5", 3, 3, 1).with_lookahead()),
+            Err(ConfigError::LookaheadUnsupported)
+        ));
+        assert!(World::new(Config::new("B3/S23", 3, 3, 2).with_lookahead()).is_ok());
+    }
+
+    #[test]
+    fn test_backjump_finds_solution() {
+        // With backjumping enabled, the search should still find solutions
+        // for 2-state rules.
+        for config in [
+            Config::new("B3/S23", 3, 3, 2).with_backjump(),
+            Config::new("B2a/S12", 3, 3, 1).with_backjump(),
+            Config::new("B2o/S23oH", 3, 3, 2).with_backjump(),
+            Config::new("B026/S1", 4, 4, 2).with_backjump(),
+        ] {
+            let mut world = World::new(config).unwrap();
+            world.search(None);
+            assert_eq!(world.status(), Status::Solved);
+        }
+    }
+
+    #[test]
+    fn test_backjump_enumerates_same_solutions() {
+        // Backjumping rewrites the backtracking structure, but not the set of
+        // solutions. The search may find the same solution multiple times
+        // (even without backjumping, a pattern and its generation rotation are
+        // both reported), so the sets of unique solutions are compared.
+        for config in [
+            Config::new("B3/S23", 3, 3, 2),
+            Config::new("B3/S23", 2, 2, 1),
+            Config::new("B3/S23", 4, 4, 2),
+            Config::new("B2o/S23oH", 3, 3, 2),
+            Config::new("R3,C2,S2,B3,N+", 3, 3, 1)
+                .with_symmetry(Symmetry::D2H)
+                .with_transformation(Transformation::S0),
+        ] {
+            assert_eq!(
+                solution_set(&config),
+                solution_set(&config.clone().with_backjump()),
+                "backjump changes the solution set for {config:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_backjump_with_max_population() {
+        // The population check must still work with backjumping enabled.
+        let mut world = World::new(
+            Config::new("B3/S23", 4, 4, 2)
+                .with_max_population(1)
+                .with_backjump(),
+        )
+        .unwrap();
+        world.search(None);
+        assert_eq!(world.status(), Status::NoSolution);
+
+        let mut world = World::new(
+            Config::new("B3/S23", 4, 4, 2)
+                .with_max_population(8)
+                .with_backjump(),
+        )
+        .unwrap();
+        world.search(None);
+        assert_eq!(world.status(), Status::Solved);
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn test_backjump_round_trip_through_serde() {
+        // The backjump option should survive a save/load round trip.
+        let mut world = World::new(Config::new("B3/S23", 3, 3, 2).with_backjump()).unwrap();
+        world.search(Some(1000));
+
+        let mut world2 = World::try_from(world.to_serde()).unwrap();
+        assert!(world2.config().backjump);
+
+        world.search(None);
+        world2.search(None);
+        assert_eq!(world.status(), world2.status());
+    }
+
+    #[test]
+    fn test_backjump_metadata_is_recorded() {
+        // The metadata must be recorded in lockstep with the stack: the level
+        // of each entry is the number of decision carriers at or before it
+        // (a guess, or the re-tried value of a guess), and deduced cells
+        // remember their antecedents.
+        let mut world = World::new(Config::new("B3/S23", 3, 3, 2).with_backjump()).unwrap();
+        world.search(Some(1000));
+
+        assert_eq!(world.trail_meta.len(), world.stack.len());
+
+        let mut decisions = 0;
+        let mut deduced_with_antecedent = 0;
+        for (i, meta) in world.trail_meta.iter().enumerate() {
+            let expected_level = world.trail_meta[..=i]
+                .iter()
+                .filter(|meta| meta.decision)
+                .count() as u32;
+            assert_eq!(meta.level, expected_level);
+            if meta.decision {
+                decisions += 1;
+            }
+            if meta.antecedent.is_some() {
+                deduced_with_antecedent += 1;
+            }
+        }
+
+        assert_eq!(world.current_level as usize, decisions);
+
+        // Every level above the root has exactly one decision carrier. This
+        // invariant is what the conflict analysis relies on.
+        for level in 1..=world.current_level {
+            assert_eq!(
+                world
+                    .trail_meta
+                    .iter()
+                    .filter(|meta| meta.decision && meta.level == level)
+                    .count(),
+                1,
+                "level {level} does not have exactly one decision carrier"
+            );
+        }
+
+        assert!(
+            deduced_with_antecedent > 0,
+            "no deduction was recorded with an antecedent"
+        );
+    }
+
+    /// The set of unique solutions of a configuration.
+    ///
+    /// The search itself may find the same solution multiple times (e.g. a
+    /// solution and its generation rotation), so the sets of unique solutions
+    /// are compared instead of the raw solution counts.
+    fn solution_set(config: &Config) -> std::collections::BTreeSet<String> {
+        let mut world = World::new(config.clone()).unwrap();
+        let mut set = std::collections::BTreeSet::new();
+        while world.search(None) == Status::Solved {
+            set.insert(world.rle(0, true));
+        }
+        set
+    }
+
+    #[test]
+    fn test_backjump_deeper_enumerates_same_solutions() {
+        // Deepen the search a bit so that the conflict analysis is exercised
+        // more heavily.
+        for config in [
+            Config::new("B3/S23", 4, 4, 2),
+            Config::new("B3/S23", 5, 5, 2),
+            Config::new("B2o/S23oH", 4, 4, 2),
+        ] {
+            assert_eq!(
+                solution_set(&config),
+                solution_set(&config.clone().with_backjump()),
+                "backjump changes the solution set for {config:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_backjump_with_reduce_max_population() {
+        // The reduced population searches must still work with backjumping
+        // enabled. The improving solution sequence may contain duplicates
+        // (the search can re-find a solution), so the sets of solutions found
+        // under decreasing population bounds are compared.
+        let mut reference =
+            World::new(Config::new("B3/S23", 4, 4, 2).with_reduce_max_population()).unwrap();
+        let mut backjump = World::new(
+            Config::new("B3/S23", 4, 4, 2)
+                .with_reduce_max_population()
+                .with_backjump(),
+        )
+        .unwrap();
+
+        let mut reference_solutions = std::collections::BTreeSet::new();
+        while reference.search(None) == Status::Solved {
+            reference_solutions.insert(reference.rle(0, true));
+        }
+        let mut backjump_solutions = std::collections::BTreeSet::new();
+        while backjump.search(None) == Status::Solved {
+            backjump_solutions.insert(backjump.rle(0, true));
+        }
+
+        assert_eq!(reference_solutions, backjump_solutions);
+    }
+
+    #[test]
+    fn test_backjump_with_lookahead() {
+        // The two experimental features must be able to be enabled together.
+        for config in [
+            Config::new("B3/S23", 3, 3, 2)
+                .with_lookahead()
+                .with_backjump(),
+            Config::new("B2a/S12", 3, 3, 1)
+                .with_lookahead()
+                .with_backjump(),
+        ] {
+            let mut world = World::new(config).unwrap();
+            world.search(None);
+            assert_eq!(world.status(), Status::Solved);
+        }
+    }
+}

@@ -132,6 +132,7 @@ const fn config_field_help(field: ConfigField) -> &'static str {
         ConfigField::NewState => ConfigHelpField::NewState.short_help(),
         ConfigField::PhaseSaving => ConfigHelpField::PhaseSaving.short_help(),
         ConfigField::Lookahead => ConfigHelpField::Lookahead.short_help(),
+        ConfigField::Backjump => ConfigHelpField::Backjump.short_help(),
         ConfigField::Seed => ConfigHelpField::Seed.short_help(),
         ConfigField::MaxPopulation => ConfigHelpField::MaxPopulation.short_help(),
         ConfigField::ReduceMaxPopulation => ConfigHelpField::ReduceMaxPopulation.short_help(),
@@ -640,11 +641,13 @@ impl App {
 
         let mut lines: Vec<Line> = Vec::new();
         let mut field_line_indices = vec![0usize; state.fields.len()];
+        let mut prev_experimental = false;
 
         for (i, field) in state.fields.iter().enumerate() {
             let is_focused = i == state.focus_index;
 
             if field.is_button() {
+                prev_experimental = false;
                 let btn_text = match field {
                     ConfigField::Apply => "[ Apply ]".to_string(),
                     ConfigField::Cancel => "[ Cancel ]".to_string(),
@@ -669,6 +672,17 @@ impl App {
                     lines.push(Line::from(""));
                 }
             } else {
+                // Keep in sync with `config_field_line_indices`: a blank line
+                // plus the group title before the first experimental field.
+                let experimental = field.is_experimental();
+                if experimental && !prev_experimental {
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(Span::styled(
+                        "── Experimental ──",
+                        palette.chrome_muted,
+                    )));
+                }
+                prev_experimental = experimental;
                 field_line_indices[i] = lines.len();
                 let label = format!("{}:", field.label());
                 let value_str = if is_focused && field.is_text_field() {

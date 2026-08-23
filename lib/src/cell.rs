@@ -4,6 +4,44 @@ use std::cell::Cell;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+/// The cells that a deduction is deduced from.
+///
+/// This is used only when [`Config::backjump`](crate::Config::backjump) is
+/// enabled. Each cell set by deduction remembers its antecedent, so that the
+/// implication graph of the search can be reconstructed for conflict analysis.
+///
+/// For a rule-based deduction, the antecedent is *not* stored as a set of
+/// cells: the set can be recovered from the source cell when needed, by
+/// walking the cells that are known in the source cell's neighborhood
+/// descriptor. The target of the deduction is always one of those cells (the
+/// source itself, its successor, or a neighbor), so it must be excluded when
+/// the antecedent is being recovered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Antecedent {
+    /// The deduction came from the neighborhood descriptor of a cell.
+    ///
+    /// The cell must be in the same world as the deduced cell.
+    Descriptor(*const LifeCell),
+
+    /// The deduction came from the symmetry of a cell.
+    ///
+    /// The cell must be in the same world as the deduced cell.
+    Symmetry(*const LifeCell),
+
+    /// The deduction was caused by a learned clause during conflict analysis.
+    ///
+    /// The cells are the literals of the clause, excluding the deduced cell
+    /// itself. Each literal is paired with the stack position of the cell at
+    /// the time the clause was recorded: a learned clause is only valid while
+    /// all its cells are still set to the states recorded in the trail, which
+    /// is the case exactly when the cells are still at their recorded
+    /// positions. When a cell is set again later, the reason is stale and
+    /// cannot be used in conflict analysis.
+    ///
+    /// The cells must be in the same world as the deduced cell.
+    Clause(Box<[(*const LifeCell, u32)]>),
+}
+
 /// The reason why a cell is set to a state.
 ///
 /// When serialized, [`Known`](Reason::Known), [`Deduced`](Reason::Deduced),

@@ -1,10 +1,10 @@
 use rand::RngExt;
 
 use crate::{
-    cell::{LifeCell, Reason},
+    cell::{Antecedent, LifeCell, Reason},
     config::NewState,
     rule::{CellState, CheckResult, Implication},
-    world::{Status, World},
+    world::{Confl, Status, World},
 };
 
 /// The maximum number of cells that a lookahead probe may set before it stops.
@@ -92,7 +92,13 @@ impl World {
                     CellState::Dead
                 };
 
-                self.set_cell(successor, state, Reason::Deduced);
+                self.set_cell(
+                    successor,
+                    state,
+                    Reason::Deduced,
+                    Some(Antecedent::Descriptor(cell)),
+                    false,
+                );
 
                 return Some(());
             }
@@ -108,7 +114,13 @@ impl World {
                     CellState::Dead
                 };
 
-                self.set_cell(cell, state, Reason::Deduced);
+                self.set_cell(
+                    cell,
+                    state,
+                    Reason::Deduced,
+                    Some(Antecedent::Descriptor(cell)),
+                    false,
+                );
             }
 
             // The descriptor implies that all unknown neighbors are dead or alive.
@@ -127,7 +139,13 @@ impl World {
                     if let Some(neighbor) = cell.neighborhood[i].as_ref()
                         && neighbor.state().is_none()
                     {
-                        self.set_cell(neighbor, state, Reason::Deduced);
+                        self.set_cell(
+                            neighbor,
+                            state,
+                            Reason::Deduced,
+                            Some(Antecedent::Descriptor(cell)),
+                            false,
+                        );
                     }
                 }
             }
@@ -190,7 +208,7 @@ impl World {
                         Some(_) => None,
                         None => {
                             if let Some(successor) = cell.successor.as_ref() {
-                                self.set_cell(successor, expected, Reason::Deduced);
+                                self.set_cell(successor, expected, Reason::Deduced, None, false);
                             }
                             Some(())
                         }
@@ -227,6 +245,8 @@ impl World {
                                 cell,
                                 CellState::from_number(num_states - 1),
                                 Reason::Deduced,
+                                None,
+                                false,
                             );
                         }
                         Some(())
@@ -239,9 +259,9 @@ impl World {
                             return None;
                         }
                         if result.flags().contains(Implication::CurrentAlive) {
-                            self.set_cell(cell, CellState::Alive, Reason::Deduced);
+                            self.set_cell(cell, CellState::Alive, Reason::Deduced, None, false);
                         } else if result.flags().contains(Implication::CurrentDead) {
-                            self.set_cell(cell, CellState::Dead, Reason::Deduced);
+                            self.set_cell(cell, CellState::Dead, Reason::Deduced, None, false);
                         }
                         if result.flags().contains(Implication::NeighborhoodAlive) {
                             for i in 0..cell.neighborhood_len {
@@ -249,7 +269,13 @@ impl World {
                                 if let Some(neighbor) = cell.neighborhood[i].as_ref()
                                     && neighbor.state().is_none()
                                 {
-                                    self.set_cell(neighbor, CellState::Alive, Reason::Deduced);
+                                    self.set_cell(
+                                        neighbor,
+                                        CellState::Alive,
+                                        Reason::Deduced,
+                                        None,
+                                        false,
+                                    );
                                 }
                             }
                         }
@@ -258,7 +284,13 @@ impl World {
 
                     // The cell must be in the previous dying state.
                     Some(CellState::Dying(i)) => {
-                        self.set_cell(cell, CellState::from_number(i - 1), Reason::Deduced);
+                        self.set_cell(
+                            cell,
+                            CellState::from_number(i - 1),
+                            Reason::Deduced,
+                            None,
+                            false,
+                        );
                         Some(())
                     }
 
@@ -322,7 +354,7 @@ impl World {
                     CellState::Dead
                 };
 
-                self.set_cell(successor, state, Reason::Deduced);
+                self.set_cell(successor, state, Reason::Deduced, None, false);
 
                 return Some(());
             }
@@ -337,7 +369,7 @@ impl World {
                     if let Some(neighbor) = cell.neighborhood[i].as_ref()
                         && neighbor.state().is_none()
                     {
-                        self.set_cell(neighbor, CellState::Alive, Reason::Deduced);
+                        self.set_cell(neighbor, CellState::Alive, Reason::Deduced, None, false);
                     }
                 }
             }
@@ -386,7 +418,13 @@ impl World {
                     && let Some(neighbor) = cell.neighborhood[i].as_ref()
                     && neighbor.state().is_none()
                 {
-                    self.set_cell(neighbor, state, Reason::Deduced);
+                    self.set_cell(
+                        neighbor,
+                        state,
+                        Reason::Deduced,
+                        Some(Antecedent::Descriptor(cell)),
+                        false,
+                    );
                 }
             }
         }
@@ -400,23 +438,23 @@ impl World {
     /// This also checks if the front becomes empty, checks if the population is too large,
     /// and deduces the state of some cells by symmetry.
     ///
-    /// If a conflict is found, return [`None`].
+    /// If a conflict is found, return the reason as an [`Err`].
     ///
     /// # Safety
     ///
     /// The cell must be in the same world as `self`.
     /// Otherwise the behavior is undefined.
     #[inline]
-    unsafe fn check_affected(&mut self, cell: &LifeCell) -> Option<()> {
+    unsafe fn check_affected(&mut self, cell: &LifeCell) -> Result<(), Confl> {
         unsafe {
             // Check if the front becomes empty.
             if self.front_count == 0 {
-                return None;
+                return Err(Confl::Global);
             }
 
             // Check if the population is too large.
             if self.max_population.is_some() && self.below_max == 0 {
-                return None;
+                return Err(Confl::Global);
             }
 
             // Deduce the state of some cells by symmetry.
@@ -424,18 +462,27 @@ impl World {
             for i in 0..cell.symmetry.len() {
                 let symmetry = &*cell.symmetry[i];
                 match symmetry.state() {
-                    None => self.set_cell(symmetry, state, Reason::Deduced),
-                    Some(symmetry_state) if symmetry_state != state => return None,
+                    None => self.set_cell(
+                        symmetry,
+                        state,
+                        Reason::Deduced,
+                        Some(Antecedent::Symmetry(cell)),
+                        false,
+                    ),
+                    Some(symmetry_state) if symmetry_state != state => {
+                        return Err(Confl::Symmetry(cell, symmetry));
+                    }
                     Some(_) => {}
                 }
             }
 
             // Check the neighborhood descriptor of the cell itself.
-            self.check_descriptor(cell)?;
+            self.check_descriptor(cell).ok_or(Confl::Rule(cell))?;
 
             // Check the neighborhood descriptor of the predecessor.
             if let Some(predecessor) = cell.predecessor.as_ref() {
-                self.check_descriptor(predecessor)?;
+                self.check_descriptor(predecessor)
+                    .ok_or(Confl::Rule(predecessor))?;
             }
 
             // Check the neighborhood descriptors of the neighbors.
@@ -446,35 +493,37 @@ impl World {
                 for i in 0..cell.neighborhood_len {
                     // Safety: the neighbors are in the same world as the cell.
                     let neighbor = &*cell.neighborhood[i];
-                    self.check_descriptor(neighbor)?;
+                    self.check_descriptor(neighbor)
+                        .ok_or(Confl::Rule(neighbor))?;
                 }
             } else {
                 for i in 0..cell.neighborhood_len {
                     // Safety: the neighbors are in the same world as the cell.
                     if let Some(neighbor) = cell.neighborhood[i].as_ref() {
-                        self.check_descriptor(neighbor)?;
+                        self.check_descriptor(neighbor)
+                            .ok_or(Confl::Rule(neighbor))?;
                     }
                 }
             }
 
-            Some(())
+            Ok(())
         }
     }
 
     /// Check all cells in the stack that have not been checked yet.
     ///
-    /// If a conflict is found, return [`None`].
-    fn check_stack(&mut self) -> Option<()> {
+    /// If a conflict is found, return the reason as an [`Err`].
+    fn check_stack(&mut self) -> Result<(), Confl> {
         self.check_stack_with_cap(None)
     }
 
     /// Check all cells in the stack that have not been checked yet.
     ///
-    /// If a conflict is found, return [`None`].
+    /// If a conflict is found, return the reason as an [`Err`].
     ///
     /// If `cap` is [`Some`], stop checking after `cap` cells have been set
     /// since the beginning of the call, even if there are more cells to check.
-    fn check_stack_with_cap(&mut self, cap: Option<usize>) -> Option<()> {
+    fn check_stack_with_cap(&mut self, cap: Option<usize>) -> Result<(), Confl> {
         let stack_len = self.stack.len();
 
         while self.stack_index < self.stack.len() {
@@ -489,7 +538,7 @@ impl World {
             }
         }
 
-        Some(())
+        Ok(())
     }
 
     /// Backtrack to the last cell whose state was chosen as a guess,
@@ -505,6 +554,7 @@ impl World {
     fn backtrack(&mut self) -> Status {
         while let Some((cell, reason)) = self.stack.pop() {
             unsafe {
+                self.pop_meta();
                 let cell = &*cell;
                 match reason {
                     Reason::Known => break,
@@ -523,9 +573,11 @@ impl World {
                                 cell,
                                 next,
                                 Reason::TryAnother(self.rule.num_states() - 2),
+                                None,
+                                false,
                             );
                         } else {
-                            self.set_cell(cell, !state, Reason::Deduced);
+                            self.set_cell(cell, !state, Reason::Deduced, None, true);
                         }
                         return Status::Running;
                     }
@@ -543,7 +595,7 @@ impl World {
                         } else {
                             Reason::TryAnother(n - 1)
                         };
-                        self.set_cell(cell, next, reason);
+                        self.set_cell(cell, next, reason, None, false);
                         return Status::Running;
                     }
                 }
@@ -564,10 +616,13 @@ impl World {
                 if cell.state().is_none() {
                     // If lookahead is enabled for a 2-state rule, probe both
                     // states of the cell before guessing.
+                    //
+                    // The `Config::check` rejects lookahead for Generations
+                    // rules, so this condition is only a defense in depth.
                     if self.config.lookahead && !self.rule.is_generations() {
                         match self.probe(cell) {
                             Some(state) => {
-                                self.set_cell(cell, state, Reason::Guessed);
+                                self.set_cell(cell, state, Reason::Guessed, None, true);
                                 self.start = cell.next;
                                 return GuessResult::Guessed;
                             }
@@ -598,7 +653,7 @@ impl World {
                             }
                         }
                     };
-                    self.set_cell(cell, state, Reason::Guessed);
+                    self.set_cell(cell, state, Reason::Guessed, None, true);
                     self.start = cell.next;
                     return GuessResult::Guessed;
                 }
@@ -640,20 +695,21 @@ impl World {
 
             self.in_probe = true;
             unsafe {
-                self.set_cell(cell, state, Reason::Guessed);
+                self.set_cell(cell, state, Reason::Guessed, None, true);
             }
             let ok = self
                 .check_stack_with_cap(Some(MAX_PROBE_DEDUCTIONS))
-                .is_some();
+                .is_ok();
             self.in_probe = false;
 
             let score = self.stack.len() - stack_len;
 
             // Roll back the probe.
             while self.stack.len() > stack_len {
+                let (probe_cell, _) = self.stack.pop().unwrap();
                 unsafe {
-                    let probe_cell = &*self.stack.pop().unwrap().0;
-                    self.unset_cell(probe_cell);
+                    self.pop_meta();
+                    self.unset_cell(&*probe_cell);
                 }
             }
             self.stack_index = stack_index;
@@ -680,20 +736,378 @@ impl World {
     /// Check all cells in the stack that have not been checked yet,
     /// backtrack if a conflict is found, and make a guess if all cells are checked.
     fn step(&mut self) -> Status {
-        if self.check_stack().is_some() {
-            // All cells have been checked.
-            match self.guess() {
-                // A guess was made.
-                GuessResult::Guessed => Status::Running,
-                // All cells are known.
-                GuessResult::Solved => Status::Solved,
-                // Lookahead found that the current partial assignment is
-                // contradictory.
-                GuessResult::Conflict => self.backtrack(),
+        match self.check_stack() {
+            Ok(()) => {
+                // All cells have been checked.
+                match self.guess() {
+                    // A guess was made.
+                    GuessResult::Guessed => Status::Running,
+                    // All cells are known.
+                    GuessResult::Solved => Status::Solved,
+                    // Lookahead found that the current partial assignment is
+                    // contradictory.
+                    GuessResult::Conflict => self.backtrack(),
+                }
             }
-        } else {
-            // Backtrack.
-            self.backtrack()
+            // A conflict was found.
+            //
+            // If backjumping is enabled and the conflict is a local one, it is
+            // analyzed and the search backjumps to the decision that caused it;
+            // otherwise the search backtracks chronologically.
+            Err(confl) => match confl {
+                Confl::Rule(_) | Confl::Symmetry(_, _) if self.config.backjump => {
+                    self.analyze(confl)
+                }
+                _ => self.backtrack(),
+            },
+        }
+    }
+
+    /// Analyze a local conflict and backjump to the decision that caused it.
+    ///
+    /// This is the CA analogue of CDCL conflict analysis. The conflicting
+    /// literal set is resolved backwards through the antecedents of the
+    /// deductions (see [`Antecedent`](crate::cell::Antecedent)), until exactly
+    /// one literal remains at the current decision level: the first unique
+    /// implication point (1-UIP). The search then pops the trail down to the
+    /// highest level of the remaining literals, and re-sets the 1-UIP cell to
+    /// the opposite state, justified by the learned clause.
+    ///
+    /// A literal with no antecedent (a guess, or the flip of a guess by
+    /// [`backtrack`](World::backtrack)) is resolved by simply removing it, like
+    /// a decision in SAT.
+    ///
+    /// If the conflict cannot be analyzed (no 1-UIP is found), the search
+    /// backtracks chronologically.
+    fn analyze(&mut self, confl: Confl) -> Status {
+        debug_assert!(self.config.backjump);
+
+        let current = self.current_level;
+
+        // A conflict before the first guess can never be resolved by
+        // backjumping, so the search backtracks chronologically.
+        if current == 0 {
+            return self.backtrack();
+        }
+
+        // Bump the analysis stamp. A stamp of zero means "not seen".
+        self.analysis_stamp = self.analysis_stamp.wrapping_add(1);
+        if self.analysis_stamp == 0 {
+            self.seen_stamp.fill(0);
+            self.analysis_stamp = 1;
+        }
+
+        let mut clause: Vec<*const LifeCell> = Vec::new();
+        let mut literals: Vec<*const LifeCell> = Vec::new();
+
+        let mut max_level = 0;
+        let mut seen_count = 0;
+
+        // Note a literal of the clause being built. A literal at the current
+        // level is marked for resolution, unless it was already marked; a
+        // literal below the current level is kept in the learned clause.
+        //
+        // This accesses raw memory, so it must be called in an [`unsafe`] block.
+        macro_rules! note_lit {
+            ($lit:expr) => {{
+                let lit = $lit;
+                if (*lit).state().is_some() {
+                    let index = self.cell_index(lit);
+                    let level = self.cell_level[index];
+                    if level == current {
+                        if self.seen_stamp[index] != self.analysis_stamp {
+                            self.seen_stamp[index] = self.analysis_stamp;
+                            seen_count += 1;
+                        }
+                    } else if level != 0 && self.seen_stamp[index] != self.analysis_stamp {
+                        self.seen_stamp[index] = self.analysis_stamp;
+                        clause.push(lit);
+                        max_level = max_level.max(level);
+                    }
+                }
+            }};
+        }
+
+        // The seed: the literals that directly participate in the conflict.
+        match confl {
+            Confl::Rule(source) => unsafe {
+                self.descriptor_literals(&*source, std::ptr::null(), usize::MAX, &mut literals);
+            },
+            Confl::Symmetry(cell, symmetry) => {
+                literals.push(cell);
+                literals.push(symmetry);
+            }
+            Confl::Global => unreachable!(),
+        }
+        unsafe {
+            for &lit in &literals {
+                note_lit!(lit);
+            }
+        }
+
+        if seen_count == 0 {
+            // No literal at the current level is involved: the conflict is
+            // independent of the current decision, so just backtrack.
+            return self.backtrack();
+        }
+
+        // Resolution: walk the trail downwards (read-only), and resolve the
+        // marked literals at the current level, until only one remains.
+        let mut i = self.stack.len();
+        while seen_count > 1 {
+            if i == 0 {
+                // Defensive: the trail is exhausted without a 1-UIP.
+                return self.backtrack();
+            }
+            i -= 1;
+
+            let lit = self.stack[i].0;
+            if self.trail_meta[i].level != current {
+                continue;
+            }
+
+            let index = unsafe { self.cell_index(lit) };
+            if self.seen_stamp[index] != self.analysis_stamp {
+                continue;
+            }
+
+            // A reasonless literal at the current level can only be the
+            // decision carrier of this level (the invariant of the trail),
+            // which is the 1-UIP; stop the resolution here.
+            if self.trail_meta[i].antecedent.is_none() {
+                break;
+            }
+
+            // Resolve this literal: unmark it, and replace it by its antecedent.
+            self.seen_stamp[index] = 0;
+            seen_count -= 1;
+
+            let antecedent = self.trail_meta[i].antecedent.clone();
+            let ok = unsafe { self.reason_literals(lit, antecedent, i, &mut literals) };
+            if !ok {
+                // The reason of the literal is stale (a learned clause whose
+                // cells have been set again since), so the resolution cannot
+                // be trusted. Just backtrack chronologically.
+                return self.backtrack();
+            }
+            unsafe {
+                for &lit in &literals {
+                    note_lit!(lit);
+                }
+            }
+        }
+
+        // Find the 1-UIP: the last remaining marked literal at the current level.
+        let uip = loop {
+            if i == 0 {
+                // Defensive: the trail is exhausted without a 1-UIP.
+                return self.backtrack();
+            }
+            i -= 1;
+            let lit = self.stack[i].0;
+            if self.trail_meta[i].level != current {
+                continue;
+            }
+            let index = unsafe { self.cell_index(lit) };
+            if self.seen_stamp[index] == self.analysis_stamp {
+                break lit;
+            }
+        };
+
+        // The state of the 1-UIP cell before it is popped.
+        let state = unsafe { (*uip).state() }.unwrap();
+
+        // Truncate the trail down to the highest level of the learned clause.
+        // This pops the 1-UIP cell as well, since it is at a higher level.
+        //
+        // The search chain (the `next` pointers) is in a fixed spatial order
+        // that differs from the trail order, so the resumption point is the
+        // chain-earliest cell among the popped ones: any popped cell before
+        // the chosen resumption point would otherwise never be revisited.
+        let mut resume = std::ptr::null();
+        let mut resume_rank = u32::MAX;
+        // The lowest trail position of a remaining cell whose descriptor has
+        // been changed by the pops. That cell and the cells above it must be
+        // re-checked, since their incremental checks are stale (for example,
+        // a symmetry deduction may not have set the mirrored cells).
+        let mut recheck = self.stack.len();
+        while self.current_level > max_level {
+            let (cell, _) = self.stack.pop().unwrap();
+            let rank = unsafe { self.chain_pos[self.cell_index(cell)] };
+            if rank < resume_rank {
+                resume_rank = rank;
+                resume = cell;
+            }
+            unsafe {
+                let popped = &*cell;
+                // The popped cell updated the descriptors of its neighbors
+                // and its predecessor; re-check from the lowest one.
+                let mut affected = |c: *const LifeCell| {
+                    if !c.is_null() {
+                        let pos = self.cell_pos[self.cell_index(c)] as usize;
+                        if pos < recheck {
+                            recheck = pos;
+                        }
+                    }
+                };
+                affected(cell);
+                if let Some(pred) = popped.predecessor.as_ref() {
+                    affected(pred as *const LifeCell);
+                }
+                for i in 0..popped.neighborhood_len {
+                    if let Some(neighbor) = popped.neighborhood[i].as_ref() {
+                        affected(neighbor as *const LifeCell);
+                    }
+                }
+                self.pop_meta();
+                self.unset_cell(&*cell);
+            }
+        }
+
+        self.stack_index = recheck;
+        self.start = resume;
+
+        // Record the learned clause: each literal with its current stack
+        // position. The clause is valid while the cells stay at these
+        // positions, i.e. until the cells are set again.
+        let clause = clause
+            .into_iter()
+            .map(|cell| unsafe { (cell, self.cell_pos[self.cell_index(cell)]) })
+            .collect::<Box<[_]>>();
+
+        // Re-set the 1-UIP cell to the opposite state, justified by the
+        // learned clause.
+        unsafe {
+            let uip = &*uip;
+            self.set_cell(
+                uip,
+                !state,
+                Reason::Deduced,
+                Some(Antecedent::Clause(clause)),
+                false,
+            );
+        }
+
+        Status::Running
+    }
+
+    /// Collect the known cells in the neighborhood descriptor of a cell.
+    ///
+    /// This recovers the literals that contribute to a rule-based deduction or
+    /// a conflict from the source cell of the descriptor. The `exclude`
+    /// argument is the cell that was deduced (which is not part of its own
+    /// antecedent), or [`std::ptr::null`] for a conflict seed. The `before`
+    /// argument filters the cells to those at earlier stack positions: the
+    /// exact antecedent of a deduction consists of the descriptor cells that
+    /// were already in the stack when the deduction happened, so a cell set
+    /// later (e.g. one that would have changed the deduction) is not part of
+    /// it. A conflict seed uses [`usize::MAX`] to include all of them.
+    ///
+    /// # Safety
+    ///
+    /// The source cell must be in the same world as `self`.
+    /// Otherwise the behavior is undefined.
+    unsafe fn descriptor_literals(
+        &self,
+        source: &LifeCell,
+        exclude: *const LifeCell,
+        before: usize,
+        literals: &mut Vec<*const LifeCell>,
+    ) {
+        literals.clear();
+        unsafe {
+            for i in 0..source.neighborhood_len {
+                // Safety: the neighbors are in the same world as the cell.
+                if let Some(neighbor) = source.neighborhood[i].as_ref()
+                    && neighbor.state().is_some()
+                    && (self.cell_pos[self.cell_index(neighbor as *const LifeCell)] as usize)
+                        < before
+                {
+                    let neighbor = neighbor as *const LifeCell;
+                    if neighbor != exclude {
+                        literals.push(neighbor);
+                    }
+                }
+            }
+
+            if let Some(successor) = source.successor.as_ref()
+                && successor.state().is_some()
+                && (self.cell_pos[self.cell_index(successor as *const LifeCell)] as usize) < before
+            {
+                let successor = successor as *const LifeCell;
+                if successor != exclude {
+                    literals.push(successor);
+                }
+            }
+
+            if source.state().is_some()
+                && (self.cell_pos[self.cell_index(source as *const LifeCell)] as usize) < before
+            {
+                let source = source as *const LifeCell;
+                if source != exclude {
+                    literals.push(source);
+                }
+            }
+        }
+    }
+
+    /// Collect the literals of the antecedent of a cell.
+    ///
+    /// The antecedent of a rule-based deduction is the exact reason of the
+    /// deduction: the part of the descriptor of its source cell that was
+    /// known when the deduction happened, excluding the deduced cell itself.
+    /// A cell with no antecedent (a guess, or a guess flipped by
+    /// [`backtrack`](World::backtrack)) has no reason literals.
+    ///
+    /// The `position` argument is the stack position of the deduced cell, used
+    /// to filter the descriptor to the cells that were known at deduction time.
+    ///
+    /// Return `false` if the antecedent of a learned clause is stale, i.e. one
+    /// of its cells is not at the recorded stack position anymore. In that
+    /// case the reason is not valid anymore, and the conflict analysis must
+    /// fall back to chronological backtracking.
+    ///
+    /// # Safety
+    ///
+    /// The cell and the antecedent must be in the same world as `self`.
+    /// Otherwise the behavior is undefined.
+    unsafe fn reason_literals(
+        &self,
+        cell: *const LifeCell,
+        antecedent: Option<Antecedent>,
+        position: usize,
+        literals: &mut Vec<*const LifeCell>,
+    ) -> bool {
+        literals.clear();
+        match antecedent {
+            Some(Antecedent::Descriptor(source)) => unsafe {
+                self.descriptor_literals(&*source, cell, position, literals);
+                true
+            },
+            Some(Antecedent::Symmetry(source)) => {
+                if source != cell {
+                    unsafe {
+                        if (*source).state().is_some() {
+                            literals.push(source);
+                        }
+                    }
+                }
+                true
+            }
+            Some(Antecedent::Clause(clause)) => {
+                for &(cell, pos) in clause.iter() {
+                    unsafe {
+                        if (*cell).state().is_none() || self.cell_pos[self.cell_index(cell)] != pos
+                        {
+                            // The clause is stale.
+                            return false;
+                        }
+                        literals.push(cell);
+                    }
+                }
+                true
+            }
+            None => true,
         }
     }
 

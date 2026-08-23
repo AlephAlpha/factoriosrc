@@ -750,16 +750,6 @@ impl App {
                                     });
                                 });
                                 ui.end_row();
-
-                                ui.label("phase saving")
-                                    .on_hover_text(ConfigHelpField::PhaseSaving.short_help());
-                                ui.checkbox(&mut config.phase_saving, "");
-                                ui.end_row();
-
-                                ui.label("lookahead")
-                                    .on_hover_text(ConfigHelpField::Lookahead.short_help());
-                                ui.checkbox(&mut config.lookahead, "");
-                                ui.end_row();
                             });
 
                         if let Some(search_order) = &preview.auto_search_order {
@@ -775,6 +765,30 @@ impl App {
                         if config.new_state != NewState::Random {
                             ui.label(muted("Seed is only used when New state is random."));
                         }
+                    });
+
+                    config_section(ui, "Experimental", |ui| {
+                        Grid::new("config_experimental_section")
+                            .striped(true)
+                            .num_columns(2)
+                            .show(ui, |ui| {
+                                ui.label("phase saving")
+                                    .on_hover_text(ConfigHelpField::PhaseSaving.short_help());
+                                ui.checkbox(&mut config.phase_saving, "");
+                                ui.end_row();
+
+                                ui.label("lookahead")
+                                    .on_hover_text(ConfigHelpField::Lookahead.short_help());
+                                ui.checkbox(&mut config.lookahead, "");
+                                ui.end_row();
+
+                                ui.label("backjump")
+                                    .on_hover_text(ConfigHelpField::Backjump.short_help());
+                                ui.checkbox(&mut config.backjump, "");
+                                ui.end_row();
+                            });
+
+                        ui.label(muted("Off by default; may speed up or slow down searches."));
                     });
 
                     config_section(ui, "Constraints", |ui| {

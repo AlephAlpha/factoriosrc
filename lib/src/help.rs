@@ -33,6 +33,8 @@ pub enum ConfigHelpField {
     PhaseSaving,
     /// The lookahead field.
     Lookahead,
+    /// The backjump field.
+    Backjump,
     /// The random-seed field.
     Seed,
     /// The known-cells field.
@@ -61,12 +63,19 @@ impl ConfigHelpField {
             Self::NewState,
             Self::PhaseSaving,
             Self::Lookahead,
+            Self::Backjump,
             Self::Seed,
             Self::KnownCells,
             Self::MaxPopulation,
             Self::ReduceMaxPopulation,
         ]
         .into_iter()
+    }
+
+    /// Whether this field belongs to the experimental group.
+    #[inline]
+    pub const fn is_experimental(self) -> bool {
+        matches!(self, Self::PhaseSaving | Self::Lookahead | Self::Backjump)
     }
 
     /// A UI-friendly field label.
@@ -86,6 +95,7 @@ impl ConfigHelpField {
             Self::NewState => "New state",
             Self::PhaseSaving => "Phase saving",
             Self::Lookahead => "Lookahead",
+            Self::Backjump => "Backjump",
             Self::Seed => "Seed",
             Self::KnownCells => "Known cells",
             Self::MaxPopulation => "Max population",
@@ -120,6 +130,9 @@ impl ConfigHelpField {
             Self::Lookahead => {
                 "Experimental: probe both states of an unknown cell before guessing it. Only for 2-state rules. May help or hurt."
             }
+            Self::Backjump => {
+                "Experimental: CDCL-style conflict analysis with non-chronological backtracking. Only for 2-state rules. Usually slower than the default backtracking."
+            }
             Self::Seed => "Random seed used only when New state is random.",
             Self::KnownCells => "Pinned alive/dead cells that must hold before the search starts.",
             Self::MaxPopulation => "Optional upper bound on the population.",
@@ -145,6 +158,7 @@ impl ConfigHelpField {
             Self::NewState => "new_state",
             Self::PhaseSaving => "phase_saving",
             Self::Lookahead => "lookahead",
+            Self::Backjump => "backjump",
             Self::Seed => "seed",
             Self::KnownCells => "known_cells",
             Self::MaxPopulation => "max_population",
@@ -286,7 +300,22 @@ mod tests {
         let fields: Vec<_> = ConfigHelpField::iter().collect();
         assert!(fields.contains(&ConfigHelpField::RuleString));
         assert!(fields.contains(&ConfigHelpField::KnownCells));
-        assert_eq!(fields.len(), 17);
+        assert_eq!(fields.len(), 18);
+    }
+
+    #[test]
+    fn experimental_group_covers_sat_heuristics() {
+        let experimental: Vec<_> = ConfigHelpField::iter()
+            .filter(|field| field.is_experimental())
+            .collect();
+        assert_eq!(
+            experimental,
+            vec![
+                ConfigHelpField::PhaseSaving,
+                ConfigHelpField::Lookahead,
+                ConfigHelpField::Backjump,
+            ]
+        );
     }
 
     #[cfg(feature = "documented")]
