@@ -133,6 +133,7 @@ const fn config_field_help(field: ConfigField) -> &'static str {
         ConfigField::PhaseSaving => ConfigHelpField::PhaseSaving.short_help(),
         ConfigField::Lookahead => ConfigHelpField::Lookahead.short_help(),
         ConfigField::Backjump => ConfigHelpField::Backjump.short_help(),
+        ConfigField::Nogood => ConfigHelpField::Nogood.short_help(),
         ConfigField::Seed => ConfigHelpField::Seed.short_help(),
         ConfigField::MaxPopulation => ConfigHelpField::MaxPopulation.short_help(),
         ConfigField::ReduceMaxPopulation => ConfigHelpField::ReduceMaxPopulation.short_help(),

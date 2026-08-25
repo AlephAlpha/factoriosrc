@@ -62,6 +62,7 @@ pub enum ConfigField {
     PhaseSaving,
     Lookahead,
     Backjump,
+    Nogood,
     Seed,
     MaxPopulation,
     ReduceMaxPopulation,
@@ -97,6 +98,7 @@ impl ConfigField {
             Self::PhaseSaving,
             Self::Lookahead,
             Self::Backjump,
+            Self::Nogood,
             Self::Apply,
             Self::Cancel,
         ]
@@ -118,6 +120,7 @@ impl ConfigField {
             Self::PhaseSaving => "Phase saving",
             Self::Lookahead => "Lookahead",
             Self::Backjump => "Backjump",
+            Self::Nogood => "Nogood",
             Self::Seed => "Seed",
             Self::MaxPopulation => "Max pop",
             Self::ReduceMaxPopulation => "Reduce pop",
@@ -154,6 +157,7 @@ impl ConfigField {
                 | Self::PhaseSaving
                 | Self::Lookahead
                 | Self::Backjump
+                | Self::Nogood
                 | Self::SearchOrder
                 | Self::ReduceMaxPopulation
                 | Self::IncreaseWorldSize
@@ -167,7 +171,10 @@ impl ConfigField {
 
     /// Whether this field belongs to the experimental group.
     pub const fn is_experimental(self) -> bool {
-        matches!(self, Self::PhaseSaving | Self::Lookahead | Self::Backjump)
+        matches!(
+            self,
+            Self::PhaseSaving | Self::Lookahead | Self::Backjump | Self::Nogood
+        )
     }
 }
 
@@ -240,6 +247,7 @@ impl ConfigState {
             ConfigField::PhaseSaving => cfg.phase_saving.to_string(),
             ConfigField::Lookahead => cfg.lookahead.to_string(),
             ConfigField::Backjump => cfg.backjump.to_string(),
+            ConfigField::Nogood => cfg.nogood.to_string(),
             ConfigField::Seed => cfg.seed.map_or(String::new(), |s| s.to_string()),
             ConfigField::MaxPopulation => {
                 cfg.max_population.map_or(String::new(), |p| p.to_string())
@@ -431,6 +439,14 @@ impl ConfigState {
             }
             ConfigField::Backjump => {
                 self.working_config.backjump = !self.working_config.backjump;
+            }
+            ConfigField::Nogood => {
+                self.working_config.nogood = !self.working_config.nogood;
+                // The nogood database enables backjumping in `Config::check`;
+                // keep the form in sync when it is toggled on.
+                if self.working_config.nogood {
+                    self.working_config.backjump = true;
+                }
             }
             ConfigField::IncreaseWorldSize => {
                 self.increase_world_size = !self.increase_world_size;
@@ -1754,7 +1770,7 @@ mod tests {
 
         // Seed belongs to the new-state strategy and comes before the group.
         assert!(position(ConfigField::Seed) < position(ConfigField::PhaseSaving));
-        // The three experimental toggles form a contiguous run.
+        // The experimental toggles form a contiguous run.
         assert_eq!(
             position(ConfigField::Lookahead),
             position(ConfigField::PhaseSaving) + 1
@@ -1763,10 +1779,14 @@ mod tests {
             position(ConfigField::Backjump),
             position(ConfigField::PhaseSaving) + 2
         );
+        assert_eq!(
+            position(ConfigField::Nogood),
+            position(ConfigField::Backjump) + 1
+        );
         // The group sits at the end of the form, right before the buttons, so
         // no other field can be mistaken for part of it.
         assert!(position(ConfigField::ExportResults) < position(ConfigField::PhaseSaving));
-        assert!(position(ConfigField::Backjump) < position(ConfigField::Apply));
+        assert!(position(ConfigField::Nogood) < position(ConfigField::Apply));
     }
 
     #[test]
@@ -1787,9 +1807,10 @@ mod tests {
                 position(ConfigField::PhaseSaving),
                 position(ConfigField::Lookahead),
                 position(ConfigField::Backjump),
+                position(ConfigField::Nogood),
             )
         };
-        let (export, phase_saving, lookahead, backjump) = field_positions;
+        let (export, phase_saving, lookahead, backjump, nogood) = field_positions;
 
         // The caption (a blank line plus the title) is inserted between them:
         // two extra lines plus the field's own line.
@@ -1799,6 +1820,7 @@ mod tests {
         // The rest of the run is contiguous: no extra lines inside the group.
         assert_eq!(before[lookahead], before[phase_saving] + 1);
         assert_eq!(before[backjump], before[lookahead] + 1);
+        assert_eq!(before[nogood], before[backjump] + 1);
 
         // No caption appears when the experimental fields are removed.
         if let Some(state) = app.config_state.as_mut() {

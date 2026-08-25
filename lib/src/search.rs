@@ -447,6 +447,19 @@ impl World {
     #[inline]
     unsafe fn check_affected(&mut self, cell: &LifeCell) -> Result<(), Confl> {
         unsafe {
+            // A learned nogood is fully matched by the current partial
+            // assignment: no solution can extend it. The flag is re-validated
+            // here, because the search may have unwound past the match since
+            // it was queued (the queue can empty right after the match, and
+            // the step may end with a direct backtrack).
+            if let Some(id) = self.pending_nogood_confl.take() {
+                let cells = self.cells_ptr as *const LifeCell;
+                let mut state_of = |i: u32| (*cells.add(i as usize)).state();
+                if self.nogood_db.is_full_match(id, &mut state_of) {
+                    return Err(Confl::Nogood(id));
+                }
+            }
+
             // Check if the front becomes empty.
             if self.front_count == 0 {
                 return Err(Confl::Global);
@@ -577,6 +590,30 @@ impl World {
                                 false,
                             );
                         } else {
+                            // If the nogood database blocks the opposite
+                            // state in the current context, the whole
+                            // remaining subtree of this guess is known to
+                            // be empty: do not re-enter it, and keep
+                            // popping instead. This is the same check as
+                            // in `nogood_check`, applied to the flip that
+                            // restarts the enumeration.
+                            //
+                            // The cell itself has been unset, so the query
+                            // sees exactly the context that the flipped
+                            // assignment would live in.
+                            if self.config.nogood {
+                                let index = self.cell_index(cell) as u32;
+                                let mut state_of = |i: u32| (*self.cell_by_index(i)).state();
+                                let blocked = self
+                                    .nogood_db
+                                    .completed(index, !state, &mut state_of)
+                                    .is_some();
+                                if blocked {
+                                    self.nogood_db.note_hit();
+                                    continue;
+                                }
+                            }
+
                             self.set_cell(cell, !state, Reason::Deduced, None, true);
                         }
                         return Status::Running;
@@ -700,11 +737,12 @@ impl World {
             let ok = self
                 .check_stack_with_cap(Some(MAX_PROBE_DEDUCTIONS))
                 .is_ok();
-            self.in_probe = false;
 
             let score = self.stack.len() - stack_len;
 
-            // Roll back the probe.
+            // Roll back the probe. This must happen while `in_probe` is still
+            // set: the nogood counters of the probe's own assignments were
+            // not updated, and the rollback must skip them symmetrically.
             while self.stack.len() > stack_len {
                 let (probe_cell, _) = self.stack.pop().unwrap();
                 unsafe {
@@ -712,6 +750,7 @@ impl World {
                     self.unset_cell(&*probe_cell);
                 }
             }
+            self.in_probe = false;
             self.stack_index = stack_index;
 
             scores[i] = score;
@@ -728,6 +767,78 @@ impl World {
             Some(CellState::Alive)
         } else {
             Some(CellState::Dead)
+        }
+    }
+
+    /// Update the matched-literal counters after a cell was set to a state,
+    /// and fire the nogoods that became one literal short of a full match.
+    ///
+    /// A firing forces the remaining unknown cell of a nogood away from its
+    /// recorded state during propagation — this is unit propagation on the
+    /// learned nogoods, and it is what intercepts the forbidden patterns that
+    /// are completed by *deductions*, which the guess-time checks alone never
+    /// see. The forced assignment is an ordinary deduction justified by an
+    /// `Antecedent::Clause` built from the other literals of the nogood; if
+    /// that reason goes stale later, the conflict analysis falls back to
+    /// chronological backtracking.
+    ///
+    /// If setting the cell completed a nogood fully, the id of the entry is
+    /// recorded in [`pending_nogood_confl`](World::pending_nogood_confl), and
+    /// `check_affected` reports it as a [`Confl::Nogood`] conflict.
+    ///
+    /// # Safety
+    ///
+    /// The cell index and state must describe the assignment that was just
+    /// made by [`set_cell`](World::set_cell). Otherwise the behavior is
+    /// undefined.
+    pub(crate) unsafe fn nogood_after_set(&mut self, index: u32, state: CellState) {
+        // Read the cell states through a copy of the cells pointer, so that
+        // the callbacks do not borrow `self` while the database (a field of
+        // `self`) is borrowed mutably.
+        let cells = self.cells_ptr as *const LifeCell;
+
+        let full_match = self
+            .nogood_db
+            .on_set(index, state, &mut self.nogood_scratch);
+        if full_match.is_some() && self.pending_nogood_confl.is_none() {
+            self.pending_nogood_confl = full_match;
+        }
+
+        while let Some(id) = self.nogood_scratch.pop() {
+            // A full match has already been queued: the current partial
+            // assignment is doomed, so there is no point in forcing more
+            // cells before the conflict is raised.
+            if self.pending_nogood_confl.is_some() {
+                break;
+            }
+
+            let mut state_of = |i: u32| unsafe { (*cells.add(i as usize)).state() };
+            let Some((target, blocked, others)) = self.nogood_db.fire_candidate(id, &mut state_of)
+            else {
+                continue;
+            };
+
+            self.nogood_db.note_fired();
+
+            let clause = others
+                .iter()
+                .map(|&(i, s)| unsafe {
+                    let other = cells.add(i as usize);
+                    debug_assert_eq!((*other).state(), Some(s));
+                    (other, self.cell_pos[self.cell_index(other)])
+                })
+                .collect::<Box<[_]>>();
+
+            unsafe {
+                let target_cell = &*cells.add(target as usize);
+                self.set_cell(
+                    target_cell,
+                    !blocked,
+                    Reason::Deduced,
+                    Some(Antecedent::Clause(clause)),
+                    false,
+                );
+            }
         }
     }
 
@@ -755,7 +866,9 @@ impl World {
             // analyzed and the search backjumps to the decision that caused it;
             // otherwise the search backtracks chronologically.
             Err(confl) => match confl {
-                Confl::Rule(_) | Confl::Symmetry(_, _) if self.config.backjump => {
+                Confl::Rule(_) | Confl::Symmetry(_, _) | Confl::Nogood(_)
+                    if self.config.backjump =>
+                {
                     self.analyze(confl)
                 }
                 _ => self.backtrack(),
@@ -837,6 +950,15 @@ impl World {
                 literals.push(cell);
                 literals.push(symmetry);
             }
+            Confl::Nogood(id) => unsafe {
+                // Every cell of the nogood holds its recorded state; those
+                // assignments are exactly what makes the assignment doomed.
+                for &(i, state) in self.nogood_db.entry_literals(id) {
+                    let cell = self.cell_by_index(i);
+                    debug_assert_eq!((*cell).state(), Some(state));
+                    literals.push(cell);
+                }
+            },
             Confl::Global => unreachable!(),
         }
         unsafe {
@@ -966,6 +1088,34 @@ impl World {
 
         self.stack_index = recheck;
         self.start = resume;
+
+        // Learn the nogood for the persistent database.
+        //
+        // The nogood consists of the 1-UIP cell with its rejected state, and
+        // the literals of the learned clause with their current states. All
+        // of these cells are still set: the truncation above stopped at the
+        // highest level of the clause.
+        //
+        // Within one world this nogood is unconditionally valid; whether it
+        // can be reused in other worlds is not tracked yet, so the database
+        // is dropped whenever the world is rebuilt.
+        if self.config.nogood {
+            let mut literals = Vec::with_capacity(clause.len() + 1);
+            literals.push((unsafe { self.cell_index(uip) } as u32, state));
+            unsafe {
+                for &lit in clause.iter() {
+                    literals.push((self.cell_index(lit) as u32, (*lit).state().unwrap()));
+                }
+            }
+
+            // Read the cell states through a copy of the cells pointer, so
+            // that the callback does not borrow `self` while the database (a
+            // field of `self`) is borrowed mutably.
+            let cells = self.cells_ptr as *const LifeCell;
+            let mut state_of = |i: u32| unsafe { (*cells.add(i as usize)).state() };
+            self.nogood_db
+                .learn(literals.into_boxed_slice(), &mut state_of);
+        }
 
         // Record the learned clause: each literal with its current stack
         // position. The clause is valid while the cells stay at these

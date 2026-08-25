@@ -4,6 +4,7 @@ use crate::{
     cell::{Antecedent, LifeCell, Reason},
     config::{Config, KnownCell, SearchOrder},
     error::ConfigError,
+    nogood::NogoodDb,
     rule::{CellState, RuleTable},
 };
 use ca_symmetry::{Symmetry, Transformation};
@@ -83,6 +84,15 @@ pub enum Confl {
     ///
     /// The cells must be in the same world as `self`.
     Symmetry(*const LifeCell, *const LifeCell),
+
+    /// A learned nogood is fully matched by the current partial assignment.
+    ///
+    /// The field is the id of the entry in the nogood database. All the cells
+    /// of the nogood currently hold their recorded states, which no solution
+    /// can extend. Like a rule or symmetry conflict, this is analyzed to
+    /// backjump when backjumping is enabled (which it always is when the
+    /// nogood database is enabled).
+    Nogood(u32),
 
     /// A global constraint failed: the front is empty or the population is too large.
     Global,
@@ -236,6 +246,34 @@ pub struct World {
     /// real.
     pub(crate) in_probe: bool,
 
+    /// The database of learned nogoods.
+    ///
+    /// This is only used when [`Config::nogood`](crate::Config::nogood) is
+    /// enabled; otherwise it is a disabled database that never learns or
+    /// blocks anything.
+    ///
+    /// The nogoods are stored by absolute cell indices, so they are only
+    /// valid within this world. The database is empty in a freshly built
+    /// world, which includes the worlds rebuilt by save/load (the
+    /// serialization does not store the learned nogoods) and by
+    /// [`increase_world_size`](World::increase_world_size).
+    pub(crate) nogood_db: NogoodDb,
+
+    /// The ids of the database entries whose firing condition must be
+    /// re-evaluated, maintained by [`set_cell`](World::set_cell) and drained
+    /// by the firing loop in `nogood_after_set`.
+    ///
+    /// This is a scratch buffer that is always empty between calls to
+    /// [`set_cell`](World::set_cell).
+    pub(crate) nogood_scratch: Vec<u32>,
+
+    /// A fully matched nogood that has not been reported as a conflict yet.
+    ///
+    /// This is set by [`set_cell`](World::set_cell) when every literal of a
+    /// stored nogood holds, and consumed at the next call of
+    /// `check_affected`, which reports it as [`Confl::Nogood`].
+    pub(crate) pending_nogood_confl: Option<u32>,
+
     /// The search status.
     pub(crate) status: Status,
 }
@@ -291,6 +329,7 @@ impl World {
         );
 
         let backjump = config.backjump;
+        let nogood = config.nogood;
 
         let mut world = Self {
             config,
@@ -319,6 +358,13 @@ impl World {
             stack_index: 0,
             start: std::ptr::null(),
             in_probe: false,
+            nogood_db: if nogood {
+                NogoodDb::with_default_capacity()
+            } else {
+                NogoodDb::new(0)
+            },
+            nogood_scratch: Vec::new(),
+            pending_nogood_confl: None,
             status: Status::NotStarted,
         };
         world.init(&rule_symmetry)?;
@@ -851,6 +897,19 @@ impl World {
         }
     }
 
+    /// Get a raw pointer to a cell by its index in the world.
+    ///
+    /// This is the inverse of [`cell_index`](World::cell_index).
+    ///
+    /// # Safety
+    ///
+    /// The index must be in the range `0..size`.
+    /// Otherwise the behavior is undefined.
+    #[inline]
+    pub(crate) const unsafe fn cell_by_index(&self, index: u32) -> *const LifeCell {
+        unsafe { (self.cells_ptr as *const LifeCell).add(index as usize) }
+    }
+
     /// Get a cell by its coordinates.
     ///
     /// Return [`None`] if the cell is outside the world.
@@ -989,6 +1048,17 @@ impl World {
         } else {
             debug_assert!(self.trail_meta.is_empty());
         }
+
+        // Update the matched-literal counters of the nogood database, and
+        // fire the nogoods that became one literal short of a full match.
+        //
+        // The assignments of a lookahead probe are temporary, so the probes
+        // do not touch the counters; this keeps them in sync with the real
+        // trail.
+        if self.config.nogood && !self.in_probe {
+            let index = unsafe { self.cell_index(cell) } as u32;
+            unsafe { self.nogood_after_set(index, state) };
+        }
     }
 
     /// Update the backjump metadata when a cell is popped from the stack.
@@ -1059,6 +1129,13 @@ impl World {
 
         // Clear the reason on the cell.
         cell.reason.set(None);
+
+        // Update the matched-literal counters of the nogood database. As in
+        // [`set_cell`](World::set_cell), lookahead probes do not touch them.
+        if self.config.nogood && !self.in_probe {
+            let index = unsafe { self.cell_index(cell) } as u32;
+            self.nogood_db.on_unset(index, state);
+        }
     }
 
     /// Canonicalize the coordinates of a cell.
@@ -1137,6 +1214,14 @@ impl World {
     #[inline]
     pub const fn cells_checked(&self) -> usize {
         self.stack.len()
+    }
+
+    /// Get the statistics of the nogood database.
+    ///
+    /// Return [`None`] if [`Config::nogood`](Config::nogood) is disabled.
+    #[inline]
+    pub fn nogood_stats(&self) -> Option<&crate::nogood::NogoodStats> {
+        self.config.nogood.then(|| self.nogood_db.stats())
     }
 
     /// Get the search status.
@@ -1313,6 +1398,10 @@ impl World {
     ///
     /// The world will be replaced by a new world with the new size. The current search status
     /// will be lost.
+    ///
+    /// The learned nogoods are lost as well: they are stored by absolute cell
+    /// indices and may rely on facts specific to the old size (e.g. the
+    /// background state forced on the cells outside the search range).
     pub fn increase_world_size(&mut self) {
         let mut config = self.config.clone();
         let w = config.width;
@@ -1524,7 +1613,7 @@ impl World {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{KnownCell, Transformation};
+    use crate::{KnownCell, NewState, Transformation};
 
     fn front_coords(world: &World) -> Vec<Coord> {
         let mut coords = Vec::new();
@@ -2137,6 +2226,25 @@ mod test {
     }
 
     #[test]
+    fn test_miri_nogood() {
+        // Exercise the nogood database under Miri: learning from conflicts
+        // and blocking guesses.
+        let config = Config::new("B3/S23", 3, 3, 2).with_nogood();
+        let mut world = World::new(config).unwrap();
+        world.search(Some(2000));
+        assert_eq!(world.status(), Status::Solved);
+
+        // A contradictory configuration triggers many conflict analyses.
+        let config = Config::new("B3/S23", 4, 4, 2)
+            .with_max_population(1)
+            .with_nogood();
+        let mut world = World::new(config).unwrap();
+        world.search(None);
+        assert_eq!(world.status(), Status::NoSolution);
+        assert!(world.nogood_db.stats().learned > 0);
+    }
+
+    #[test]
     fn test_below_max_invariant() {
         // The `below_max` counter should always be the number of generations
         // whose population is at most `max_population`.
@@ -2585,5 +2693,227 @@ mod test {
             world.search(None);
             assert_eq!(world.status(), Status::Solved);
         }
+    }
+
+    #[test]
+    fn test_nogood_rejects_generations() {
+        // The nogood database builds on backjumping, so it is restricted to
+        // rules with 2 states as well.
+        assert!(matches!(
+            World::new(Config::new("3457/357/5", 3, 3, 1).with_nogood()),
+            Err(ConfigError::NogoodUnsupported)
+        ));
+        assert!(World::new(Config::new("B3/S23", 3, 3, 2).with_nogood()).is_ok());
+    }
+
+    #[test]
+    fn test_nogood_implies_backjump() {
+        // Enabling the nogood database enables the conflict analysis.
+        let mut config = Config::new("B3/S23", 3, 3, 2).with_nogood();
+        config.check().unwrap();
+        assert!(config.backjump);
+
+        let world = World::new(config.clone()).unwrap();
+        assert!(world.config().backjump);
+    }
+
+    #[test]
+    fn test_nogood_finds_solution() {
+        // With the nogood database enabled, the search should still find
+        // solutions for 2-state rules, including B0 rules.
+        for config in [
+            Config::new("B3/S23", 3, 3, 2).with_nogood(),
+            Config::new("B2a/S12", 3, 3, 1).with_nogood(),
+            Config::new("B2o/S23oH", 3, 3, 2).with_nogood(),
+            Config::new("B026/S1", 4, 4, 2).with_nogood(),
+            Config::new("B3678/S34678", 4, 4, 1).with_nogood(),
+            Config::new("R3,C2,S2,B3,N+", 3, 3, 1).with_nogood(),
+        ] {
+            let mut world = World::new(config).unwrap();
+            world.search(None);
+            assert_eq!(world.status(), Status::Solved);
+        }
+    }
+
+    #[test]
+    fn test_nogood_learns_and_blocks() {
+        // A conflict-free path can find the first solution without learning
+        // anything, so the database is exercised by enumerating all of the
+        // solutions: the backtracking phases produce conflicts to learn
+        // from, and the re-entered subtrees get blocked by the learned
+        // nogoods.
+        let mut world = World::new(Config::new("B3/S23", 4, 4, 2).with_nogood()).unwrap();
+        while world.search(None) == Status::Solved {}
+
+        let stats = world.nogood_stats().expect("nogood is enabled");
+        assert!(stats.learned > 0, "no nogoods were learned");
+        assert!(stats.fired > 0, "no nogood ever fired during propagation");
+    }
+
+    #[test]
+    fn test_nogood_enumerates_same_solutions() {
+        // Learning changes the traversal order, but not the set of
+        // solutions.
+        for config in [
+            Config::new("B3/S23", 3, 3, 2),
+            Config::new("B3/S23", 2, 2, 1),
+            Config::new("B3/S23", 4, 4, 2),
+            Config::new("B3/S23", 5, 5, 2),
+            Config::new("B2a/S12", 3, 3, 1),
+            Config::new("B2o/S23oH", 4, 4, 2),
+            Config::new("B026/S1", 3, 3, 2),
+            Config::new("B3678/S34678", 4, 4, 1),
+            Config::new("R3,C2,S2,B3,N+", 3, 3, 1)
+                .with_symmetry(Symmetry::D2H)
+                .with_transformation(Transformation::S0),
+            Config::new("B3/S23", 3, 3, 1).with_transformation(Transformation::R1),
+            Config::new("B3/S23", 3, 3, 2).with_symmetry(Symmetry::D2V),
+        ] {
+            assert_eq!(
+                solution_set(&config),
+                solution_set(&config.clone().with_nogood()),
+                "nogoods change the solution set for {config:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_nogood_with_max_population() {
+        // The population check must still work with the nogood database.
+        let mut world = World::new(
+            Config::new("B3/S23", 4, 4, 2)
+                .with_max_population(1)
+                .with_nogood(),
+        )
+        .unwrap();
+        world.search(None);
+        assert_eq!(world.status(), Status::NoSolution);
+
+        let mut world = World::new(
+            Config::new("B3/S23", 4, 4, 2)
+                .with_max_population(8)
+                .with_nogood(),
+        )
+        .unwrap();
+        world.search(None);
+        assert_eq!(world.status(), Status::Solved);
+    }
+
+    #[test]
+    fn test_nogood_with_reduce_max_population() {
+        // The reduced population searches must still work with the nogood
+        // database. The nogoods are derived from rule constraints only, so
+        // they stay valid under decreasing population bounds.
+        let mut reference =
+            World::new(Config::new("B3/S23", 4, 4, 2).with_reduce_max_population()).unwrap();
+        let mut nogood = World::new(
+            Config::new("B3/S23", 4, 4, 2)
+                .with_reduce_max_population()
+                .with_nogood(),
+        )
+        .unwrap();
+
+        let mut reference_solutions = std::collections::BTreeSet::new();
+        while reference.search(None) == Status::Solved {
+            reference_solutions.insert(reference.rle(0, true));
+        }
+        let mut nogood_solutions = std::collections::BTreeSet::new();
+        while nogood.search(None) == Status::Solved {
+            nogood_solutions.insert(nogood.rle(0, true));
+        }
+
+        assert_eq!(reference_solutions, nogood_solutions);
+    }
+
+    #[test]
+    fn test_nogood_with_lookahead() {
+        // The experimental features must be able to be enabled together.
+        // Each combination must enumerate the same solutions as its own
+        // baseline configuration.
+        for config in [
+            Config::new("B3/S23", 3, 3, 2),
+            Config::new("B2a/S12", 3, 3, 1),
+            Config::new("B3/S23", 4, 4, 2),
+        ] {
+            let combined = config
+                .clone()
+                .with_lookahead()
+                .with_phase_saving()
+                .with_nogood();
+            assert_eq!(
+                solution_set(&config),
+                solution_set(&combined),
+                "the combination changes the solution set for {config:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_nogood_with_backjump_and_all_features() {
+        // Everything enabled together must still enumerate the same
+        // solutions as the default search.
+        for config in [
+            Config::new("B3/S23", 4, 4, 2).with_backjump().with_nogood(),
+            Config::new("B3/S23", 4, 4, 2)
+                .with_backjump()
+                .with_nogood()
+                .with_lookahead(),
+            Config::new("B3/S23", 4, 4, 2)
+                .with_backjump()
+                .with_nogood()
+                .with_phase_saving()
+                .with_new_state(NewState::Alive),
+        ] {
+            assert_eq!(
+                solution_set(&Config::new("B3/S23", 4, 4, 2)),
+                solution_set(&config),
+                "the combination changes the solution set for {config:?}"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn test_nogood_round_trip_through_serde() {
+        // The nogood option should survive a save/load round trip. The
+        // learned nogoods themselves are not serialized: the loaded world
+        // starts with an empty database, which only affects performance.
+        let mut world = World::new(Config::new("B3/S23", 3, 3, 2).with_nogood()).unwrap();
+        world.search(Some(1000));
+        // Make sure something has been learned before the round trip.
+        while world.search(None) == Status::Solved {}
+        assert!(!world.nogood_db.is_empty(), "nothing was learned");
+
+        let mut world2 = World::try_from(world.to_serde()).unwrap();
+        assert!(world2.config().nogood);
+        assert!(world2.config().backjump);
+        assert!(world2.nogood_db.is_empty());
+
+        world.search(None);
+        world2.search(None);
+        assert_eq!(world.status(), world2.status());
+    }
+
+    #[test]
+    fn test_nogood_increase_world_size_drops_database() {
+        // The nogoods are stored by absolute cell indices and are only valid
+        // within one world, so growing the world drops them.
+        let mut world = World::new(Config::new("B3/S23", 3, 3, 2).with_nogood()).unwrap();
+        world.search(Some(1000));
+        // Make sure something has been learned before growing the world.
+        while world.search(None) == Status::Solved {}
+        assert!(!world.nogood_db.is_empty());
+
+        world.increase_world_size();
+        assert!(world.nogood_db.is_empty());
+        assert_eq!(
+            (world.config().width, world.config().height),
+            (3, 4),
+            "a square world grows in height"
+        );
+
+        // The grown search must still be correct.
+        world.search(None);
+        assert_eq!(world.status(), Status::Solved);
     }
 }

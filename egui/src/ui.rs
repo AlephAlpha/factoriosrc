@@ -786,6 +786,15 @@ impl App {
                                     .on_hover_text(ConfigHelpField::Backjump.short_help());
                                 ui.checkbox(&mut config.backjump, "");
                                 ui.end_row();
+
+                                ui.label("nogood")
+                                    .on_hover_text(ConfigHelpField::Nogood.short_help());
+                                if ui.checkbox(&mut config.nogood, "").changed() && config.nogood {
+                                    // The nogood database enables backjumping in
+                                    // `Config::check`; keep the form in sync.
+                                    config.backjump = true;
+                                }
+                                ui.end_row();
                             });
 
                         ui.label(muted("Off by default; may speed up or slow down searches."));

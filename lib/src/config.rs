@@ -323,6 +323,28 @@ pub struct Config {
     #[cfg_attr(feature = "serde", serde(default))]
     pub backjump: bool,
 
+    /// Whether to enable the persistent nogood database.
+    ///
+    /// When this is `true`, the clauses derived by the conflict analysis of
+    /// [`backjump`](Config::backjump), which this option enables implicitly,
+    /// are recorded in a database of forbidden patterns. Before guessing a
+    /// state for an unknown cell, the database is consulted: if the guess
+    /// would complete a forbidden pattern, the other state is used instead;
+    /// if both states are blocked, the search backtracks immediately.
+    ///
+    /// The nogoods are stored by absolute cell indices, so they are only
+    /// reused within one world: they are dropped when the world is saved and
+    /// reloaded or rebuilt by
+    /// [`increase_world_size`](crate::World::increase_world_size). A later
+    /// version may store them in coordinates relative to the anchor cell, so
+    /// that they can be translated between positions and world sizes.
+    ///
+    /// Like backjumping, this only applies to rules with 2 states. The
+    /// default is `false`.
+    #[cfg_attr(feature = "clap", arg(long, help_heading = "Experimental"))]
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub nogood: bool,
+
     /// Random seed for guessing the state of an unknown cell.
     ///
     /// This is only used when [`new_state`](Config::new_state) is [`Random`](NewState::Random).
@@ -383,6 +405,7 @@ impl Config {
             phase_saving: false,
             lookahead: false,
             backjump: false,
+            nogood: false,
             seed: None,
             known_cells: Vec::new(),
             max_population: None,
@@ -479,6 +502,18 @@ impl Config {
     #[must_use]
     pub const fn with_backjump(mut self) -> Self {
         self.backjump = true;
+        self
+    }
+
+    /// Enable the persistent nogood database.
+    ///
+    /// This enables [`backjump`](Config::backjump) implicitly.
+    ///
+    /// See [`nogood`](Config::nogood) for more details.
+    #[inline]
+    #[must_use]
+    pub const fn with_nogood(mut self) -> Self {
+        self.nogood = true;
         self
     }
 
@@ -600,6 +635,15 @@ impl Config {
     pub fn check(&mut self) -> Result<(), ConfigError> {
         let rule = self.parse_rule()?;
         check_rule_symmetry(&rule, self.symmetry, self.transformation)?;
+
+        // The nogood database builds on the conflict analysis of backjumping,
+        // so it is restricted to the same rules and enables it implicitly.
+        if self.nogood {
+            if rule.states > 2 {
+                return Err(ConfigError::NogoodUnsupported);
+            }
+            self.backjump = true;
+        }
 
         // Backjumping only applies to rules with 2 states: the Generations
         // rules branch over the dying states, and the implication graph of a
