@@ -63,6 +63,7 @@ pub enum ConfigField {
     Lookahead,
     Backjump,
     Nogood,
+    NogoodTranslate,
     Seed,
     MaxPopulation,
     ReduceMaxPopulation,
@@ -99,6 +100,7 @@ impl ConfigField {
             Self::Lookahead,
             Self::Backjump,
             Self::Nogood,
+            Self::NogoodTranslate,
             Self::Apply,
             Self::Cancel,
         ]
@@ -121,6 +123,7 @@ impl ConfigField {
             Self::Lookahead => "Lookahead",
             Self::Backjump => "Backjump",
             Self::Nogood => "Nogood",
+            Self::NogoodTranslate => "Translate",
             Self::Seed => "Seed",
             Self::MaxPopulation => "Max pop",
             Self::ReduceMaxPopulation => "Reduce pop",
@@ -158,6 +161,7 @@ impl ConfigField {
                 | Self::Lookahead
                 | Self::Backjump
                 | Self::Nogood
+                | Self::NogoodTranslate
                 | Self::SearchOrder
                 | Self::ReduceMaxPopulation
                 | Self::IncreaseWorldSize
@@ -248,6 +252,7 @@ impl ConfigState {
             ConfigField::Lookahead => cfg.lookahead.to_string(),
             ConfigField::Backjump => cfg.backjump.to_string(),
             ConfigField::Nogood => cfg.nogood.to_string(),
+            ConfigField::NogoodTranslate => cfg.nogood_translate.to_string(),
             ConfigField::Seed => cfg.seed.map_or(String::new(), |s| s.to_string()),
             ConfigField::MaxPopulation => {
                 cfg.max_population.map_or(String::new(), |p| p.to_string())
@@ -445,6 +450,15 @@ impl ConfigState {
                 // The nogood database enables backjumping in `Config::check`;
                 // keep the form in sync when it is toggled on.
                 if self.working_config.nogood {
+                    self.working_config.backjump = true;
+                }
+            }
+            ConfigField::NogoodTranslate => {
+                self.working_config.nogood_translate = !self.working_config.nogood_translate;
+                // Translated templates enable the nogood database (and hence
+                // backjumping) in `Config::check`; keep the form in sync.
+                if self.working_config.nogood_translate {
+                    self.working_config.nogood = true;
                     self.working_config.backjump = true;
                 }
             }
@@ -1783,10 +1797,14 @@ mod tests {
             position(ConfigField::Nogood),
             position(ConfigField::Backjump) + 1
         );
+        assert_eq!(
+            position(ConfigField::NogoodTranslate),
+            position(ConfigField::Nogood) + 1
+        );
         // The group sits at the end of the form, right before the buttons, so
         // no other field can be mistaken for part of it.
         assert!(position(ConfigField::ExportResults) < position(ConfigField::PhaseSaving));
-        assert!(position(ConfigField::Nogood) < position(ConfigField::Apply));
+        assert!(position(ConfigField::NogoodTranslate) < position(ConfigField::Apply));
     }
 
     #[test]
@@ -1808,9 +1826,10 @@ mod tests {
                 position(ConfigField::Lookahead),
                 position(ConfigField::Backjump),
                 position(ConfigField::Nogood),
+                position(ConfigField::NogoodTranslate),
             )
         };
-        let (export, phase_saving, lookahead, backjump, nogood) = field_positions;
+        let (export, phase_saving, lookahead, backjump, nogood, translate) = field_positions;
 
         // The caption (a blank line plus the title) is inserted between them:
         // two extra lines plus the field's own line.
@@ -1821,6 +1840,7 @@ mod tests {
         assert_eq!(before[lookahead], before[phase_saving] + 1);
         assert_eq!(before[backjump], before[lookahead] + 1);
         assert_eq!(before[nogood], before[backjump] + 1);
+        assert_eq!(before[translate], before[nogood] + 1);
 
         // No caption appears when the experimental fields are removed.
         if let Some(state) = app.config_state.as_mut() {

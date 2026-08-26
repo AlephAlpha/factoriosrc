@@ -1,3 +1,4 @@
+use crate::nogood::Anchor;
 use crate::rule::{CellState, Descriptor, MAX_NEIGHBORHOOD_SIZE};
 use std::cell::Cell;
 
@@ -38,8 +39,23 @@ pub enum Antecedent {
     /// positions. When a cell is set again later, the reason is stale and
     /// cannot be used in conflict analysis.
     ///
+    /// The clause also carries the [`Anchor`] of its origin: what its
+    /// derivation relied upon. A nogood learned through this deduction
+    /// inherits it, so that translated reuse stays sound.
+    ///
     /// The cells must be in the same world as the deduced cell.
-    Clause(Box<[(*const LifeCell, u32)]>),
+    Clause(ClauseReason),
+}
+
+/// The payload of an [`Antecedent::Clause`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClauseReason {
+    /// The literals of the clause with their stack positions at recording
+    /// time; see [`Antecedent::Clause`].
+    pub literals: Box<[(*const LifeCell, u32)]>,
+
+    /// What the derivation of the clause relied upon; see [`Anchor`].
+    pub anchor: Anchor,
 }
 
 /// The reason why a cell is set to a state.

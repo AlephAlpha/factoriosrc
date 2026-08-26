@@ -13,6 +13,11 @@
 //! on the cells outside the search range. The database is therefore cleared
 //! whenever the world is rebuilt.
 
+// The items of this private module are shared with the sibling modules of
+// the crate; `pub(crate)` is required for that even though the lint would
+// consider it redundant.
+#![allow(clippy::redundant_pub_crate)]
+
 use crate::rule::CellState;
 use std::collections::HashMap;
 
@@ -28,13 +33,218 @@ const DEFAULT_CAPACITY: usize = 1 << 16;
 /// without a bound, the queries at that cell would dominate the search time.
 /// A blocked guess missed because of the bound is only a lost pruning, never
 /// a correctness issue.
-const MAX_QUERY_CANDIDATES: usize = 64;
+pub(crate) const MAX_QUERY_CANDIDATES: usize = 64;
 
 /// The maximal number of literals of a learned nogood.
 ///
 /// Large patterns rarely materialize again in full, so they cost more than
 /// they are worth as index entries.
 const MAX_NOGOOD_LITERALS: usize = 16;
+
+/// What the derivation of a nogood relied upon, and therefore how far the
+/// nogood may be moved.
+///
+/// The flags record the *absolute references* that the conflict analysis
+/// walked through: boundary cells forced into the background state, cells
+/// whose descriptors have background-baked neighbors, user known cells, the
+/// diagonal-width band, and mirror pairs of the symmetry. A nogood may only
+/// be translated along axes on which every one of these references is
+/// preserved.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Anchor {
+    /// Relies on the background-forced cells to the left of the world.
+    pub left: bool,
+
+    /// Relies on the background-forced cells to the right of the world.
+    pub right: bool,
+
+    /// Relies on the background-forced cells above the world.
+    pub top: bool,
+
+    /// Relies on the background-forced cells below the world.
+    pub bottom: bool,
+
+    /// Relies on a user known cell at an absolute position.
+    pub known: bool,
+
+    /// Relies on the diagonal-width band.
+    pub band: bool,
+
+    /// Relies on something that is not tracked well enough to translate:
+    /// a level-0 deduction whose own chain is not part of this analysis, or
+    /// a rotation/diagonal-reflection symmetry pair.
+    pub local: bool,
+
+    /// Relies on a same-row mirror pair (the `S2` reflection): the rows may
+    /// slide, but the columns may not.
+    pub mirror_x: bool,
+
+    /// Relies on a same-column mirror pair (the `S0` reflection): the
+    /// columns may slide, but the rows may not.
+    pub mirror_y: bool,
+}
+
+impl Anchor {
+    /// Merge another anchor into this one, keeping every reliance.
+    pub const fn merge(&mut self, other: &Self) {
+        self.left |= other.left;
+        self.right |= other.right;
+        self.top |= other.top;
+        self.bottom |= other.bottom;
+        self.known |= other.known;
+        self.band |= other.band;
+        self.local |= other.local;
+        self.mirror_x |= other.mirror_x;
+        self.mirror_y |= other.mirror_y;
+    }
+
+    /// Whether the nogood may be translated horizontally.
+    pub const fn can_translate_x(&self) -> bool {
+        !(self.left || self.right || self.known || self.band || self.local || self.mirror_x)
+    }
+
+    /// Whether the nogood may be translated vertically.
+    pub const fn can_translate_y(&self) -> bool {
+        !(self.top || self.bottom || self.known || self.band || self.local || self.mirror_y)
+    }
+
+    /// Whether the nogood may survive a change of the world size.
+    ///
+    /// Single-edge pins are fine (the interior always starts at `(0, 0)`,
+    /// and the right/bottom distances can be remapped), but everything tied
+    /// to the geometry of the constraints — user known cells, the diagonal
+    /// band, untracked local facts, mirror pairs, and pins on *both* sides
+    /// of an axis (the pattern spanned the whole old width or height, so no
+    /// cell of a larger world can satisfy both constraints) — is not.
+    pub const fn transferable(&self) -> bool {
+        !(self.known
+            || self.band
+            || self.local
+            || self.mirror_x
+            || self.mirror_y
+            || (self.left && self.right)
+            || (self.top && self.bottom))
+    }
+
+    /// Whether the nogood is pinned to at least one edge of the world.
+    const fn pinned(&self) -> bool {
+        self.left || self.right || self.top || self.bottom
+    }
+
+    /// How the horizontal coordinates of a template built from this anchor
+    /// are interpreted.
+    ///
+    /// Every non-translatable reason except the right edge requires absolute
+    /// columns; the right edge alone requires distances from that edge; both
+    /// edges together require both constraints at once.
+    pub(crate) const fn x_mode(&self) -> XMode {
+        let abs = self.left || self.mirror_x;
+        let right = self.right;
+        match (self.can_translate_x(), abs, right) {
+            (true, _, _) => XMode::Free,
+            (false, false, false) => XMode::Absolute,
+            (false, true, false) => XMode::Absolute,
+            (false, false, true) => XMode::RightEdge,
+            (false, true, true) => XMode::AbsoluteAndRight,
+        }
+    }
+
+    /// How the vertical coordinates of a template built from this anchor are
+    /// interpreted; see [`x_mode`](Anchor::x_mode).
+    pub(crate) const fn y_mode(&self) -> YMode {
+        let abs = self.top || self.mirror_y;
+        let bottom = self.bottom;
+        match (self.can_translate_y(), abs, bottom) {
+            (true, _, _) => YMode::Free,
+            (false, false, false) => YMode::Absolute,
+            (false, true, false) => YMode::Absolute,
+            (false, false, true) => YMode::BottomEdge,
+            (false, true, true) => YMode::AbsoluteAndBottom,
+        }
+    }
+
+    /// Whether a translatable template can be built from this anchor at all.
+    ///
+    /// Nogoods relying on user known cells, the diagonal band, or untracked
+    /// local facts cannot be translated in either direction, so there is no
+    /// point in storing them as templates.
+    pub(crate) const fn template_eligible(&self) -> bool {
+        !(self.known || self.band || self.local)
+    }
+}
+
+/// How the horizontal coordinates of a [`Template`] are interpreted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum XMode {
+    /// Offsets from the horizontal position of the matched literal.
+    Free,
+    /// A fixed absolute column.
+    Absolute,
+    /// A fixed distance from the right edge of the world.
+    RightEdge,
+    /// Both a fixed absolute column and a fixed distance from the right
+    /// edge. No cell of a larger world can satisfy both constraints, so such
+    /// templates never match after the world grows; they are kept for
+    /// uniformity and are not transferred.
+    AbsoluteAndRight,
+}
+
+impl XMode {
+    /// Whether this mode survives a change of the width.
+    pub(crate) const fn transferable(self) -> bool {
+        !matches!(self, Self::AbsoluteAndRight)
+    }
+}
+
+/// How the vertical coordinates of a [`Template`] are interpreted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum YMode {
+    /// Offsets from the vertical position of the matched literal.
+    Free,
+    /// A fixed absolute row.
+    Absolute,
+    /// A fixed distance from the bottom edge of the world.
+    BottomEdge,
+    /// Both a fixed absolute row and a fixed distance from the bottom edge;
+    /// never matches after the world grows, and is not transferred.
+    AbsoluteAndBottom,
+}
+
+impl YMode {
+    /// Whether this mode survives a change of the height.
+    pub(crate) const fn transferable(self) -> bool {
+        !matches!(self, Self::AbsoluteAndBottom)
+    }
+}
+
+/// A generalization of a learned nogood that may match at translated
+/// positions.
+///
+/// The literals are `(x, y, dt, state)` tuples. The meaning of `x` and `y`
+/// depends on the axis modes: free coordinates are offsets from the position
+/// of the *first* literal (the anchor), edge-pinned coordinates are absolute
+/// columns or rows, right/bottom-pinned coordinates are distances from the
+/// corresponding edge, and absolute coordinates never move. The generation
+/// difference `dt` is taken modulo the period.
+#[derive(Debug, Clone)]
+pub(crate) struct Template {
+    /// What the original derivation relied upon; inherited by everything
+    /// learned through matches of this template. This decides whether the
+    /// template survives a change of the world size.
+    /// What the original derivation relied upon; decides whether the
+    /// template survives a change of the world size.
+    #[allow(dead_code)] // read by the cross-size transfer (a later step)
+    pub(crate) anchor: Anchor,
+
+    /// How the horizontal coordinates are interpreted.
+    pub(crate) x_mode: XMode,
+
+    /// How the vertical coordinates are interpreted.
+    pub(crate) y_mode: YMode,
+
+    /// The literals of the template.
+    pub(crate) lits: Box<[(i32, i32, u32, CellState)]>,
+}
 
 /// Statistics of the nogood database.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -57,6 +267,28 @@ pub struct NogoodStats {
 
     /// The number of times the database has been reduced.
     pub reductions: u64,
+
+    /// The number of learned nogoods that may be translated in both
+    /// directions.
+    pub free: u64,
+
+    /// The number of learned nogoods pinned to at least one edge of the
+    /// world, but otherwise translatable.
+    pub edge_pinned: u64,
+
+    /// The number of learned nogoods that rely on a mirror pair of the
+    /// symmetry.
+    pub axis_pinned: u64,
+
+    /// The number of learned nogoods that cannot be translated at all (user
+    /// known cells, diagonal band, or untracked local facts).
+    pub local: u64,
+
+    /// The number of translatable templates stored.
+    pub templates: u64,
+
+    /// The number of times a guess was blocked by a translated template.
+    pub template_hits: u64,
 }
 
 /// The result of a firing: the index of the cell to force, the state it is
@@ -93,6 +325,9 @@ struct Nogood {
     ///   and a full match that arises through a re-set cell is caught by the
     ///   full-match check of [`on_set`](NogoodDb::on_set).
     matched: u32,
+
+    /// What the derivation of this nogood relied upon; see [`Anchor`].
+    anchor: Anchor,
 }
 
 /// A database of learned nogoods.
@@ -109,6 +344,14 @@ pub struct NogoodDb {
 
     /// For each literal, the ids of the nogoods containing it.
     index: HashMap<(u32, CellState), Vec<u32>>,
+
+    /// The translatable templates, in insertion order. Ids in the template
+    /// index are positions in this vector.
+    templates: Vec<Template>,
+
+    /// For each state, the ids of the templates containing a literal with
+    /// that state.
+    template_index: HashMap<CellState, Vec<u32>>,
 
     /// The maximal number of entries before the older half is evicted.
     ///
@@ -134,6 +377,8 @@ impl NogoodDb {
         Self {
             entries: Vec::new(),
             index: HashMap::new(),
+            templates: Vec::new(),
+            template_index: HashMap::new(),
             capacity,
             stats: NogoodStats::default(),
         }
@@ -160,7 +405,14 @@ impl NogoodDb {
     /// The `state_of` callback reports the current state of a cell, so that
     /// the matched-literal counters of the new entry (and, after an eviction,
     /// of all the kept entries) start in sync with the world.
-    pub fn learn<F>(&mut self, literals: Box<[(u32, CellState)]>, state_of: &mut F)
+    /// Return whether the nogood was stored; duplicates and rejected sets of
+    /// literals return `false`.
+    pub fn learn<F>(
+        &mut self,
+        literals: Box<[(u32, CellState)]>,
+        anchor: Anchor,
+        state_of: &mut F,
+    ) -> bool
     where
         F: FnMut(u32) -> Option<CellState>,
     {
@@ -170,10 +422,19 @@ impl NogoodDb {
             || !self.learnable(literals.as_ref())
             || self.contains_identical(&literals)
         {
-            return;
+            return false;
         }
 
         self.stats.learned += 1;
+        if anchor.local || anchor.known || anchor.band {
+            self.stats.local += 1;
+        } else if anchor.mirror_x || anchor.mirror_y {
+            self.stats.axis_pinned += 1;
+        } else if anchor.pinned() {
+            self.stats.edge_pinned += 1;
+        } else {
+            self.stats.free += 1;
+        }
 
         let id = self.entries.len() as u32;
         for &(cell, state) in literals.iter() {
@@ -186,11 +447,17 @@ impl NogoodDb {
             .count() as u32;
         debug_assert!(matched < literals.len() as u32);
 
-        self.entries.push(Nogood { literals, matched });
+        self.entries.push(Nogood {
+            literals,
+            matched,
+            anchor,
+        });
 
         if self.entries.len() >= self.capacity {
             self.reduce(state_of);
         }
+
+        true
     }
 
     /// Whether the given literals can be stored: they must not contain the
@@ -344,6 +611,13 @@ impl NogoodDb {
         &self.entries[id as usize].literals
     }
 
+    /// What an entry's derivation relied upon; inherited by the deductions
+    /// justified by this entry and by the nogoods learned through them.
+    #[inline]
+    pub(crate) fn entry_anchor(&self, id: u32) -> Anchor {
+        self.entries[id as usize].anchor
+    }
+
     /// Whether the entry is still fully matched by the current assignment.
     ///
     /// A queued full-match flag can go stale when the search unwinds before
@@ -442,6 +716,107 @@ impl NogoodDb {
         self.stats.fired += 1;
     }
 
+    /// Whether a template with exactly these axis modes and literals is
+    /// already stored.
+    ///
+    /// Only the templates sharing the state of the first literal are
+    /// compared.
+    fn contains_identical_template(&self, template: &Template) -> bool {
+        let Some(&(_, _, _, first_state)) = template.lits.first() else {
+            return false;
+        };
+
+        let Some(ids) = self.template_index.get(&first_state) else {
+            return false;
+        };
+
+        ids.iter().any(|&id| {
+            self.templates.get(id as usize).is_some_and(|stored| {
+                stored.x_mode == template.x_mode
+                    && stored.y_mode == template.y_mode
+                    && stored.lits == template.lits
+            })
+        })
+    }
+
+    /// Store a translatable template and index it by every state it uses.
+    ///
+    /// The caller is responsible for building the template so that its axis
+    /// modes agree with the anchor; see [`Anchor::x_mode`] and
+    /// [`Anchor::y_mode`].
+    pub(crate) fn add_template(&mut self, template: Template) {
+        if !self.is_enabled()
+            || template.lits.is_empty()
+            || self.contains_identical_template(&template)
+        {
+            return;
+        }
+
+        self.stats.templates += 1;
+
+        let id = self.templates.len() as u32;
+        let mut seen = Vec::new();
+        for &(_, _, _, state) in template.lits.iter() {
+            if !seen.contains(&state) {
+                seen.push(state);
+                self.template_index.entry(state).or_default().push(id);
+            }
+        }
+
+        self.templates.push(template);
+
+        if self.templates.len() >= self.capacity {
+            // Evict the older half of the templates and rebuild the index;
+            // like [`reduce`](NogoodDb::reduce), but for templates.
+            let keep = self.templates.len() / 2;
+            self.stats.evicted += keep as u64;
+            self.stats.reductions += 1;
+            self.templates.drain(..keep);
+            self.template_index.clear();
+            for (id, template) in self.templates.iter().enumerate() {
+                let id = id as u32;
+                let mut seen = Vec::new();
+                for &(_, _, _, state) in template.lits.iter() {
+                    if !seen.contains(&state) {
+                        seen.push(state);
+                        self.template_index.entry(state).or_default().push(id);
+                    }
+                }
+            }
+        }
+    }
+
+    /// The template with the given id.
+    #[inline]
+    pub(crate) fn template(&self, id: u32) -> &Template {
+        &self.templates[id as usize]
+    }
+
+    /// The ids of the templates that use the given state.
+    #[inline]
+    pub(crate) fn template_ids_with(&self, state: CellState) -> &[u32] {
+        self.template_index
+            .get(&state)
+            .map_or(&[], |ids| ids.as_slice())
+    }
+
+    /// Record that a guess was blocked by a translated template.
+    pub(crate) const fn note_template_hit(&mut self) {
+        self.stats.template_hits += 1;
+    }
+
+    /// Take the translatable templates out of the database, leaving it
+    /// without them.
+    ///
+    /// This is used when the world is rebuilt: the concrete entries die with
+    /// their counters, but templates whose anchors allow it can be handed
+    /// over to the new world; see
+    /// [`increase_world_size`](crate::World::increase_world_size).
+    pub(crate) fn take_templates(&mut self) -> Vec<Template> {
+        self.template_index.clear();
+        std::mem::take(&mut self.templates)
+    }
+
     /// Clear the database, keeping the statistics.
     ///
     /// This is called when the world is rebuilt: the nogoods of an old world
@@ -450,6 +825,8 @@ impl NogoodDb {
     pub fn clear(&mut self) {
         self.entries.clear();
         self.index.clear();
+        self.templates.clear();
+        self.template_index.clear();
     }
 
     /// The number of stored nogoods.
@@ -482,7 +859,11 @@ mod test {
         let mut db = NogoodDb::with_default_capacity();
         for entry in entries {
             let mut none = |_| None;
-            db.learn(entry.iter().copied().collect(), &mut none);
+            db.learn(
+                entry.iter().copied().collect(),
+                Anchor::default(),
+                &mut none,
+            );
         }
         db
     }
@@ -517,9 +898,17 @@ mod test {
     fn learn_stores_and_dedupes_identical_entries() {
         let mut db = NogoodDb::with_default_capacity();
         let mut none = |_| None;
-        db.learn(vec![(1, D), (2, A)].into_boxed_slice(), &mut none);
+        db.learn(
+            vec![(1, D), (2, A)].into_boxed_slice(),
+            Anchor::default(),
+            &mut none,
+        );
         assert_eq!(db.len(), 1);
-        db.learn(vec![(1, D), (2, A)].into_boxed_slice(), &mut none);
+        db.learn(
+            vec![(1, D), (2, A)].into_boxed_slice(),
+            Anchor::default(),
+            &mut none,
+        );
         assert_eq!(db.len(), 1);
         assert_eq!(db.stats().learned, 1);
     }
@@ -528,7 +917,11 @@ mod test {
     fn learn_rejects_duplicate_literals() {
         let mut db = NogoodDb::with_default_capacity();
         let mut none = |_| None;
-        db.learn(vec![(1, D), (1, D)].into_boxed_slice(), &mut none);
+        db.learn(
+            vec![(1, D), (1, D)].into_boxed_slice(),
+            Anchor::default(),
+            &mut none,
+        );
         assert!(db.is_empty());
     }
 
@@ -537,7 +930,11 @@ mod test {
         let mut db = NogoodDb::new(4);
         let mut none = |_| None;
         for c in 0..6u32 {
-            db.learn(vec![(c, D), (c + 100, A)].into_boxed_slice(), &mut none);
+            db.learn(
+                vec![(c, D), (c + 100, A)].into_boxed_slice(),
+                Anchor::default(),
+                &mut none,
+            );
         }
         assert_eq!(db.len(), 2);
         assert_eq!(db.stats().evicted, 4);
@@ -558,7 +955,11 @@ mod test {
         let mut db = NogoodDb::new(0);
         assert!(!db.is_enabled());
         let mut none = |_| None;
-        db.learn(vec![(1, D)].into_boxed_slice(), &mut none);
+        db.learn(
+            vec![(1, D)].into_boxed_slice(),
+            Anchor::default(),
+            &mut none,
+        );
         assert!(db.is_empty());
         assert!(!db.blocks(1, D, |_| None));
     }

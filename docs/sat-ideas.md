@@ -9,13 +9,18 @@
 > but **a loss on typical searches without idea 2** (the analysis re-treads closed branches
 > without a persistent nogood database) — with the notable exception of very large searches
 > like `B3/S23 64 64 1 -n a` where backjumping is a decisive win (see the idea 1 section).
-> Idea 2 started as a guess-time check on an exact-position database and was then upgraded with
-> counter-based unit propagation on the learned nogoods; the propagation-level firing is what
-> actually recovers the re-treading loss (see the idea 2 section for the numbers): it turns
-> some of the worst backjumping losses into wins and consistently shrinks enumeration work,
-> though the plain chronological search still wins the typical medium instances.
-> **Everything else in this note — the translated/cross-size mode of idea 2, the VSIDS-style
-> activity part of idea 3, and the cell-selection variant of idea 4 — has not been
+> Idea 2 started as a guess-time check on an exact-position database and was then upgraded
+> with counter-based unit propagation on the learned nogoods; the propagation-level firing is
+> what actually recovers the re-treading loss (see the idea 2 section for the numbers): it
+> turns some of the worst backjumping losses into wins and consistently shrinks enumeration
+> work, though the plain chronological search still wins the typical medium instances. A
+> third upgrade added anchor classes and translatable templates (opt-in via
+> `Config::nogood_translate`), including transfer across world growth; the templates are
+> sound but currently net-negative on wall time.
+> The translated/cross-size mode of idea 2 has now also been implemented (anchored
+> templates, verified sound by the growth differential tests that caught two classification
+> bugs), though its measured payoff is negative so far — see the idea 2 section. **The
+> VSIDS-style activity part of idea 3 and the cell-selection variant of idea 4 have not been
 > implemented.** Every direction remains at the "worth trying" stage.
 
 ## Background and purpose
@@ -341,10 +346,69 @@ typical medium instances, and the factorio-rule profile of idea 1 (a DNF under t
 machinery where the default search finishes) is unchanged — that regime seems limited by the
 analysis overhead per conflict rather than by missing memory.
 
-**What remains**: the translated mode below (relative coordinates + purity filters + transfer
-through `increase_world_size`) is now the most promising direction, since the exact-position
-memory has proven its worth. The static-pattern shortcut was skipped: dynamic learning
-subsumes it.
+**Iteration 3 — anchor classes and translatable templates (the current code).** The binary
+purity filter sketched below was replaced by a finer-grained scheme: every learned nogood
+records *what its derivation relied upon* (`Anchor`), collected while the analysis walks the
+implication chain — background-forced boundary cells and baked descriptors pin the
+corresponding edge, user known cells and the diagonal band make the nogood position-fixed,
+untracked level-0 facts and rotation/diagonal symmetry pairs make it world-local, mirror pairs
+(`S0`/`S2`) allow sliding along their axis only, and nogoods relying on none of these are free.
+Deductions justified by learned clauses inherit their anchors, so reliance propagates through
+resolutions. On the spaceship benchmark the distribution is roughly 45% free, 54% edge-pinned
+and under 1% local — most knowledge is at least partially translatable, and edge pins survive
+world growth, which makes the cross-size transfer of the next step promising.
+
+Eligible nogoods are additionally stored as *templates* in frame coordinates (free axes
+relative to the 1-UIP, pinned axes absolute or edge-relative). Behind an opt-in
+`Config::nogood_translate` flag, `guess()` checks whether some translated alignment of a
+template matches the current assignment and blocks the guess accordingly. Measured results:
+correctness holds (differential enumeration matrices across symmetries, transformations,
+diagonal width, B0 rules), but **guess-time template checks do not pay on single-size
+workloads** — template hits are rare (about a thousand over millions of firings on the
+spaceship case) while the per-guess probe cost and trajectory shifts cost 20–30% (17 s vs
+13 s). This repeats the lesson of iteration 1: interception at guess time cannot see patterns
+completed by deductions; only propagation-level presence pays. The templates currently earn
+their keep only as the data structure for cross-size transfer, where no propagation machinery
+exists to attach to yet.
+
+**Iteration 4 — cross-size transfer (the current code).** The templates are now handed over
+through `increase_world_size`: free templates and single-edge-pinned templates survive a growth
+without any coordinate remapping (free coordinates are relative, left/top pins are absolute,
+right/bottom pins are stored as distances from the edge — the exit thresholds of the
+generation wrap cancel exactly under growth), while mirror pairs, both-edges pins, user known
+cells, and the diagonal band are dropped. Transferred templates are additionally *instantiated*
+as concrete entries at every alignment that fits into the new world (bounded to 20 000, smaller
+templates first): only concrete entries take part in propagation-level firing, which is the
+mechanism that pays.
+
+The growth differential tests (accumulated solution sets over repeated exhaust-and-grow
+sequences) caught **two real soundness bugs** in this design, both worth recording:
+
+1. *Both-edges pins*: a small world's conflicts often rely on *both* sides of an axis (the
+   pattern spanned the whole world). Storing only one edge ("first flag wins") produced
+   templates that looked re-anchorable but silently lost the other side's background facts in
+   a larger world. The axis modes now carry an `AbsoluteAndRight` / `AbsoluteAndBottom`
+   variant: both constraints are kept, so such templates never match in a strictly larger
+   world (and are not transferred).
+2. *Mirror-anchored templates slipped into instantiation*: the transfer filter checked the
+   anchor, but the instantiation filter checked the axis *modes*, and a mirror pair and a left
+   pin are indistinguishable at the mode level (both absolute columns). The gate must always
+   be the anchor.
+
+Measured on growth workflows (exhaust-and-grow from 4x4 and 5x5, period 1): the transferred
+templates reduce the number of search calls by roughly 20-25% compared to the plain nogood
+database, but the wall time is still about twice as high — the instantiation work at every
+growth plus the guess-time probing cost more than the pruned calls save. The correctness is
+fully verified; the economics are not there yet.
+
+**What remains**: the honest summary of idea 2's four iterations is that *persistent memory
+works and pays for itself only when it participates in propagation*. The concrete-entry
+database with counter-based firing (iteration 2) is the valuable core; translated templates
+are sound and mechanically complete but currently expensive relative to their payoff. The
+most promising refinement would be to make template *matching itself* propagation-integrated
+(a form of watched literals keyed by the literal index), which would both remove the per-guess
+probe cost and intercept deduction-completed patterns — but that is a larger redesign. The
+static-pattern shortcut was skipped: dynamic learning subsumes it.
 
 ### Normalization
 
@@ -602,7 +666,11 @@ resolution in SAT preprocessing.
    implemented as an opt-in `Config::nogood` (implicitly enables backjumping; see the idea 2
    section). Iteration 1 (guess-time checks only) recovered part of the re-treading loss;
    iteration 2 (counter-based unit propagation on the learned nogoods) is the mechanism that
-   actually pays off. Next: the translated/cross-size mode;
+   actually pays off. Iterations 3 and 4 added anchor classes, translatable templates
+   (`Config::nogood_translate`), and cross-size transfer through `increase_world_size` —
+   verified sound (the growth differential tests caught two classification bugs), but
+   net-negative on wall time so far. The next refinement would be propagation-integrated
+   template matching (watched-literal style), a larger redesign;
 6. Ideas 5 and 6 as needed; idea 7 last.
 
 ## Things to re-check before implementing

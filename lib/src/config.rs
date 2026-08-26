@@ -345,6 +345,22 @@ pub struct Config {
     #[cfg_attr(feature = "serde", serde(default))]
     pub nogood: bool,
 
+    /// Whether to generalize learned nogoods into translatable templates.
+    ///
+    /// When this is `true`, every learned nogood whose derivation did not
+    /// rely on untranslatable facts is additionally stored as a template in
+    /// coordinates relative to its anchor (edge-pinned nogoods keep their
+    /// pinned coordinates). Before guessing a state, the templates are
+    /// consulted: a forbidden pattern that matches at the guessed cell —
+    /// possibly translated along the axes its anchors allow — blocks that
+    /// guess.
+    ///
+    /// This enables [`nogood`](Config::nogood) implicitly, and inherits its
+    /// restrictions. The default is `false`.
+    #[cfg_attr(feature = "clap", arg(long, help_heading = "Experimental"))]
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub nogood_translate: bool,
+
     /// Random seed for guessing the state of an unknown cell.
     ///
     /// This is only used when [`new_state`](Config::new_state) is [`Random`](NewState::Random).
@@ -406,6 +422,7 @@ impl Config {
             lookahead: false,
             backjump: false,
             nogood: false,
+            nogood_translate: false,
             seed: None,
             known_cells: Vec::new(),
             max_population: None,
@@ -514,6 +531,18 @@ impl Config {
     #[must_use]
     pub const fn with_nogood(mut self) -> Self {
         self.nogood = true;
+        self
+    }
+
+    /// Enable translating learned nogoods as templates.
+    ///
+    /// This enables [`nogood`](Config::nogood) implicitly.
+    ///
+    /// See [`nogood_translate`](Config::nogood_translate) for more details.
+    #[inline]
+    #[must_use]
+    pub const fn with_nogood_translate(mut self) -> Self {
+        self.nogood_translate = true;
         self
     }
 
@@ -635,6 +664,12 @@ impl Config {
     pub fn check(&mut self) -> Result<(), ConfigError> {
         let rule = self.parse_rule()?;
         check_rule_symmetry(&rule, self.symmetry, self.transformation)?;
+
+        // Translated templates build on the nogood database, so they enable
+        // it implicitly.
+        if self.nogood_translate {
+            self.nogood = true;
+        }
 
         // The nogood database builds on the conflict analysis of backjumping,
         // so it is restricted to the same rules and enables it implicitly.

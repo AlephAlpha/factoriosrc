@@ -795,6 +795,19 @@ impl App {
                                     config.backjump = true;
                                 }
                                 ui.end_row();
+
+                                ui.label("translate")
+                                    .on_hover_text(ConfigHelpField::NogoodTranslate.short_help());
+                                if ui.checkbox(&mut config.nogood_translate, "").changed()
+                                    && config.nogood_translate
+                                {
+                                    // Translated templates enable the nogood
+                                    // database in `Config::check`; keep the form
+                                    // in sync.
+                                    config.nogood = true;
+                                    config.backjump = true;
+                                }
+                                ui.end_row();
                             });
 
                         ui.label(muted("Off by default; may speed up or slow down searches."));

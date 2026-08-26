@@ -1,14 +1,18 @@
 use rand::RngExt;
 
 use crate::{
-    cell::{Antecedent, LifeCell, Reason},
+    cell::{Antecedent, ClauseReason, LifeCell, Reason},
     config::NewState,
+    nogood::{Anchor, Template, XMode, YMode},
     rule::{CellState, CheckResult, Implication},
     world::{Confl, Status, World},
 };
 
 /// The maximum number of cells that a lookahead probe may set before it stops.
 const MAX_PROBE_DEDUCTIONS: usize = 256;
+
+/// The maximal number of templates examined per state in a guess-time check.
+const MAX_TEMPLATE_CANDIDATES: usize = 16;
 
 /// The result of a guess.
 enum GuessResult {
@@ -651,6 +655,15 @@ impl World {
         unsafe {
             while let Some(cell) = self.start.as_ref() {
                 if cell.state().is_none() {
+                    // If translated templates are enabled, check whether
+                    // either state of the cell completes a forbidden pattern
+                    // at some translated position.
+                    if self.config.nogood_translate
+                        && let Some(result) = self.nogood_template_check(cell)
+                    {
+                        return result;
+                    }
+
                     // If lookahead is enabled for a 2-state rule, probe both
                     // states of the cell before guessing.
                     //
@@ -820,7 +833,7 @@ impl World {
 
             self.nogood_db.note_fired();
 
-            let clause = others
+            let literals = others
                 .iter()
                 .map(|&(i, s)| unsafe {
                     let other = cells.add(i as usize);
@@ -829,17 +842,210 @@ impl World {
                 })
                 .collect::<Box<[_]>>();
 
+            // The deduction inherits what the firing nogood relied upon, so
+            // that nogoods learned through it stay sound under translation.
+            let anchor = self.nogood_db.entry_anchor(id);
+
             unsafe {
                 let target_cell = &*cells.add(target as usize);
                 self.set_cell(
                     target_cell,
                     !blocked,
                     Reason::Deduced,
-                    Some(Antecedent::Clause(clause)),
+                    Some(Antecedent::Clause(ClauseReason { literals, anchor })),
                     false,
                 );
             }
         }
+    }
+
+    /// Build a translatable template from a learned nogood.
+    ///
+    /// The literals are pairs of absolute cell indices and states. The first
+    /// literal (the 1-UIP of the conflict) is the origin of the frame: free
+    /// coordinates are stored as offsets from it, edge-pinned coordinates
+    /// keep their absolute or edge-relative values, and generations are
+    /// stored relative to the origin modulo the period.
+    fn build_template(&self, literals: &[(u32, CellState)], anchor: Anchor) -> Template {
+        let x_mode = anchor.x_mode();
+        let y_mode = anchor.y_mode();
+        let w = self.config.width as i32;
+        let h = self.config.height as i32;
+        let p = self.config.period as i32;
+
+        let (ox, oy, ot) = self.cell_coord(literals[0].0);
+
+        let lits = literals
+            .iter()
+            .enumerate()
+            .map(|(j, &(idx, state))| {
+                let (x, y, t) = self.cell_coord(idx);
+                // `AbsoluteAndRight` and `AbsoluteAndBottom` behave like the
+                // plain absolute modes when matching; their extra constraint
+                // only excludes them from being transferred to a larger
+                // world.
+                let fx = match x_mode {
+                    XMode::Free => x - ox,
+                    XMode::Absolute | XMode::AbsoluteAndRight => x,
+                    XMode::RightEdge => (w - 1) - x,
+                };
+                let fy = match y_mode {
+                    YMode::Free => y - oy,
+                    YMode::Absolute | YMode::AbsoluteAndBottom => y,
+                    YMode::BottomEdge => (h - 1) - y,
+                };
+                let ft = if j == 0 {
+                    0
+                } else {
+                    (t - ot).rem_euclid(p) as u32
+                };
+                (fx, fy, ft, state)
+            })
+            .collect();
+
+        Template {
+            anchor,
+            x_mode,
+            y_mode,
+            lits,
+        }
+    }
+
+    /// Check the translated templates for an unknown cell before guessing it.
+    ///
+    /// A template matches when some translation of it — allowed by its axis
+    /// modes — places one literal on the queried cell with the queried state
+    /// and every other literal on a cell that currently holds its recorded
+    /// state. A match means that no solution extends the current assignment,
+    /// so exactly one blocked state forces the other one, and two blocked
+    /// states make the search backtrack. Like the flip of a guess by
+    /// [`backtrack`](World::backtrack), a forced assignment occupies a
+    /// decision level of its own.
+    ///
+    /// Return [`None`] if no state is blocked.
+    ///
+    /// # Safety
+    ///
+    /// The cell must be in the same world as `self`, and its state must be
+    /// unknown. Otherwise the behavior is undefined.
+    unsafe fn nogood_template_check(&mut self, cell: &LifeCell) -> Option<GuessResult> {
+        debug_assert!(self.config.nogood);
+        debug_assert!(self.config.nogood_translate);
+
+        let (cx, cy, ct) = self.cell_coord(unsafe { self.cell_index(cell) } as u32);
+
+        let dead_blocked = self.template_blocks(cx, cy, ct, CellState::Dead);
+        let alive_blocked = self.template_blocks(cx, cy, ct, CellState::Alive);
+
+        match (dead_blocked, alive_blocked) {
+            (false, false) => None,
+
+            (true, true) => {
+                self.nogood_db.note_template_hit();
+                Some(GuessResult::Conflict)
+            }
+
+            (dead_blocked, _) => {
+                self.nogood_db.note_template_hit();
+                let state = if dead_blocked {
+                    CellState::Alive
+                } else {
+                    CellState::Dead
+                };
+                unsafe {
+                    self.set_cell(cell, state, Reason::Deduced, None, true);
+                }
+                self.start = cell.next;
+                Some(GuessResult::Guessed)
+            }
+        }
+    }
+
+    /// Whether assigning `state` to the cell at `(cx, cy, ct)` would complete
+    /// some translated template; see
+    /// [`nogood_template_check`](World::nogood_template_check).
+    ///
+    /// Only the first [`MAX_QUERY_CANDIDATES`] templates of the bucket are
+    /// examined.
+    fn template_blocks(&self, cx: i32, cy: i32, ct: i32, state: CellState) -> bool {
+        let w = self.config.width as i32;
+        let h = self.config.height as i32;
+        let p = self.config.period as i32;
+
+        let ids = self.nogood_db.template_ids_with(state);
+
+        for &id in ids.iter().take(MAX_TEMPLATE_CANDIDATES) {
+            let template = self.nogood_db.template(id);
+
+            'literals: for (li, &(fx, fy, ft, lit_state)) in template.lits.iter().enumerate() {
+                // Try to align this literal with the queried cell. Literal
+                // states other than the queried one cannot sit on the cell.
+                if lit_state != state {
+                    continue;
+                }
+
+                let bx = match template.x_mode {
+                    XMode::Free => cx - fx,
+                    XMode::Absolute | XMode::AbsoluteAndRight => {
+                        if cx != fx {
+                            continue;
+                        }
+                        0
+                    }
+                    XMode::RightEdge => {
+                        if cx != (w - 1) - fx {
+                            continue;
+                        }
+                        0
+                    }
+                };
+                let by = match template.y_mode {
+                    YMode::Free => cy - fy,
+                    YMode::Absolute | YMode::AbsoluteAndBottom => {
+                        if cy != fy {
+                            continue;
+                        }
+                        0
+                    }
+                    YMode::BottomEdge => {
+                        if cy != (h - 1) - fy {
+                            continue;
+                        }
+                        0
+                    }
+                };
+                let bt = (ct - ft as i32).rem_euclid(p);
+
+                // Verify that every other literal holds at its resolved
+                // position. Cells outside the world read as the background
+                // state, which is sound: a translated pattern may hang over
+                // the boundary, and the background values are facts.
+                for (lj, &(fx2, fy2, ft2, ls2)) in template.lits.iter().enumerate() {
+                    if lj == li {
+                        continue;
+                    }
+                    let ax = match template.x_mode {
+                        XMode::Free => bx + fx2,
+                        XMode::Absolute | XMode::AbsoluteAndRight => fx2,
+                        XMode::RightEdge => (w - 1) - fx2,
+                    };
+                    let ay = match template.y_mode {
+                        YMode::Free => by + fy2,
+                        YMode::Absolute | YMode::AbsoluteAndBottom => fy2,
+                        YMode::BottomEdge => (h - 1) - fy2,
+                    };
+                    let at = (bt + ft2 as i32).rem_euclid(p);
+
+                    if self.get_cell_state((ax, ay, at)) != Some(ls2) {
+                        continue 'literals;
+                    }
+                }
+
+                return true;
+            }
+        }
+
+        false
     }
 
     /// One step of the search.
@@ -895,6 +1101,9 @@ impl World {
     fn analyze(&mut self, confl: Confl) -> Status {
         debug_assert!(self.config.backjump);
 
+        // Reset the anchor accumulator for this analysis.
+        self.pending_anchor = Anchor::default();
+
         let current = self.current_level;
 
         // A conflict before the first guess can never be resolved by
@@ -936,6 +1145,19 @@ impl World {
                         self.seen_stamp[index] = self.analysis_stamp;
                         clause.push(lit);
                         max_level = max_level.max(level);
+                    } else if level == 0 {
+                        // A level-0 literal was relied upon but excluded from
+                        // the clause. Record what it stands for: either it is
+                        // a known cell with a classifiable reason, or it is
+                        // a deduction whose own chain is not part of this
+                        // analysis.
+                        match (*lit).reason.get() {
+                            Some(Reason::Known) => {
+                                let extra = self.classify_known_cell(index as u32);
+                                self.pending_anchor.merge(&extra);
+                            }
+                            _ => self.pending_anchor.local = true,
+                        }
                     }
                 }
             }};
@@ -944,12 +1166,19 @@ impl World {
         // The seed: the literals that directly participate in the conflict.
         match confl {
             Confl::Rule(source) => unsafe {
+                let index = self.cell_index(source) as u32;
+                let extra = self.classify_source_cell(index);
+                self.pending_anchor.merge(&extra);
                 self.descriptor_literals(&*source, std::ptr::null(), usize::MAX, &mut literals);
             },
-            Confl::Symmetry(cell, symmetry) => {
+            Confl::Symmetry(cell, symmetry) => unsafe {
+                let a = self.cell_coord(self.cell_index(cell) as u32);
+                let b = self.cell_coord(self.cell_index(symmetry) as u32);
+                let extra = self.classify_symmetry_pair((a.0, a.1), (b.0, b.1));
+                self.pending_anchor.merge(&extra);
                 literals.push(cell);
                 literals.push(symmetry);
-            }
+            },
             Confl::Nogood(id) => unsafe {
                 // Every cell of the nogood holds its recorded state; those
                 // assignments are exactly what makes the assignment doomed.
@@ -1005,7 +1234,10 @@ impl World {
             seen_count -= 1;
 
             let antecedent = self.trail_meta[i].antecedent.clone();
-            let ok = unsafe { self.reason_literals(lit, antecedent, i, &mut literals) };
+            let mut anchor = self.pending_anchor;
+            let ok =
+                unsafe { self.reason_literals(lit, antecedent, i, &mut literals, &mut anchor) };
+            self.pending_anchor = anchor;
             if !ok {
                 // The reason of the literal is stale (a learned clause whose
                 // cells have been set again since), so the resolution cannot
@@ -1113,17 +1345,30 @@ impl World {
             // field of `self`) is borrowed mutably.
             let cells = self.cells_ptr as *const LifeCell;
             let mut state_of = |i: u32| unsafe { (*cells.add(i as usize)).state() };
-            self.nogood_db
-                .learn(literals.into_boxed_slice(), &mut state_of);
+            let anchor = self.pending_anchor;
+
+            // Learn the entry first; a template is only worth storing when
+            // the entry is new, since duplicates carry no new knowledge.
+            let boxed = literals.clone().into_boxed_slice();
+            let stored = self.nogood_db.learn(boxed, anchor, &mut state_of);
+
+            // Store a translatable template if the anchors allow it.
+            if stored && self.config.nogood_translate && anchor.template_eligible() {
+                let template = self.build_template(&literals, anchor);
+                self.nogood_db.add_template(template);
+            }
         }
 
         // Record the learned clause: each literal with its current stack
         // position. The clause is valid while the cells stay at these
-        // positions, i.e. until the cells are set again.
-        let clause = clause
+        // positions, i.e. until the cells are set again. The clause carries
+        // the anchors accumulated during this analysis, so that nogoods
+        // learned through resolutions of this flip inherit them.
+        let literals = clause
             .into_iter()
             .map(|cell| unsafe { (cell, self.cell_pos[self.cell_index(cell)]) })
             .collect::<Box<[_]>>();
+        let anchor = self.pending_anchor;
 
         // Re-set the 1-UIP cell to the opposite state, justified by the
         // learned clause.
@@ -1133,7 +1378,7 @@ impl World {
                 uip,
                 !state,
                 Reason::Deduced,
-                Some(Antecedent::Clause(clause)),
+                Some(Antecedent::Clause(ClauseReason { literals, anchor })),
                 false,
             );
         }
@@ -1227,36 +1472,38 @@ impl World {
         antecedent: Option<Antecedent>,
         position: usize,
         literals: &mut Vec<*const LifeCell>,
+        anchor: &mut Anchor,
     ) -> bool {
         literals.clear();
         match antecedent {
             Some(Antecedent::Descriptor(source)) => unsafe {
+                let index = self.cell_index(source) as u32;
+                anchor.merge(&self.classify_source_cell(index));
                 self.descriptor_literals(&*source, cell, position, literals);
                 true
             },
-            Some(Antecedent::Symmetry(source)) => {
+            Some(Antecedent::Symmetry(source)) => unsafe {
                 if source != cell {
-                    unsafe {
-                        if (*source).state().is_some() {
-                            literals.push(source);
-                        }
+                    let a = self.cell_coord(self.cell_index(cell) as u32);
+                    let b = self.cell_coord(self.cell_index(source) as u32);
+                    anchor.merge(&self.classify_symmetry_pair((a.0, a.1), (b.0, b.1)));
+                    if (*source).state().is_some() {
+                        literals.push(source);
                     }
                 }
                 true
-            }
-            Some(Antecedent::Clause(clause)) => {
-                for &(cell, pos) in clause.iter() {
-                    unsafe {
-                        if (*cell).state().is_none() || self.cell_pos[self.cell_index(cell)] != pos
-                        {
-                            // The clause is stale.
-                            return false;
-                        }
-                        literals.push(cell);
+            },
+            Some(Antecedent::Clause(reason)) => unsafe {
+                anchor.merge(&reason.anchor);
+                for &(cell, pos) in reason.literals.iter() {
+                    if (*cell).state().is_none() || self.cell_pos[self.cell_index(cell)] != pos {
+                        // The clause is stale.
+                        return false;
                     }
+                    literals.push(cell);
                 }
                 true
-            }
+            },
             None => true,
         }
     }

@@ -4,7 +4,7 @@ use crate::{
     cell::{Antecedent, LifeCell, Reason},
     config::{Config, KnownCell, SearchOrder},
     error::ConfigError,
-    nogood::NogoodDb,
+    nogood::{Anchor, NogoodDb, XMode, YMode},
     rule::{CellState, RuleTable},
 };
 use ca_symmetry::{Symmetry, Transformation};
@@ -274,6 +274,13 @@ pub struct World {
     /// `check_affected`, which reports it as [`Confl::Nogood`].
     pub(crate) pending_nogood_confl: Option<u32>,
 
+    /// The anchors accumulated by the conflict analysis currently running.
+    ///
+    /// This records what the derivation of a learned clause relied upon;
+    /// see [`Anchor`]. It is reset at the start of each analysis and stored
+    /// with the learned nogood.
+    pub(crate) pending_anchor: Anchor,
+
     /// The search status.
     pub(crate) status: Status,
 }
@@ -365,6 +372,7 @@ impl World {
             },
             nogood_scratch: Vec::new(),
             pending_nogood_confl: None,
+            pending_anchor: Anchor::default(),
             status: Status::NotStarted,
         };
         world.init(&rule_symmetry)?;
@@ -910,6 +918,174 @@ impl World {
         unsafe { (self.cells_ptr as *const LifeCell).add(index as usize) }
     }
 
+    /// The coordinates of a cell index; see [`cell_index`](World::cell_index).
+    ///
+    /// This is the inverse of the index computation in
+    /// [`get_cell_by_coord_ptr`](World::get_cell_by_coord_ptr).
+    pub(crate) const fn cell_coord(&self, index: u32) -> Coord {
+        let w = self.config.width as i32;
+        let p = self.config.period as i32;
+        let r = self.rule.radius as i32;
+
+        let t = index as i32 % p;
+        let rest = index as i32 / p;
+        let xr = rest % (w + 2 * r);
+        let yr = rest / (w + 2 * r);
+
+        (xr - r, yr - r, t)
+    }
+
+    /// Which absolute references does a known cell rely on?
+    ///
+    /// A cell set with [`Reason::Known`] was forced into the background state
+    /// for one of four reasons, each with its own consequences for translated
+    /// reuse: it lies outside the search range (an edge pin), inside the
+    /// diagonal band (not translatable), among the user known cells (absolute
+    /// position), or its predecessor left the padded world after
+    /// canonicalization (the pin of the side through which the predecessor
+    /// exited).
+    pub(crate) fn classify_known_cell(&self, index: u32) -> Anchor {
+        let mut anchor = Anchor::default();
+        let (x, y, t) = self.cell_coord(index);
+        let (w, h) = (self.config.width as i32, self.config.height as i32);
+
+        // The diagonal band is checked first: cells in the band are forced
+        // into the background even when they are inside the rectangle.
+        if self
+            .config
+            .diagonal_width
+            .is_some_and(|d| (x - y).abs() >= d as i32)
+        {
+            anchor.band = true;
+            return anchor;
+        }
+
+        let mut edge = false;
+        if x < 0 {
+            anchor.left = true;
+            edge = true;
+        } else if x >= w {
+            anchor.right = true;
+            edge = true;
+        }
+        if y < 0 {
+            anchor.top = true;
+            edge = true;
+        } else if y >= h {
+            anchor.bottom = true;
+            edge = true;
+        }
+        if edge {
+            return anchor;
+        }
+
+        if self
+            .config
+            .known_cells
+            .iter()
+            .any(|c| c.x as i32 == x && c.y as i32 == y && c.t as i32 == t)
+        {
+            anchor.known = true;
+            return anchor;
+        }
+
+        // The only remaining reason for an interior known cell is a null
+        // predecessor: canonicalizing `(x, y, t - 1)` left the padded world.
+        // Pin the side through which the predecessor exited.
+        let (px, py, _) = self.canonicalize_coord((x, y, t - 1));
+        let r = self.rule.radius as i32;
+        if px < -r {
+            anchor.left = true;
+        } else if px >= w + r {
+            anchor.right = true;
+        } else if py < -r {
+            anchor.top = true;
+        } else if py >= h + r {
+            anchor.bottom = true;
+        } else {
+            // Untracked reason; do not translate this nogood.
+            anchor.local = true;
+        }
+        anchor
+    }
+
+    /// Which absolute references does a descriptor-based deduction or
+    /// conflict on this cell rely on?
+    ///
+    /// If the cell is outside the search range, its neighborhood descriptors
+    /// have background-baked neighbors, so the corresponding edges are
+    /// pinned. Inside the rectangle, a null successor bakes the background
+    /// into the successor state instead; pin it to the side through which
+    /// the successor left the world. Otherwise nothing is baked into the
+    /// descriptor, and the deduction only relies on rule constraints.
+    pub(crate) fn classify_source_cell(&self, index: u32) -> Anchor {
+        let mut anchor = Anchor::default();
+        let (x, y, t) = self.cell_coord(index);
+        let (w, h) = (self.config.width as i32, self.config.height as i32);
+        let r = self.rule.radius as i32;
+
+        if !(0..w).contains(&x) || !(0..h).contains(&y) {
+            if x < 0 {
+                anchor.left = true;
+            } else if x >= w {
+                anchor.right = true;
+            }
+            if y < 0 {
+                anchor.top = true;
+            } else if y >= h {
+                anchor.bottom = true;
+            }
+            return anchor;
+        }
+
+        let successor_coord = self.canonicalize_coord((x, y, t + 1));
+        if !self.get_cell_by_coord_ptr(successor_coord).is_null() {
+            return anchor;
+        }
+
+        let (sx, sy, _) = successor_coord;
+        if sx < -r {
+            anchor.left = true;
+        } else if sx >= w + r {
+            anchor.right = true;
+        } else if sy < -r {
+            anchor.top = true;
+        } else if sy >= h + r {
+            anchor.bottom = true;
+        } else {
+            anchor.local = true;
+        }
+        anchor
+    }
+
+    /// Which absolute references does a symmetry pair rely on?
+    ///
+    /// A same-row mirror pair (the `S2` reflection) allows the rows to slide
+    /// but pins the columns to the mirror relation; a same-column mirror pair
+    /// (`S0`) allows the columns to slide. Rotations, diagonal reflections,
+    /// and any unrecognized pairing are treated as untracked local facts.
+    pub(crate) fn classify_symmetry_pair(&self, a: (i32, i32), b: (i32, i32)) -> Anchor {
+        let mut anchor = Anchor::default();
+        let (w, h) = (self.config.width as i32, self.config.height as i32);
+
+        for transformation in self.config.symmetry.transformations() {
+            let (tx, ty) = transformation.apply_with_size(a.0, a.1, w, h);
+            if (tx, ty) == b {
+                match transformation {
+                    Transformation::S2 => anchor.mirror_x = true,
+                    Transformation::S0 => anchor.mirror_y = true,
+                    _ => anchor.local = true,
+                }
+                return anchor;
+            }
+        }
+
+        // No element of the configured symmetry maps `a` onto `b`; treat it
+        // as untracked.
+        anchor.local = true;
+        anchor
+    }
+
     /// Get a cell by its coordinates.
     ///
     /// Return [`None`] if the cell is outside the world.
@@ -1135,6 +1311,117 @@ impl World {
         if self.config.nogood && !self.in_probe {
             let index = unsafe { self.cell_index(cell) } as u32;
             self.nogood_db.on_unset(index, state);
+        }
+    }
+
+    /// Instantiate translatable templates as concrete entries at every
+    /// alignment that fits into the world.
+    ///
+    /// A transferred template alone cannot fire — only concrete entries take
+    /// part in propagation-level firing — so a freshly grown world materializes
+    /// its inherited templates. Alignments are clamped to the padded world,
+    /// and the total number of instantiations is bounded; smaller templates
+    /// are preferred because they are the ones that match often.
+    fn instantiate_templates(&mut self, templates: &[crate::nogood::Template]) {
+        const MAX_INSTANTIATIONS: usize = 20_000;
+
+        let w = self.config.width as i32;
+        let h = self.config.height as i32;
+        let p = self.config.period as i32;
+        let r = self.rule.radius as i32;
+
+        // Read the cell states through a copy of the cells pointer, so that
+        // the callback does not borrow `self` while the database (a field of
+        // `self`) is borrowed mutably.
+        let cells = self.cells_ptr as *const LifeCell;
+        let mut state_of = |i: u32| unsafe { (*cells.add(i as usize)).state() };
+
+        let mut added = 0usize;
+
+        // The gate must be the *anchor*: an absolute axis mode can come from
+        // a mirror pair just as well as from an edge pin, and only the anchor
+        // knows whether the derivation survives a change of size.
+        for template in templates.iter().filter(|t| t.anchor.transferable()) {
+            if !template.anchor.template_eligible() {
+                continue;
+            }
+            if added >= MAX_INSTANTIATIONS {
+                break;
+            }
+
+            // The range of bases for which every literal stays inside the
+            // padded world. Absolute modes pin the base implicitly.
+            let (fx_min, fx_max) = template
+                .lits
+                .iter()
+                .map(|l| l.0)
+                .fold((i32::MAX, i32::MIN), |(a, b), x| (a.min(x), b.max(x)));
+            let (fy_min, fy_max) = template
+                .lits
+                .iter()
+                .map(|l| l.1)
+                .fold((i32::MAX, i32::MIN), |(a, b), y| (a.min(y), b.max(y)));
+
+            let (bx_range, by_range): (Vec<i32>, Vec<i32>) =
+                match (template.x_mode, template.y_mode) {
+                    (XMode::Free, YMode::Free) => (
+                        (-r - fx_min..w + r - fx_max).collect(),
+                        (-r - fy_min..h + r - fy_max).collect(),
+                    ),
+                    (XMode::Free, _) => ((-r - fx_min..w + r - fx_max).collect(), vec![0]),
+                    (_, YMode::Free) => (vec![0], (-r - fy_min..h + r - fy_max).collect()),
+                    _ => (vec![0], vec![0]),
+                };
+
+            for &bx in &bx_range {
+                for &by in &by_range {
+                    for bt in 0..p {
+                        let mut literals = Vec::with_capacity(template.lits.len());
+                        let mut ok = true;
+                        for &(fx, fy, ft, state) in template.lits.iter() {
+                            let ax = match template.x_mode {
+                                XMode::Free => bx + fx,
+                                XMode::Absolute | XMode::AbsoluteAndRight => fx,
+                                XMode::RightEdge => (w - 1) - fx,
+                            };
+                            let ay = match template.y_mode {
+                                YMode::Free => by + fy,
+                                YMode::Absolute | YMode::AbsoluteAndBottom => fy,
+                                YMode::BottomEdge => (h - 1) - fy,
+                            };
+                            let at = (bt as u32 + ft) % p as u32;
+
+                            if !(-r..w + r).contains(&ax) || !(-r..h + r).contains(&ay) {
+                                ok = false;
+                                break;
+                            }
+
+                            let index = (at as i32) + (ax + r) * p + (ay + r) * p * (w + 2 * r);
+                            literals.push((index as u32, state));
+                        }
+
+                        if ok {
+                            let anchor = template.anchor;
+                            if self.nogood_db.learn(
+                                literals.into_boxed_slice(),
+                                anchor,
+                                &mut state_of,
+                            ) {
+                                added += 1;
+                                if added >= MAX_INSTANTIATIONS {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if added >= MAX_INSTANTIATIONS {
+                        break;
+                    }
+                }
+                if added >= MAX_INSTANTIATIONS {
+                    break;
+                }
+            }
         }
     }
 
@@ -1399,9 +1686,12 @@ impl World {
     /// The world will be replaced by a new world with the new size. The current search status
     /// will be lost.
     ///
-    /// The learned nogoods are lost as well: they are stored by absolute cell
-    /// indices and may rely on facts specific to the old size (e.g. the
-    /// background state forced on the cells outside the search range).
+    /// The learned nogoods are lost: they are stored by absolute cell indices
+    /// and may rely on facts specific to the old size (e.g. the background
+    /// state forced on the cells outside the search range). Translatable
+    /// templates ([`Config::nogood_translate`](crate::Config::nogood_translate))
+    /// survive when their anchors allow it: free and edge-pinned templates
+    /// keep their meaning in the larger world.
     pub fn increase_world_size(&mut self) {
         let mut config = self.config.clone();
         let w = config.width;
@@ -1418,7 +1708,45 @@ impl World {
             config.height = h + 1;
         }
 
-        *self = Self::new(config).unwrap();
+        // Hand the translatable templates over to the new world. Templates
+        // whose derivation relied on user known cells, the diagonal band,
+        // untracked local facts, or mirror pairs are dropped: those
+        // references do not survive a change of the size. Edge pins do —
+        // free coordinates are relative, left/top pins are absolute, and
+        // right/bottom pins are distances from the edge — so they need no
+        // remapping at all.
+        //
+        // The concrete entries are not transferred: their counters describe
+        // the old world, and their absolute indices are meaningless in the
+        // new one.
+        let templates = if self.config.nogood_translate {
+            Some(self.nogood_db.take_templates())
+        } else {
+            None
+        };
+
+        let mut world = Self::new(config).unwrap();
+
+        if let Some(templates) = templates {
+            // Transfer the templates themselves (so that later growths can
+            // transfer them again), and additionally instantiate them as
+            // concrete entries at every alignment that fits into the new
+            // world: only concrete entries participate in propagation-level
+            // firing, which is what makes the learned knowledge pay off.
+            //
+            // The instantiations inherit the anchors of their templates and
+            // are bounded in number.
+            for template in templates
+                .iter()
+                .filter(|t| t.anchor.transferable())
+                .filter(|t| t.x_mode.transferable() && t.y_mode.transferable())
+            {
+                world.nogood_db.add_template(template.clone());
+            }
+            world.instantiate_templates(&templates);
+        }
+
+        *self = world;
     }
 }
 
@@ -2748,6 +3076,203 @@ mod test {
         let stats = world.nogood_stats().expect("nogood is enabled");
         assert!(stats.learned > 0, "no nogoods were learned");
         assert!(stats.fired > 0, "no nogood ever fired during propagation");
+    }
+
+    #[test]
+    fn test_nogood_translate_implies_nogood_and_backjump() {
+        let mut config = Config::new("B3/S23", 3, 3, 2).with_nogood_translate();
+        config.check().unwrap();
+        assert!(config.nogood);
+        assert!(config.backjump);
+
+        // Generations rules are rejected through the inherited restriction.
+        let mut config = Config::new("3457/357/5", 3, 3, 1).with_nogood_translate();
+        assert!(matches!(
+            config.check(),
+            Err(ConfigError::NogoodUnsupported)
+        ));
+    }
+
+    #[test]
+    fn test_nogood_translate_finds_solution_and_templates() {
+        // Enumerate all solutions of a small world: the backtracking phases
+        // learn plenty of entries, and the class distribution of this
+        // configuration has both free and edge-pinned nogoods, so
+        // translatable templates must be among them.
+        let config = Config::new("B3/S23", 4, 4, 2).with_nogood_translate();
+        let mut world = World::new(config).unwrap();
+        while world.search(None) == Status::Solved {}
+        assert_eq!(world.status(), Status::NoSolution);
+
+        let stats = world.nogood_stats().expect("nogood is enabled");
+        assert!(stats.learned > 0);
+        assert!(stats.templates > 0, "no translatable templates were stored");
+    }
+
+    #[test]
+    fn test_nogood_translate_enumerates_same_solutions() {
+        // Translated templates change the traversal order, but not the set
+        // of solutions. Small worlds maximize the fraction of edge-pinned
+        // nogoods whose translations are restricted.
+        for config in [
+            Config::new("B3/S23", 3, 3, 2),
+            Config::new("B3/S23", 4, 4, 2),
+            Config::new("B3/S23", 5, 5, 2),
+            Config::new("B2a/S12", 3, 3, 1),
+            Config::new("B2o/S23oH", 4, 4, 2),
+            Config::new("B026/S1", 3, 3, 2),
+            Config::new("B3678/S34678", 4, 4, 1),
+            Config::new("B3678/S34678", 5, 5, 1),
+            Config::new("B3/S23", 6, 6, 1).with_symmetry(Symmetry::D2H),
+            Config::new("B3/S23", 6, 6, 1).with_symmetry(Symmetry::D2V),
+            Config::new("B3/S23", 5, 5, 1).with_transformation(Transformation::S2),
+            Config::new("B3/S23", 5, 5, 1).with_transformation(Transformation::R1),
+            Config::new("B3/S23", 5, 5, 1).with_diagonal_width(3),
+            Config::new("R3,C2,S2,B3,N+", 3, 3, 1)
+                .with_symmetry(Symmetry::D2H)
+                .with_transformation(Transformation::S0),
+        ] {
+            assert_eq!(
+                solution_set(&config),
+                solution_set(&config.clone().with_nogood_translate()),
+                "translated templates change the solution set for {config:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_nogood_translate_with_features() {
+        // All experimental features together must still enumerate the same
+        // solutions as the default search.
+        for config in [
+            Config::new("B3/S23", 4, 4, 2)
+                .with_lookahead()
+                .with_phase_saving()
+                .with_nogood_translate(),
+            Config::new("B3/S23", 4, 4, 2)
+                .with_backjump()
+                .with_new_state(NewState::Alive)
+                .with_nogood_translate(),
+        ] {
+            assert_eq!(
+                solution_set(&Config::new("B3/S23", 4, 4, 2)),
+                solution_set(&config),
+                "the combination changes the solution set for {config:?}"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn test_nogood_translate_round_trip_through_serde() {
+        // The option survives save/load; the learned knowledge (entries and
+        // templates alike) does not, which only affects performance.
+        let mut world = World::new(Config::new("B3/S23", 3, 3, 2).with_nogood_translate()).unwrap();
+        world.search(Some(1000));
+
+        let mut world2 = World::try_from(world.to_serde()).unwrap();
+        assert!(world2.config().nogood_translate);
+
+        world.search(None);
+        world2.search(None);
+        assert_eq!(world.status(), world2.status());
+    }
+
+    /// The set of solutions found while repeatedly exhausting the search and
+    /// growing the world.
+    fn grown_solution_set(config: &Config, growths: usize) -> std::collections::BTreeSet<String> {
+        let mut world = World::new(config.clone()).unwrap();
+        let mut set = std::collections::BTreeSet::new();
+        for grown in 0..=growths {
+            let _ = grown;
+            while world.search(None) == Status::Solved {
+                set.insert(world.rle(0, true));
+            }
+            if grown < growths {
+                world.increase_world_size();
+            }
+        }
+        set
+    }
+
+    #[test]
+    fn test_nogood_translate_templates_survive_growth() {
+        let config = Config::new("B3/S23", 4, 4, 2).with_nogood_translate();
+        let mut world = World::new(config).unwrap();
+        while world.search(None) == Status::Solved {}
+
+        let learned_templates = world.nogood_stats().unwrap().templates;
+        assert!(learned_templates > 0);
+
+        world.increase_world_size();
+
+        // Free and edge-pinned templates carry over to the larger world.
+        let stats = world.nogood_stats().expect("nogood is enabled");
+        assert!(stats.templates > 0, "no templates survived the growth");
+    }
+
+    #[test]
+    fn test_nogood_translate_growth_enumerates_same_solutions() {
+        // The growth workflow is where translated templates are supposed to
+        // pay off; whatever they prune, the accumulated set of solutions
+        // across all sizes must be exactly the baseline's.
+        for config in [
+            Config::new("B3/S23", 3, 3, 2),
+            Config::new("B3/S23", 4, 4, 1),
+            Config::new("B026/S1", 3, 3, 2),
+            Config::new("B3678/S34678", 3, 3, 1),
+            Config::new("B3/S23", 5, 5, 1).with_symmetry(Symmetry::D2H),
+            Config::new("B3/S23", 5, 5, 1).with_diagonal_width(3),
+            Config::new("B2o/S23oH", 4, 4, 1),
+            Config::new("R3,C2,S2,B3,N+", 3, 3, 1).with_transformation(Transformation::S0),
+        ] {
+            // One deeper sequence for extra coverage.
+            let depth = if config.width == 3 && config.period == 2 {
+                3
+            } else {
+                2
+            };
+            assert_eq!(
+                grown_solution_set(&config, depth),
+                grown_solution_set(&config.clone().with_nogood_translate(), depth),
+                "translated templates change the grown solution set for {config:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_miri_nogood_translate() {
+        // Exercise the translated-template path under Miri: learning with
+        // anchors, storing templates, and blocking translated matches.
+        let config = Config::new("B3/S23", 4, 4, 2).with_nogood_translate();
+        let mut world = World::new(config).unwrap();
+        while world.search(None) == Status::Solved {}
+        assert_eq!(world.status(), Status::NoSolution);
+
+        let stats = world.nogood_stats().expect("nogood is enabled");
+        assert!(stats.learned > 0);
+        assert!(stats.templates > 0);
+
+        // Grow the world and keep searching with the transferred templates.
+        world.increase_world_size();
+        world.search(Some(2000));
+        assert_eq!(world.status(), Status::Solved);
+    }
+
+    #[test]
+    fn test_nogood_anchor_stats_partition_the_learned_entries() {
+        // The class counters must partition the learned entries, and a small
+        // world — where many derivations touch the boundary or the symmetry
+        // — must produce nogoods in more than one class.
+        let mut world = World::new(Config::new("B3/S23", 4, 4, 2).with_nogood()).unwrap();
+        while world.search(None) == Status::Solved {}
+
+        let stats = world.nogood_stats().expect("nogood is enabled");
+        assert!(stats.learned > 0);
+        assert_eq!(
+            stats.free + stats.edge_pinned + stats.axis_pinned + stats.local,
+            stats.learned
+        );
     }
 
     #[test]
