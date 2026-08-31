@@ -21,6 +21,9 @@
 - Changes to `Config`, `World`, or public enums need to preserve the `cfg(feature = "...")` derives and serde renames in `lib/src/config.rs`, `lib/src/world.rs`, and `lib/src/symmetry.rs`.
 - `factoriosrc-lib` and `ca-rules2` both enable `#![warn(missing_docs)]`; new public API there needs docs or `cargo clippy -- -D warnings` will fail.
 
+## Docs
+- `docs/sat-ideas.md` is a living experiment log for SAT-solver-inspired search experiments (opt-in flags: `--backjump`, `--nogood`, `--nogood-translate`, `--phase-saving`, `--lookahead`). When changing these flags or their rule support, update its "Status at a glance" table and the idea's Status subsection in the same change. Follow its "Maintaining this document" section; record benchmark numbers only in its consolidated benchmark tables.
+
 ## Runtime Quirks
 - `factoriosrc-tui` auto-falls back to non-TUI mode when stdout is not a TTY (`tui/src/main.rs`). In agent/CI shells, `cargo run --bin factoriosrc-tui ...` behaves like `--no-tui`.
 - Interactive TUI mode defaults `step` to `100_000` in `tui/src/app.rs`; non-TUI mode only gets periodic output if you pass `--step`.

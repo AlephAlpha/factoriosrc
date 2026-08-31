@@ -231,9 +231,6 @@ pub(crate) struct Template {
     /// What the original derivation relied upon; inherited by everything
     /// learned through matches of this template. This decides whether the
     /// template survives a change of the world size.
-    /// What the original derivation relied upon; decides whether the
-    /// template survives a change of the world size.
-    #[allow(dead_code)] // read by the cross-size transfer (a later step)
     pub(crate) anchor: Anchor,
 
     /// How the horizontal coordinates are interpreted.
@@ -286,9 +283,6 @@ pub struct NogoodStats {
 
     /// The number of translatable templates stored.
     pub templates: u64,
-
-    /// The number of times a guess was blocked by a translated template.
-    pub template_hits: u64,
 }
 
 /// The result of a firing: the index of the cell to force, the state it is
@@ -720,7 +714,9 @@ impl NogoodDb {
     /// already stored.
     ///
     /// Only the templates sharing the state of the first literal are
-    /// compared.
+    /// compared, and only the first [`MAX_QUERY_CANDIDATES`] of them: a
+    /// duplicate that slips through the bound only wastes a little memory,
+    /// while an unbounded scan would dominate the learning cost.
     fn contains_identical_template(&self, template: &Template) -> bool {
         let Some(&(_, _, _, first_state)) = template.lits.first() else {
             return false;
@@ -730,7 +726,7 @@ impl NogoodDb {
             return false;
         };
 
-        ids.iter().any(|&id| {
+        ids.iter().take(MAX_QUERY_CANDIDATES).any(|&id| {
             self.templates.get(id as usize).is_some_and(|stored| {
                 stored.x_mode == template.x_mode
                     && stored.y_mode == template.y_mode
@@ -784,25 +780,6 @@ impl NogoodDb {
                 }
             }
         }
-    }
-
-    /// The template with the given id.
-    #[inline]
-    pub(crate) fn template(&self, id: u32) -> &Template {
-        &self.templates[id as usize]
-    }
-
-    /// The ids of the templates that use the given state.
-    #[inline]
-    pub(crate) fn template_ids_with(&self, state: CellState) -> &[u32] {
-        self.template_index
-            .get(&state)
-            .map_or(&[], |ids| ids.as_slice())
-    }
-
-    /// Record that a guess was blocked by a translated template.
-    pub(crate) const fn note_template_hit(&mut self) {
-        self.stats.template_hits += 1;
     }
 
     /// Take the translatable templates out of the database, leaving it

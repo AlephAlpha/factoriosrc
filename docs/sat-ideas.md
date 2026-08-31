@@ -1,62 +1,77 @@
 # SAT Solver Techniques for factoriosrc
 
-> **Status**: This note is a collection of ideas and a preliminary analysis. The phase saving
-> part of idea 3, idea 4 (lookahead, polarity selection only), the idea 1 foundation (recording
-> the antecedents of deductions), the **full idea 1 (1-UIP conflict analysis and
-> non-chronological backtracking)**, and **idea 2 up to its exact-position mode with
-> propagation-level firing** have been implemented as opt-in experiments (see their sections
-> below); the full idea 1 is correct (verified by a 16,200-configuration differential matrix)
-> but **a loss on typical searches without idea 2** (the analysis re-treads closed branches
-> without a persistent nogood database) — with the notable exception of very large searches
-> like `B3/S23 64 64 1 -n a` where backjumping is a decisive win (see the idea 1 section).
-> Idea 2 started as a guess-time check on an exact-position database and was then upgraded
-> with counter-based unit propagation on the learned nogoods; the propagation-level firing is
-> what actually recovers the re-treading loss (see the idea 2 section for the numbers): it
-> turns some of the worst backjumping losses into wins and consistently shrinks enumeration
-> work, though the plain chronological search still wins the typical medium instances. A
-> third upgrade added anchor classes and translatable templates (opt-in via
-> `Config::nogood_translate`), including transfer across world growth; the templates are
-> sound but currently net-negative on wall time.
-> The translated/cross-size mode of idea 2 has now also been implemented (anchored
-> templates, verified sound by the growth differential tests that caught two classification
-> bugs), though its measured payoff is negative so far — see the idea 2 section. **The
-> VSIDS-style activity part of idea 3 and the cell-selection variant of idea 4 have not been
-> implemented.** Every direction remains at the "worth trying" stage.
+A living experiment log for bringing SAT solver techniques (CDCL and friends) into
+factoriosrc. It maps factoriosrc's algorithm onto SAT vocabulary, records what has been
+tried and with what outcome, distills the lessons from failed attempts, and plans the next
+steps.
 
-## Background and purpose
+- Every **implemented** item is an opt-in experiment behind a `Config` flag; nothing is on by
+  default. `Config::check()` (`lib/src/config.rs`) is the source of truth for which
+  flag/rule combinations are accepted.
+- Correctness claims are backed by differential enumeration tests against the default search
+  (solution-set equality) and by Miri for the unsafe internals.
+- Exact benchmark numbers live only in [Consolidated benchmarks](#consolidated-benchmarks);
+  the idea sections carry only qualitative verdicts.
 
-factoriosrc's core is a constraint satisfaction search over a three-dimensional (x, y, generation)
-periodic cell grid. The README's todo list contains "Taking inspiration from SAT solvers (the CDCL
-algorithm) and constraint programming". This note maps factoriosrc's current algorithm onto the
-vocabulary of SAT solvers, points out the gaps, and lists some directions worth exploring. Each
-direction only discusses the idea, the expected payoff, and the risks; it does not propose a
-concrete implementation.
+## Status at a glance
 
-## Where we are: factoriosrc is already a DPLL solver
+| # | Direction | Part | Status | Flag | Verdict |
+| --- | --- | --- | --- | --- | --- |
+| 1 | Conflict analysis + backjumping | antecedent recording, 1-UIP analysis | implemented | `--backjump` | Net loss on small/medium searches (re-treading); decisive win on very large searches |
+| 2 | Nogood database | exact-position db + propagation-level firing | implemented | `--nogood` (implies `--backjump`) | Recovers most of the re-treading loss; plain search wins typical solving searches but loses on the deep oscillator case |
+| 2 | Nogood database | translated templates + cross-size transfer | implemented | `--nogood-translate` (implies `--nogood`) | Transfer-only: single-size behavior is identical to `--nogood`; templates feed cross-size instantiation |
+| 2 | Nogood database | propagation-integrated template matching | shelved (measured) | — | Translated completions are real but unaffordable to catch at completion time; see idea 2 |
+| 3 | Phase saving | — | implemented | `--phase-saving` | Mixed; helps on the factorio rule, hurts when a fixed `new_state` already fits |
+| 3 | VSIDS-style activity | — | idea only | — | |
+| 4 | Lookahead probing | polarity selection | implemented | `--lookahead` | Big win on `B3/S23` default-strategy searches; clear loss on the factorio rule |
+| 4 | Lookahead probing | cell selection | idea only | — | Needs a search-order refactor to stay sound |
+| 5 | Cross-neighborhood consistency | — | idea only | — | |
+| 6 | Multi-valued encoding for Generations | — | idea only | — | |
+| 7 | Restarts | — | not recommended (for now) | — | |
 
-Overview of the search loop:
+## Maintaining this document
 
-- `World::search` (`lib/src/search.rs:1285`) calls `step()` in a loop;
-- `step()` (`lib/src/search.rs:841`) first calls `check_stack()` (propagation), then, if there is
-  no conflict, `guess()` (branching);
-- Propagation: `set_cell` (`lib/src/world.rs:942`) pushes the cell onto the `stack`; the part of
-  the stack after `stack_index` forms a queue of cells to check (`lib/src/search.rs:526`).
-  `check_affected` (`lib/src/search.rs:396`) checks the descriptors of the set cell itself, its
-  neighbors, and its predecessor;
-- Deduction: `RuleTable::implies` (`lib/src/rule.rs:677`) looks up a precomputed table by the
-  descriptor and returns a `CheckResult` (`lib/src/rule.rs:376`), which may deduce the state of
-  the successor, the current cell, all unknown neighbors (totalistic rules), or individual
-  neighbors (non-totalistic rules, see the `forced` bits);
-- Branching: `guess()` (`lib/src/search.rs:637`) walks the `next` chain (a fixed spatial order,
-  built by `init_next`, `lib/src/world.rs:685`), picks the next unknown cell, and sets it to
-  Alive, Dead, or a random state according to `Config::new_state`;
-- Backtracking: `backtrack()` (`lib/src/search.rs:554`) pops the stack; when it reaches a
-  `Reason::Guessed` cell, it flips the state (2-state rules) or tries the next state in the cycle
-  (Generations rules, `Reason::TryAnother`);
-- When a full assignment is found, `check_period` (`lib/src/search.rs:1242`) rejects patterns of a
-  smaller period, then the search backtracks to enumerate the next solution.
+This log is edited by humans and AI agents alike. To keep it readable, follow these rules:
 
-Correspondence table:
+- Each idea section keeps the same shape: **Idea**, **Status**, mechanics, **Lessons
+  learned**, **What remains** (the exact subsections vary a little where the idea needs it).
+  Append new iterations as new entries; do not rewrite history.
+- Keep the **Status at a glance** table in sync with `Config::check()` and the CLI flags in
+  the same change that touches them (see AGENTS.md).
+- Keep lessons from failed or reverted attempts — the general lesson, not the blow-by-blow.
+  Drop details that no longer reproduce (typo'd benchmark commands, superseded behaviors that
+  `Config::check` now rejects, one-off hardware notes).
+- Record exact benchmark numbers only in the consolidated benchmark section, stamped with
+  date and build. Keep prose qualitative; delete stale numbers rather than letting them rot.
+- Correctness claims must state how they were verified (differential enumeration tests,
+  Miri, ...).
+- Refer to code as `path/file.rs` + item name, without line numbers (they rot).
+
+## Background
+
+### The current algorithm is DPLL with strong propagation
+
+factoriosrc's core is a constraint satisfaction search over a three-dimensional (x, y,
+generation) periodic cell grid. The search loop lives in `lib/src/search.rs`:
+
+- `World::search` calls `step()` in a loop; `step()` first propagates (`check_stack()`), then,
+  if there is no conflict, branches (`guess()`).
+- **Propagation**: `set_cell` (`lib/src/world.rs`) pushes the cell onto the `stack`; the part
+  of the stack after `stack_index` is the propagation queue. `check_affected` checks the
+  descriptors of the set cell, its neighbors, and its predecessor. `RuleTable::implies`
+  (`lib/src/rule.rs`) looks up a precomputed table and may deduce the successor, the current
+  cell, all unknown neighbors (totalistic rules), or individual neighbors (non-totalistic
+  rules, the `forced` bits).
+- **Branching**: `guess()` walks the `next` chain — a fixed spatial order built by
+  `init_next` — picks the next unknown cell, and sets it to Alive, Dead, or a random state
+  according to `Config::new_state`.
+- **Backtracking**: `backtrack()` pops the stack; at a `Reason::Guessed` cell it flips the
+  state (2-state rules) or tries the next state in the cycle (Generations,
+  `Reason::TryAnother`).
+- A full assignment is checked by `check_period` (rejection of smaller periods), then the
+  search backtracks to enumerate the next solution.
+
+Correspondence with SAT vocabulary:
 
 | factoriosrc mechanism | SAT solver counterpart |
 | --- | --- |
@@ -64,630 +79,571 @@ Correspondence table:
 | The precomputed `RuleTable` | A precompiled failed-literal / unit-propagation closure |
 | `guess()` walking the `next` chain | DPLL-style branching in a fixed order |
 | `backtrack()` undoing the latest guess | Chronological backtracking |
-| `Reason` (`lib/src/cell.rs:52`) | Records the decision level, but **not the antecedent** |
+| `Reason` (`lib/src/cell.rs`) | Records the decision level, but (before idea 1) not the antecedent |
 
-So the current algorithm is roughly DPLL with strong unit propagation. What is missing is exactly
-the core of CDCL: conflict analysis, non-chronological backtracking (backjumping), clause
-learning, restarts, and phase/activity heuristics.
+So the current algorithm is roughly DPLL with strong unit propagation. What is missing is
+exactly the core of CDCL: conflict analysis, non-chronological backtracking (backjumping),
+clause learning, restarts, and phase/activity heuristics.
 
-## Structural differences that matter
+### Structural differences that decide what transfers
 
-Before going through the concrete directions, here are the differences between CA search and SAT
-solving that decide which techniques transfer directly and which need adaptation:
-
-- **The constraints are n-ary.** For each cell, the constraint is successor = f(current,
-  neighborhood), where the neighborhood can have up to 24 cells. The implication graph is
-  therefore a hypergraph: the antecedent of a deduction can be a set consisting of the cell
-  itself, its successor, and several neighbors. A learned "nogood" is a combination of states of
-  a set of cells that cannot all hold at once — an n-ary forbidden condition, not a binary
-  clause.
-- **Global constraints.** A non-empty front (`front_count == 0`), the population bound
-  (`below_max == 0`), and the period check (`check_period`) are not local constraints. Conflict
-  analysis must exclude them; they cannot be learned like ordinary conflicts.
+- **The constraints are n-ary.** For each cell, successor = f(current, neighborhood), where
+  the neighborhood can have up to 24 cells. The implication graph is a hypergraph: the
+  antecedent of a deduction can span the cell itself, its successor, and several neighbors. A
+  learned nogood is an n-ary forbidden condition, not a binary clause.
+- **Global constraints.** The non-empty front (`front_count == 0`), the population bound
+  (`below_max == 0`), and the period check (`check_period`) are not local constraints.
+  Conflicts from them cannot be learned; conflict analysis must exclude them.
 - **Periodicity / translation invariance.** The world is periodic in x, y, and t (see
-  `World::canonicalize_coord`). A learned nogood can be normalized to relative coordinates and
-  reused at any position, any generation, and even across world sizes. This is a unique advantage
-  of CA search over SAT, and it is the basis of idea 2 below.
+  `World::canonicalize_coord`). A learned nogood can be normalized to relative coordinates
+  and reused at any position, any generation, and even across world sizes — a unique
+  advantage of CA search over SAT, and the basis of idea 2.
 - **Generations rules are multi-valued.** Branching cycles through the states
   (`Reason::TryAnother`), and the deductions of the underlying 2-state rule are asymmetric:
-  neighbors can be deduced to be alive but not dead (see `check_generations_implied`,
-  `lib/src/search.rs:332`). Learning and backjumping must preserve this asymmetry.
-- **The goal is to enumerate all solutions.** factoriosrc does not stop at the first solution; it
-  keeps enumerating (combined with `reduce_max_population` for optimization searches, and
-  "search for the next solution" in the GUIs). This affects the applicability of restart-based
+  neighbors can be deduced alive but not dead (see `check_generations_implied`). Learning and
+  backjumping must preserve this asymmetry.
+- **The goal is to enumerate all solutions.** factoriosrc does not stop at the first
+  solution; it keeps enumerating (combined with `reduce_max_population` for optimization
+  searches, and "search for the next solution" in the GUIs). This affects restart-based
   techniques.
 - **Unsafe hot paths.** Changes to `LifeCell`/`World` touch unsafe code (`lib/src/cell.rs`,
   `lib/src/world.rs`, `lib/src/search.rs`) and need Miri verification (see AGENTS.md).
 
-## Idea 1: Record antecedents + conflict analysis + non-chronological backtracking
+## Idea 1: Antecedent recording, conflict analysis, backjumping
 
-The core CDCL idea, and the foundation for most of the others.
+**Idea.** Attach to every deduction its *antecedent* — the (cell, state) facts it was derived
+from. On a conflict, resolve backwards through the antecedents to the 1-UIP (first unique
+implication point) and backjump there, flipping it (2-state rules) or trying the next state
+(Generations). This is standard CDCL conflict analysis plus backjumping, except that the
+implication graph is a hypergraph with n-ary nodes.
 
-### Status: implemented as an opt-in experiment
+**Status: implemented** as an opt-in experiment. `Config::backjump` (CLI `--backjump`;
+toggles in the TUI and egui UIs; 2-state rules only, per `Config::check`) enables both the
+**recording layer** (antecedents and decision levels — also the foundation of idea 2) and the
+full 1-UIP analysis with non-chronological backtracking. Correctness is verified by a
+differential enumeration matrix against the default search (8 rules × 2–3 world sizes ×
+periods × 3 search orders × 6 symmetries × 6 transformations × 3 new-state strategies =
+16,200 configurations).
 
-`Config::backjump` (CLI `--backjump`, plus toggles in the TUI and the egui UI; restricted to
-2-state rules by `Config::check`) enables two things: the **recording** of antecedents and
-decision levels (the foundation), and the **full 1-UIP conflict analysis** with
-non-chronological backtracking on top of it.
+**How it works.**
 
-**The recording layer**
+- The antecedent of a deduction is the known part of the *source cell's* descriptor — the
+  cell whose neighborhood lookup produced the deduction (`Antecedent::Descriptor`); a
+  symmetry deduction points at the mirrored cell. The exact antecedent set is recovered by
+  walking the known cells of that descriptor, excluding the deduced cell, and filtering to
+  cells whose stack positions precede the deduction. The position filter is
+  soundness-critical: a cell set after the deduction cannot have been part of its reason (if
+  it had changed the deduction, the search would have conflicted when it was set).
+- The search stack carries parallel `TrailMeta` (level, decision flag, antecedent) kept in
+  sync at every pop site (`backtrack`, the lookahead probe rollback), so the implication
+  graph of the current partial assignment is always reconstructible.
+- Recording costs a few percent when enabled and nothing when disabled (the code path is
+  unchanged; the side structures are empty).
 
-- Each cell set by a rule-based deduction remembers its antecedent as the source cell
-  (whose neighborhood descriptor produced the deduction), and each symmetry deduction
-  remembers the mirrored cell (`Antecedent`, `lib/src/cell.rs`).
-- The search stack records a parallel `TrailMeta` (`level`, `decision`, `antecedent`) in
-  lockstep, plus a `current_level` counter. All pop sites (`backtrack`, the lookahead probe
-  rollback) keep the metadata in sync, so the implication graph of the current partial
-  assignment is always reconstructible.
-- The exact antecedent of a deduction is *not* stored as a set of cells: it is recovered
-  from the source cell by walking the known cells of its current neighborhood descriptor,
-  excluding the deduced cell itself, and — importantly — filtering to the cells whose stack
-  positions precede the deduction. The position filter is soundness-critical: a cell set
-  after the deduction may not be part of the deduction's reason (it could even have changed
-  the deduction; if it had, the search would have conflicted when it was set).
-- The recording itself costs about 2.5-3% when enabled (measured on
-  `B3/S23 26 8 4 -y 1 -n a` and `R3,C2,S2,B3,N+ 50 10 4 -x 2 -s D2-`), and nothing when
-  disabled (the code path is unchanged; the side structures are all empty). The analysis
-  costs much more — see the performance paragraph below.
+**Lessons learned.**
 
-**The analysis** — a standard MiniSat-style 1-UIP conflict analysis on top of the recording.
-It was implemented twice:
+1. **Chronological flips break CDCL's one-decision-per-level invariant.** When the search
+   backtracks chronologically, the popped guess is re-set to its opposite state as a
+   reasonless "deduction". These flips are now recorded as *decision carriers*: each occupies
+   a whole level, `current_level` counts carriers rather than guesses, and every level above
+   the root has exactly one reasonless decision. Resolving a reasonless literal "with an
+   empty reason" derived invalid nogoods — this was the mistake that made the first
+   implementation incomplete (it enumerated a strict subset of solutions) and had to be
+   reverted; the differential test caught it.
+2. **Trail order is not search-chain order.** The `next` chain is a fixed spatial order that
+   differs from the trail order, and a backjump truncation pops trail entries whose chain
+   positions lie *before* the resumption point — the search then never visits them again and
+   once reported `Solved` with unknown cells. The fix: rank cells in chain order, resume at
+   the chain-earliest popped cell, and re-check the trail entries whose descriptors were
+   changed by the pops (a targeted re-queue, not a full re-check).
+3. **Learned-clause reasons go stale.** The reason of a backjump flip is only valid while its
+   cells still hold the recorded values; the analysis must verify the recorded stack
+   positions and fall back to chronological backtracking otherwise.
+4. **Without a persistent nogood database, conflict analysis re-treads closed branches.**
+   Every learned clause is discarded as soon as its cells pop, so the analysis regularly
+   re-explores already-closed branches (on a tiny configuration the same solution was
+   re-found 16 times). The result is a net loss on small/medium searches — orders of
+   magnitude slower on typical benchmarks — while the recording layer alone is cheap.
+5. **Very large searches are the exception.** On a large world with shallow local cascades
+   (`B3/S23 64 64 1 -n a`), conflicts are deep and the jump distance dwarfs the
+   re-propagated work: backjumping finds a pattern in milliseconds where the default search
+   does not finish in 90+ seconds. This matches the old rlifesrc observation that
+   backjumping pays off mainly for large still lifes. Note that backjumping, lookahead, and
+   phase saving all find *different* solutions there within seconds — which heuristic wins
+   matters when the tool is used to discover examples rather than to enumerate.
+6. **Differential testing is the safety net that matters.** Compare solution *sets*, not raw
+   counts (counts differ legitimately — a pattern and its generation rotation are both valid
+   finds). The differential matrix caught the first attempt's incompleteness and the
+   chain-resumption corner case above.
 
-- **First attempt (reverted).** The analysis looked correct on the test suite, but a
-  differential enumeration test against the default search (`B3/S23 3x3x1` with diagonal
-  order and the `R1` transformation) showed it was **incomplete**: it enumerated a strict
-  subset of the solutions (e.g. 2 of 3). It found the first two issues below and was
-  reverted rather than shipped broken.
-- **Second attempt (the current code).** The investigation narrowed the causes to structures
-  that SAT solvers do not have, and the second attempt fixed all of them:
+**What remains.** The flag stays opt-in for experimentation. For typical small/medium
+searches, idea 1 is useful mainly as the foundation of idea 2; its own payoff is the
+large-search regime. Open question: the analysis overhead per conflict is what makes the
+factorio-rule profile a DNF under the CDCL machinery where the default search finishes —
+reducing it has not been attempted.
 
-  1. **Decision-carrier levels.** When the search backtracks chronologically, the popped
-     guess is re-set to its opposite state as a deduction with no antecedent
-     (`Reason::Deduced`, `Antecedent::None`). These "flip" entries are conceptually re-tries
-     of earlier decisions, so they are now recorded as **decision carriers**: each carrier
-     occupies a whole level, `current_level` counts carriers (not guesses), and every level
-     above the root has exactly one reasonless decision. This restores the standard
-     invariant of one decision per level that the 1-UIP analysis relies on.
-  2. **Stop at the decision carrier.** The resolution never replaces a reasonless literal
-     by an empty reason: as soon as the walk reaches the current level's decision carrier,
-     the analysis stops and uses it as the 1-UIP. (Resolving it "with an empty reason" was
-     the resolution-rule mistake of the first attempt, which derived invalid nogoods.)
-  3. **The chain position of the resumption point.** The search chain (the `next` links of
-     the search order) is in a fixed spatial order that differs from the trail order, and
-     the backjump truncation pops trail entries whose chain positions lie *before* the
-     chain resumption point. The search then resumes behind those cells without ever
-     visiting them again, which previously let the search report `Solved` with unknown
-     cells (spotted by the same differential test on a `D2H`/`S0` configuration). The fix:
-     each cell in the chain gets a rank (computed in chain order), the truncation resumes at
-     the chain-earliest popped cell, and it additionally re-checks the trail entries whose
-     descriptors were changed by the pops (a targeted re-queue instead of re-checking the
-     whole trail).
-  4. **The learned-clause reason as (cell, position) pairs.** The reason of a backjump flip
-     (a clause) is only valid while its cells are set to the recorded values; the cells can
-     be re-set by later backjumps, so the analysis must verify (by recorded stack positions)
-     that the clause is still current, and fall back to chronological backtracking when it is
-     not.
+## Idea 2: A nogood database (clause learning for CA)
 
-**Result (2026-08)**: **correctness is achieved** — the differential enumeration matrix
-(8 rules x 2-3 world sizes x periods x 3 search orders x 6 symmetries x 6 transformations x
-3 new-state strategies, 16,200 configurations) matches the default search exactly, including
-the two corner cases that caught the first attempt. On the usual benchmarks it is **not a
-performance win**: on `B3/S23 26 8 4 -y 1 -n a` it is ~30x slower than the default (38 s vs
-1.25 s; with a depth gate even worse), and the default factorio-rule benchmark does not
-finish in 120 s. The cause is re-treading: without the persistent nogood database (idea 2),
-every learned clause is discarded as soon as its cells are popped, so the analysis regularly
-re-explores already closed branches (on a tiny configuration the same solution was re-found
-16 times). However, on very large searches the analysis wins decisively, matching the old
-rlifesrc observation — see
-*[Where backjumping shines](#where-backjumping-shines-b3s23-64-64-1--n-a)* below.
-
-**What remains**: the analysis is kept behind the `Config::backjump` flag for
-experimentation, and the recording layer (the foundation of idea 2) is verified sound. The
-natural next step is idea 2 — a persistent nogood database — which is the only way to
-recover the closed-branch knowledge that the re-treading loses; for typical (small and
-medium) searches idea 1 is only useful as this foundation, while its greatest visible win
-so far is the large-search regime (see below).
-
-### Where backjumping shines: `B3/S23 64 64 1 -n a`
-
-The exception that confirms the rlifesrc 2021 observation: searches over a **large world**
-with **shallow local cascades**, where the analysis's jump distance is huge compared to the
-re-propagated work. The case is a 64x64 period-1 search (a 64x64 still-life-like pattern in
-Conway's Life), with the alive-first `new_state` strategy:
-
-| Configuration | Time | Result |
-| --- | --- | --- |
-| (no flags) | > 90 s, no result | — |
-| `--backjump` | **19 ms** | a 64x64 still-life-like pattern |
-| `--lookahead` | 44 ms | **a different** 64x64 pattern |
-| `--phase-saving` | 1.9 s | a slightly different 64x64 pattern |
-
-Notes:
-
-- This is the same qualitative picture as the old rlifesrc result ("backjumping is only
-  useful for large (e.g., 64x64) still lifes"): on this case the conflicts are deep and the
-  search space is huge, so the non-chronological jumps dominate the re-treading that makes
-  backjumping a loss on small and medium cases.
-- All three heuristics help here, but they find (slightly) different solutions: backjump and
-  lookahead land on different patterns within milliseconds, and phase saving needs almost 2
-  seconds for another one. The lookahead one is the most different. This matters when the
-  tool is used to *search* for examples, not to enumerate: the found pattern depends on the
-  heuristic.
-- The case is a convenient sanity check for the idea-1 machinery: a few-millisecond run
-  that produces a valid (period-1) pattern, compared to a search that does not finish within
-  any reasonable time in the default configuration.
-
-### What the antecedent is
-
-When `check_descriptor_implied` (`lib/src/search.rs:74`) deduces the state of a successor,
-neighbor, or current cell, the deduction is based on the descriptor of some cell. The antecedent
-can therefore be defined as the known part of that descriptor: the state of the checked cell, the
-state of its successor, and the states of its known neighbors. Currently `Reason::Deduced` only
-records that a cell was deduced, not from what, so the implication graph is not recoverable.
-
-### How it would work
-
-Attach an antecedent set (a collection of (cell, state) pairs) to each deduced cell. When a
-conflict occurs, resolve backwards through the antecedents from the conflicting cell, find the
-1-UIP (first unique implication point), jump directly there, and flip it (2-state rules) or try
-the next state (Generations rules), skipping unrelated stack frames. This is standard CDCL
-conflict analysis plus backjumping, except that the graph also contains n-ary constraint nodes.
-
-### Expected payoff
-
-A large reduction in wasted backtracking. The benefit should be most visible in searches with
-lots of local deduction (high periods, large neighborhoods, large worlds), where conflicts are
-often decided far above the current guess.
-
-### Risks and work involved
-
-- Requires changing `LifeCell`/`Reason`, which sit in the unsafe hot path;
-- Resolving through n-ary antecedents is more complex than binary clause resolution;
-- Conflicts from global constraints (front, population) and from symmetry must be marked as
-  non-learnable and excluded from the analysis;
-- Generations asymmetry (see above).
-- The flip-level issue described above: the backtracking thread of the search rewrites
-  trail entries (a popped guess becomes a reasonless "deduction"), and the level metadata
-  must make this sound for the analysis. This was the main risk, it caused the first 1-UIP
-  attempt to be reverted, and it is now addressed by the decision-carrier levels and the
-  stop-at-the-carrier rule (see the status section).
-
-## Idea 2: Forbidden pattern memory (a nogood database)
-
-The CA version of CDCL clause learning. A learned nogood is a set of relative coordinates plus
-states that cannot be extended to a solution; it is essentially a forbidden local pattern.
-
-### Status: the exact-position mode is implemented as an opt-in experiment
-
-`Config::nogood` (CLI `--nogood`, plus toggles in the TUI and the egui UI) enables the nogood
-database of `lib/src/nogood.rs`; it implicitly enables `Config::backjump` in `Config::check`,
-and is restricted to 2-state rules for the same reason as backjumping.
-
-**What is implemented.** Every successful conflict analysis records its result — the 1-UIP cell
-with its rejected state, plus the literals of the learned clause with their states (at most
-`MAX_NOGOOD_LITERALS` literals; larger patterns are not worth their index entries). The
-database (`NogoodDb`) stores nogoods by *absolute* cell indices and indexes them by every
-(cell, state) literal pair, so that a candidate guess finds the nogoods it would complete
-without scanning the database. The database is bounded (the oldest half is evicted when full,
-like clause-database reduction), and queries examine at most `MAX_QUERY_CANDIDATES` candidates
-per index bucket. Before guessing a state, `guess()` consults the database: if exactly one
-state completes some stored pattern, the other state is set instead, as a **decision carrier**
-(its own decision level, no antecedent); if both states are blocked, the search backtracks at
-once.
-
-Two design points came out of the experiments:
-
-- **Forced assignments must be decision carriers, not deductions.** The first version recorded
-  a forced assignment as an ordinary deduction justified by an `Antecedent::Clause` built from
-  the blocking nogood. As soon as one of those cells was popped, the clause went stale, and
-  every analysis walking through the cell fell back to chronological backtracking — the
-  spaceship benchmark went from ~38 s to unbounded. Treating forced assignments as decisions
-  (which are conservative-sound stop points for the resolution) removed the degradation
-  entirely.
-- **Query cost needs bounds.** A popular anchor cell shares its index bucket with many nogoods;
-  without the candidate cap (and without building the "other literals" vector only after a
-  candidate fully matches), query time dominated the search.
-
-**Iteration 1 — guess-time checks only (superseded).** The database was first consulted only
-in `guess()` before choosing a state, and at the chronological backtrack flip. Correctness
-verified; performance: it recovered roughly half of what backjumping loses on small
-enumeration workloads (`B3/S23 4x4x2`: ~888 search calls vs ~2352 for backjumping alone), cost
-nothing on large searches, but did not rescue any of the backjumping losses (the spaceship
-case stayed beyond 130 s). An instrumented run showed *why*: every conflict analysis succeeded
-and jumped (zero stale-reason fallbacks), yet enabling the database nearly doubled the number
-of conflicts per unit of progress. Re-treading means replaying *deduction cascades* into
-already-closed branches, and a guess-time check only fires when the last literal of a forbidden
-pattern happens to be the cell being guessed — patterns completed by deduction are never
-intercepted.
-
-**Iteration 2 — propagation-level firing (the current code).** Each entry maintains a counter
-of how many of its literals currently hold, updated incrementally through the existing
-`(cell, state)` index in `set_cell`/`unset_cell`. When an entry reaches "one literal short",
-its remaining unknown cell is forced away from the recorded state during propagation — unit
-propagation on the learned nogoods — justified by an `Antecedent::Clause` built from the other
-literals at fire time. When *all* literals hold (reachable when a wrong-state cell is unset and
-later re-set to the recorded state, skipping the one-short window), a pending flag queues a
-[`Confl::Nogood`] conflict; the flag is **re-validated when consumed**, because the queue can
-empty right after the match and the step can end with a direct backtrack that pops matched
-cells before the next check sees the flag. Lookahead probes are fully excluded from the
-counters — including their rollback, which must run while `in_probe` is still set so that the
-skipped updates stay symmetric. The guess-time check of iteration 1 became redundant and was
-removed; the flip-time check stays (it never fires on current benchmarks).
-
-Two earlier design findings remain relevant:
-
-- **Forced assignments must not carry reasons that go stale silently.** The first version of
-  iteration 1 recorded forced guesses as ordinary deductions justified by the blocking nogood;
-  stale clauses made every analysis walking through them fall back to chronological
-  backtracking, and the spaceship benchmark went from ~38 s to unbounded. Guess-time forcing
-  was therefore recorded as decision carriers, and the propagation firings keep clause
-  antecedents (whose staleness falls back safely).
-- **Query cost needs bounds**: popular anchor cells share their index bucket with many nogoods;
-  candidates are capped per query, and the "other literals" vector is built only after a
-  candidate fully matches.
-
-**Result (2026-08)**: correctness verified by differential enumeration tests (solution-set
-equality across 2-state, non-totalistic, B0, B0S8, symmetry, transformation, max-population,
-reduce-max-population, and feature combinations) plus Miri. Performance:
-
-| Case | plain | `--backjump` | iter. 1 (guess-time) | iter. 2 (firing) |
-| --- | --- | --- | --- | --- |
-| `B3/S23 64 64 1 -n a` | > 90 s | 26 ms | 36 ms | **9 ms** |
-| `B3/S23 26 8 4 -y 1 -n a` | 1.19 s | ~38 s | > 130 s (DNF) | **11.6 s** |
-| enumerate all `B3/S23 4x4x2` | ~389 calls | ~2352 | ~888 | **~563** |
-| enumerate all `B3/S23 5x5x2` | ~4649 calls | ~306,064 | — | **~12,246** |
-| `R3,C2,S2,B3,N+ 50 10 4 -x 2 -s D2-` | 26.9 s | > 120 s (DNF) | > 120 s (DNF) | > 120 s (DNF) |
-
-The propagation-level firing is what actually recovers the re-treading loss: it converts the
-spaceship case from a DNF into a solve three times faster than backjumping alone, makes the
-large-search case faster than backjumping alone, and shrinks enumeration work by one to two
-orders of magnitude on the deeper instance. The plain chronological search still wins the
-typical medium instances, and the factorio-rule profile of idea 1 (a DNF under the CDCL
-machinery where the default search finishes) is unchanged — that regime seems limited by the
-analysis overhead per conflict rather than by missing memory.
-
-**Iteration 3 — anchor classes and translatable templates (the current code).** The binary
-purity filter sketched below was replaced by a finer-grained scheme: every learned nogood
-records *what its derivation relied upon* (`Anchor`), collected while the analysis walks the
-implication chain — background-forced boundary cells and baked descriptors pin the
-corresponding edge, user known cells and the diagonal band make the nogood position-fixed,
-untracked level-0 facts and rotation/diagonal symmetry pairs make it world-local, mirror pairs
-(`S0`/`S2`) allow sliding along their axis only, and nogoods relying on none of these are free.
-Deductions justified by learned clauses inherit their anchors, so reliance propagates through
-resolutions. On the spaceship benchmark the distribution is roughly 45% free, 54% edge-pinned
-and under 1% local — most knowledge is at least partially translatable, and edge pins survive
-world growth, which makes the cross-size transfer of the next step promising.
-
-Eligible nogoods are additionally stored as *templates* in frame coordinates (free axes
-relative to the 1-UIP, pinned axes absolute or edge-relative). Behind an opt-in
-`Config::nogood_translate` flag, `guess()` checks whether some translated alignment of a
-template matches the current assignment and blocks the guess accordingly. Measured results:
-correctness holds (differential enumeration matrices across symmetries, transformations,
-diagonal width, B0 rules), but **guess-time template checks do not pay on single-size
-workloads** — template hits are rare (about a thousand over millions of firings on the
-spaceship case) while the per-guess probe cost and trajectory shifts cost 20–30% (17 s vs
-13 s). This repeats the lesson of iteration 1: interception at guess time cannot see patterns
-completed by deductions; only propagation-level presence pays. The templates currently earn
-their keep only as the data structure for cross-size transfer, where no propagation machinery
-exists to attach to yet.
-
-**Iteration 4 — cross-size transfer (the current code).** The templates are now handed over
-through `increase_world_size`: free templates and single-edge-pinned templates survive a growth
-without any coordinate remapping (free coordinates are relative, left/top pins are absolute,
-right/bottom pins are stored as distances from the edge — the exit thresholds of the
-generation wrap cancel exactly under growth), while mirror pairs, both-edges pins, user known
-cells, and the diagonal band are dropped. Transferred templates are additionally *instantiated*
-as concrete entries at every alignment that fits into the new world (bounded to 20 000, smaller
-templates first): only concrete entries take part in propagation-level firing, which is the
-mechanism that pays.
-
-The growth differential tests (accumulated solution sets over repeated exhaust-and-grow
-sequences) caught **two real soundness bugs** in this design, both worth recording:
-
-1. *Both-edges pins*: a small world's conflicts often rely on *both* sides of an axis (the
-   pattern spanned the whole world). Storing only one edge ("first flag wins") produced
-   templates that looked re-anchorable but silently lost the other side's background facts in
-   a larger world. The axis modes now carry an `AbsoluteAndRight` / `AbsoluteAndBottom`
-   variant: both constraints are kept, so such templates never match in a strictly larger
-   world (and are not transferred).
-2. *Mirror-anchored templates slipped into instantiation*: the transfer filter checked the
-   anchor, but the instantiation filter checked the axis *modes*, and a mirror pair and a left
-   pin are indistinguishable at the mode level (both absolute columns). The gate must always
-   be the anchor.
-
-Measured on growth workflows (exhaust-and-grow from 4x4 and 5x5, period 1): the transferred
-templates reduce the number of search calls by roughly 20-25% compared to the plain nogood
-database, but the wall time is still about twice as high — the instantiation work at every
-growth plus the guess-time probing cost more than the pruned calls save. The correctness is
-fully verified; the economics are not there yet.
-
-**What remains**: the honest summary of idea 2's four iterations is that *persistent memory
-works and pays for itself only when it participates in propagation*. The concrete-entry
-database with counter-based firing (iteration 2) is the valuable core; translated templates
-are sound and mechanically complete but currently expensive relative to their payoff. The
-most promising refinement would be to make template *matching itself* propagation-integrated
-(a form of watched literals keyed by the literal index), which would both remove the per-guess
-probe cost and intercept deduction-completed patterns — but that is a larger redesign. The
-static-pattern shortcut was skipped: dynamic learning subsumes it.
-
-### Normalization
-
-A nogood is stored in relative coordinates, so it can be translated to any position and any
-generation. Canonicalizing nogoods with `Config::symmetry` (picking a minimal representative of
-each equivalence class) can significantly improve the hit rate.
-
-### Reuse across world sizes
-
-`increase_world_size` (`lib/src/world.rs:1361`) rebuilds the `World` from scratch, throwing away
-all search experience. But a nogood learned in a smaller world remains valid in a larger world as
-long as it does not rely on the "outside the world is dead" boundary assumption. This fits
-factoriosrc's typical workflow of gradually enlarging the world while searching, and may be the
+**Idea.** The CA version of CDCL clause learning. A learned nogood is a set of relative
+coordinates plus states that cannot be extended to a solution — essentially a forbidden local
+pattern. Because CA search is translation invariant, a nogood can be reused at any position,
+any generation, and potentially across world sizes; cross-size reuse in particular may be the
 single biggest practical win among the ideas here.
 
-### Mind the boundary conditions
+**Status: implemented** as opt-in experiments, in `lib/src/nogood.rs` (`NogoodDb`):
 
-Cells at the boundary of a small world are forced to the background state (`init_known`; for a
-rule without `B0` the background is dead, for a `B0` rule it is the periodic background). A
-nogood that relies on this is not valid in a larger world. Three distinct mechanisms make a
-nogood boundary-dependent, and the first two do not show up in its literals at all:
+- `Config::nogood` (CLI `--nogood`; toggles in both UIs; 2-state rules only) — the
+  exact-position database with propagation-level firing; implicitly enables `--backjump`.
+- `Config::nogood_translate` (CLI `--nogood-translate`; 2-state only) — translated templates
+  and cross-size transfer; implicitly enables `--nogood`.
 
-1. **Known-cell literals.** A nogood whose literal cell has `Reason::Known` (a padding cell, a
-   cell whose translated predecessor left the world, a user known cell, or a diagonal-width
-   cell) relies on the forcing. Filter these out.
-2. **Baked descriptor bits.** The descriptors of padding-frame cells have their missing
-   neighbors baked in as the background state (`set_outside_neighbor`, null successors), and
-   the conflict seed collects only the *known real cells* of the descriptor. A conflict found
-   on such a cell can therefore depend on the background without any Known literal appearing
-   in the nogood. Every `Antecedent::Descriptor` source on the resolution chain must be an
+Five iterations so far; the planned propagation-integrated template matching was
+investigated with a measurement probe and shelved (iteration 5).
+
+**The core that pays: exact-position nogoods with propagation-level firing.**
+
+- Every successful conflict analysis records its 1-UIP cell with its rejected state plus the
+  literals of the learned clause (capped at `MAX_NOGOOD_LITERALS`; larger patterns are not
+  worth their index entries). Nogoods are stored by absolute cell indices and indexed by every
+  (cell, state) pair, so a candidate guess finds the nogoods it would complete without
+  scanning the database. The database is bounded (the oldest half is evicted when full), and
+  queries examine at most `MAX_QUERY_CANDIDATES` candidates per index bucket.
+- Each entry maintains a counter of how many of its literals currently hold, updated
+  incrementally through the existing (cell, state) index in `set_cell`/`unset_cell`. When an
+  entry is *one literal short*, its remaining unknown cell is forced away from the recorded
+  state during propagation — unit propagation on the learned nogoods — justified by an
+  `Antecedent::Clause` built from the other literals at fire time. When *all* literals hold
+  (reachable when a wrong-state cell is unset and later re-set to the recorded state, skipping
+  the one-short window), a pending `Confl::Nogood` conflict is queued and **re-validated when
+  consumed**, because the propagation queue can empty right after the match and the step can
+  end with a direct backtrack that pops matched cells before the next check sees the flag.
+- Lookahead probes are fully excluded from the counters, including their rollback, which must
+  run while `in_probe` is still set so that the skipped updates stay symmetric.
+
+**Iterations.**
+
+1. **Guess-time checks only** (superseded). The database was consulted only in `guess()`
+   before choosing a state, and at the chronological backtrack flip. Correct, and it recovered
+   roughly half of what backjumping loses on small enumeration workloads — but it rescued none
+   of the backjumping losses. Instrumentation showed why: a guess-time check only fires when
+   the last literal of a forbidden pattern happens to be the cell being guessed; patterns
+   completed by deduction are never intercepted.
+2. **Propagation-level firing** (the current core, described above). This is the mechanism
+   that recovers the re-treading loss: it is consistently far cheaper than backjumping
+   alone, it shrinks backjumping's enumeration work by one to two orders of magnitude, and
+   it is the only CDCL configuration that beats the plain chronological search on the deep
+   oscillator workload — though on typical solving searches the plain search still wins.
+3. **Anchor classes and translatable templates.** Every learned nogood records *what its
+   derivation relied upon* (`Anchor`), collected while the analysis walks the implication
+   chain (see "What a nogood may rely on" below). Eligible nogoods are additionally stored as
+   templates in frame coordinates; behind `Config::nogood_translate`, `guess()` checks
+   translated alignments of a template against the current assignment. Sound and verified,
+   but guess-time template checks repeat the iteration-1 lesson: template hits are rare
+   compared to firings of concrete entries, and the per-guess probe cost dominates — a net
+   loss on single-size solving searches. A later seed sweep showed that the oscillator
+   workload's apparent exception was trajectory luck, not systematic pruning: a translate
+   run with no template hits is exactly the plain nogood run plus probe overhead, and on
+   one seed the reordering turned a solve into a DNF. The templates earn their keep as the
+   data structure for cross-size transfer.
+4. **Cross-size transfer.** Free templates and single-edge-pinned templates survive
+   `increase_world_size` without coordinate remapping (free coordinates are relative; left/top
+   pins are absolute; right/bottom pins are stored as distances from the edge), and are
+   *instantiated* as concrete entries at every alignment that fits the new world (bounded;
+   only concrete entries take part in propagation firing). Mirror-pair, both-edges-pinned,
+   user-known, and diagonal-band templates are dropped. On growth workflows (exhaust-and-grow)
+   this cuts search calls by roughly a quarter compared to the plain database, but wall time
+   roughly doubles — the instantiation work plus the guess-time probing cost more than the
+   pruned calls save. Fully verified; the economics are not there yet.
+5. **Transfer-only templates** (the current code). The planned propagation-integrated
+   template matching was investigated first with a measurement probe and then shelved (see
+   the shelving analysis below), and the guess-time template checks were removed instead:
+   templates are now built at learn time, handed over through `increase_world_size`, and
+   instantiated as concrete entries there — and they no longer affect the search within one
+   world. `--nogood-translate` is therefore exactly `--nogood` plus template bookkeeping on
+   single-size workloads (verified: identical step counts on every benchmark), and its value
+   is confined to the growth workflow, where instantiation still prunes roughly 30% of the
+   steps at 8x8 at the cost of wall time. The template deduplication query also got the same
+   candidate cap as the other queries (it was an unbounded scan over a popular state bucket).
+
+**Lessons learned.**
+
+1. **Memory pays only when it participates in propagation.** Guess-time interception cannot
+   see patterns completed by deductions — the failure of iteration 1, and again of the
+   guess-time template checks in iteration 3. The probe of iteration 5 confirmed that the
+   missing interceptions exist — the assignment routinely contains fully completed
+   translated patterns — but also showed that catching them at completion time is out of
+   reach at this library scale (see the shelving analysis below).
+2. **Forced assignments must be decision carriers, not clause-justified deductions.** The
+   first version justified nogood-forced guesses with an `Antecedent::Clause` built from the
+   blocking nogood; as soon as such a cell was popped, the clause went stale, and every
+   analysis walking through the cell fell back to chronological backtracking — the spaceship
+   benchmark went from seconds to effectively never finishing. Guess-time forcing is now
+   recorded as a decision carrier (a conservative-sound stop point for resolution);
+   propagation firings keep clause antecedents, whose staleness falls back safely.
+3. **Bound query cost.** A popular anchor cell shares its index bucket with many nogoods;
+   cap candidates per query, and build the "other literals" vector only after a candidate
+   fully matches.
+4. **Re-validate pending conflicts when consumed** (see the firing description above).
+5. **Track what a nogood relies on before translating it** (see below). For the
+   exact-position mode none of the filters are needed — everything it relies on holds
+   throughout one world; for translated or cross-size modes they are all mandatory.
+6. **Memory pays where the plain search is redundant.** A seed sweep on the oscillator
+   workload showed that plain nogood beats the default search on every seed tried
+   (4–60x): random guessing makes the plain search revisit equivalent subspaces (tens to
+   hundreds of millions of steps) that propagation firing deduplicates to a few hundred
+   thousand. On directed searches (the spaceship case) the same machinery removes only
+   ~6x of the steps — far less than its per-step cost — and loses. The same sweep showed
+   that the translate variant's extra win on one seed was trajectory luck: template hits
+   are rare (0–453 per run), and a run with none is exactly the plain nogood run plus
+   probe overhead.
+7. **Measure before redesigning.** The planned propagation-integrated template matching
+   was probed before being implemented. The probe showed that the uncaught completions
+   are real and plentiful (on the spaceship workload the assignment typically contains
+   hundreds of fully completed translated patterns at any time), but that no affordable
+   mechanism can notice them at the moment they complete. The redesign was shelved and
+   replaced by removing the inert guess-time checks — a fraction of the planned cost, and
+   a strictly faster program.
+
+**What a nogood may rely on** — reference for the translation/transfer filters. Three
+mechanisms make a nogood boundary-dependent (relying on "outside the world is the background
+state", set by `init_known`), and the first two are invisible in the nogood's literals:
+
+1. **Known-cell literals.** A literal cell with `Reason::Known` (a padding cell, a cell whose
+   translated predecessor left the world, a user known cell, a diagonal-width cell) relies on
+   that forcing.
+2. **Baked descriptor bits.** Padding-frame cells have their missing neighbors baked into the
+   descriptor as the background state (`set_outside_neighbor`, null successors), and the
+   conflict seed collects only the *known real cells* of the descriptor. A conflict found on
+   such a cell can depend on the background without any Known literal appearing in the
+   nogood. Every `Antecedent::Descriptor` source on the resolution chain must therefore be an
    *interior* cell — inside `[0,w) × [0,h)` with non-null predecessor and successor, which
    implies a complete neighborhood, since the padding exactly covers the radius.
 3. **Excluded level-0 literals.** The analysis drops level-0 literals from the learned clause
    because they always hold; but for a persistent nogood, dropping a conjunct makes the
-   forbidden pattern *stronger*. If any level-0 fact was relied upon during the resolution
-   (trackable by watching for skipped level-0 literals), the nogood must be tagged as
-   config-local.
+   forbidden pattern *stronger*. If any level-0 fact was relied upon during the resolution,
+   the nogood must be tagged as config-local.
 
 Additionally, nogoods derived from `Confl::Symmetry` are not translatable: the mirror mapping
-depends on the absolute world size (e.g. `D2H` uses `y ↦ h−1−y`). They are valid only within
-one world size. The exact-position mode needs none of these filters (everything it relies on
-holds throughout one world); all of them become mandatory for the translated mode below.
+depends on the absolute world size (e.g. `D2H` uses `y ↦ h−1−y`); they are valid only within
+one world size.
 
-### Database management
+The anchor scheme of iteration 3 classifies all of this: background-forced boundary cells and
+baked descriptors pin the corresponding edge; user known cells and the diagonal band make the
+nogood position-fixed; untracked level-0 facts and rotation/diagonal symmetry pairs make it
+world-local; mirror pairs (`S0`/`S2`) allow sliding along their axis only; nogoods relying on
+none of these are free. Deductions justified by learned clauses inherit their anchors, so
+reliance propagates through resolutions. On the spaceship benchmark the distribution is
+roughly 45% free, 54% edge-pinned, under 1% local — most knowledge is at least partially
+translatable, and edge pins survive world growth.
 
-Analogous to the clause databases of modern SAT solvers: evict by activity/LBD to bound memory
-use. As a start, one could store only minimal conflict sets and evict the oldest entries when
-full.
+**Why propagation-integrated template matching was shelved** — the analysis that killed
+the planned iteration 5, recorded so that it is not re-derived:
 
-### An easier start
+- *The potential is real.* A temporary probe (a full library scan every 8192nd cell set)
+  counted translated template alignments — excluding the learned ones — that were fully
+  matched by the current assignment, i.e. forbidden patterns completed by deductions that
+  neither the concrete-entry machinery nor the guess-time check could see. The assignment
+  contained such patterns at essentially every sample point: on average ~1.4 concurrent on
+  the oscillator workloads and ~350 on the spaceship workload (exact numbers in the
+  consolidated benchmarks section). Catching a completion at the moment it happens would
+  prune the doomed region immediately instead of waiting for the search to stumble out of
+  it.
+- *The cost is out of reach.* Detecting a completion when its last literal is set requires
+  finding all (template, alignment) pairs that contain the just-set (cell, state). Concrete
+  entries have that index because their positions are absolute; translated templates do
+  not, and there is no way to build one — every alignment of every template could match
+  any cell. The fallback is scanning the library: on the spaceship workload roughly 27k
+  templates × ~800 alignments × ~6 literals ≈ 140M operations per scan, against a per-set
+  budget of ~100 operations — three orders of magnitude too expensive to run often enough
+  to matter. A per-alignment watcher scheme (the watched-literal idea) does not escape
+  this: the watchers still have to be *created*, and creation requires the same scan.
+- *The escape hatches are speculative.* A much smaller hot-set library (activity-ranked,
+  tens of templates instead of tens of thousands) would make periodic scans affordable,
+  at the price of most of the knowledge; a fundamentally different index would have to
+  exploit structure that relative-coordinate templates do not have. Neither has a
+  concrete design.
 
-Precompute "rule-specific static forbidden patterns" that do not depend on the instance, e.g.
-"this 2x2 patch can never be all-alive under this rule". This is a small static nogood library
-that can be used to evaluate the hit rate and query cost before building the full machinery.
+**Not yet tried / skipped.**
+
+- Canonicalizing nogoods under `Config::symmetry` (a minimal representative per equivalence
+  class) could improve the hit rate — untested.
+- Clause-database-style management (eviction by activity/LBD) — currently only oldest-half
+  eviction plus query caps.
+- A static library of rule-specific forbidden patterns (e.g. "this 2x2 patch can never be
+  all-alive") was considered as an easy start and skipped: dynamic learning subsumes it.
+
+**What remains.** The honest summary of the five iterations: *persistent memory works and
+pays for itself only when it participates in propagation*, and the only affordable
+participation is through concrete entries with exact positions. Translated knowledge is
+cheap to store but unaffordable to match at this library scale (see the shelving analysis
+above). The measured bottleneck of the CDCL machinery on solving searches is the
+per-conflict analysis overhead, not the memory — reducing that is a separate direction
+(idea 1, "What remains").
 
 ## Idea 3: Phase saving and decision heuristics
 
-This idea has two parts. **Only the first part (phase saving) is implemented; the second part
-(VSIDS-style activity) is not.**
+### Phase saving — implemented
 
-### Phase saving
+`Config::phase_saving` (CLI `--phase-saving`; toggles in both UIs; off by default). Each cell
+remembers the last state it was set to (`LifeCell::phase`, written in `World::set_cell`) and
+`guess()` prefers that state. This replaces the global `Config::new_state` policy per cell;
+it is only a heuristic, so it is equally valid when enumerating multiple solutions. On
+save/load, the phases of the cells on the stack are rebuilt by replaying `set_cell`; phases
+of unset cells are lost, which only affects the heuristic.
 
-**Status: implemented as an experiment.** `Config::phase_saving` (CLI `--phase-saving`, plus
-toggles in the TUI and the egui UI) remembers the last state of each cell and guesses it first.
-It is off by default, so existing behavior is unchanged. Phase saving is stored per cell in
-`LifeCell::phase` (`lib/src/cell.rs`), written in `World::set_cell` when enabled, and consulted
-in `World::guess` (`lib/src/search.rs`). On save/load the phases of the cells on the stack are
-rebuilt by replaying `set_cell`; the phases of cells that were unset are lost, which only affects
-the heuristic.
+**Verdict** (qualitative, from the consolidated benchmarks, 2026-08-31):
 
-### Experiment results (2026-08, release build, hyperfine)
+- Helps on the factorio rule `R3,C2,S2,B3,N+` — the rule this project is built around:
+  about 2x faster on the 50x10 case (a different, also valid solution), neutral on the
+  larger 50x12 case (the same solution).
+- 1.5–3x slower on the other solving searches tried (the Generations control, the spaceship
+  cases, the INT rule, the oscillator search). The effect depends on the fixed `new_state`
+  strategy: when that strategy already fits the task, phase saving interferes.
+- Solves the very large 64x64 case in seconds where the default search hits the time limit.
+- Kept as opt-in. Follow-ups: restrict it to certain rules or new-state strategies, or
+  combine it with probing (idea 4).
 
-| Case | Without phase saving | With phase saving | Ratio |
-| --- | --- | --- | --- |
-| `B3/S23 26 8 4 -y 1 -n a` (justfile bench 1, spaceship) | 1.10 s | 3.41 s | 0.32x (3.1x slower) |
-| `3457/357/5 20 16 7 -x 3 -s D2- -n a` (justfile bench 2, Generations) | 2.00 s | 2.99 s | 0.67x (1.5x slower) |
-| `B3/S23 26 8 4 -y 1` (default new state) | 35.5 s | 37.5 s | 0.94x (slightly slower) |
-| `B3/S23 26 8 4 -y 1 -n r --seed 42` (random) | 2.56 s | 2.42 s | 1.06x (slightly faster) |
-| `3457/357/5 20 16 7 -x 3 -s D2-` (default new state) | 2.46 s | 2.93 s | 0.84x (slightly slower) |
-| `R3,C2,S2,B3,N+ 50 10 4 -x 2 -s D2-` (default rule, solves) | 26.7 s | 13.4 s | **2.0x faster** |
-| `R3,C2,S2,B3,N+ 50 12 3 -x 1 -s D2-` (default new state) | 139.0 s / 139.6 s | 131.8 s / 132.2 s | **1.05x faster** |
-| `R3,C2,S2,B3,N+ 50 12 3 -x 1 -s D2- -n r --seed 42` (random) | 34.1 s | 16.5 s | **2.1x faster** |
+### VSIDS-style activity — idea only
 
-Notes:
+Give cells that participate in conflicts a score bump, and branch on the most active cell.
+Not implemented; deliberately left out of the phase-saving experiment so the two heuristics
+could be evaluated separately. The risk: the fixed spatial order of the `next` chain is an
+important synergy with the front optimization and local propagation (the front argument in
+`docs/front.md` does not depend on the guess order, but the order affects propagation
+efficiency). Safe approaches: activity only within a local window of the current order, or an
+experimental switch to compare against the fixed order.
 
-- The effect depends strongly on the fixed `new_state` strategy. When the fixed strategy is
-  already well matched to the task (guessing alive for spaceship searches, or dead in general),
-  phase saving interferes and is slower. With random guessing it is mildly faster.
-- On the default factorio rule `R3,C2,S2,B3,N+` — the rule this project is built around — phase
-  saving helps: about 2x on the solving searches tested (26.7 s vs 13.4 s for
-  `50 10 4 -x 2 -s D2-`, and 34.1 s vs 16.5 s for `50 12 3 -x 1 -s D2-` with the random
-  strategy), but only about 5% on `50 12 3 -x 1 -s D2-` with the default dead strategy (139 s vs
-  132 s, finding the same solution with population 124). The two runs of `50 10 4` find different
-  solutions (population 72 vs 82), both valid.
-- The user-proposed large case was originally mis-typed as `50 12 3 -x 2 -s D2-`, which turns
-  out to be instant (~15 ms, NoSolution) in the current code, both before and after this change,
-  so it cannot serve as a slow benchmark. The correct `50 12 3 -x 1 -s D2-` (~139 s, solves) is
-  a realistic large case. R3 searches show a sharp difficulty cliff: some D2- period-3 cases are
-  instantaneous (a structural no-solution argument), while period-4 or C1 cases easily exceed
-  15 minutes.
-
-Verdict: mixed, but the factorio-rule results make it worth keeping as an opt-in, especially
-with the random `new_state` strategy. A follow-up could try restricting phase saving to certain
-rules or new-state strategies, or combining it with idea 4 (probing).
-
-### Phase saving (the MiniSat idea)
-
-Each cell remembers the last state tried or deduced for it, and prefers that state when it is
-guessed again. This replaces the global `Config::new_state` policy of Alive/Dead/Random. The
-change is concentrated in `guess()`, barely touches data structures, and is equally valid when
-enumerating multiple solutions (it is only a heuristic, not a correctness issue).
-
-### VSIDS-style activity
-
-**Status: not implemented.** This is still only an idea; it was deliberately left out of the
-phase saving experiment so that the two heuristics could be evaluated separately (see the
-"suggested order of exploration" section below).
-
-Give cells that participate in conflicts a score bump, and branch on the most active cell. The
-risk: the fixed spatial order of the `next` chain is an important synergy with the front
-optimization and local propagation (the front argument in `docs/front.md` does not depend on the
-guess order, but the order affects propagation efficiency). A safe approach is to use activity
-only within a local window of the current order, or to make it an experimental switch to compare
-against the fixed order.
+> Aside: R3 searches show a sharp difficulty cliff — some D2- period-3 cases are
+> instantaneous (a structural no-solution argument), while period-4 or C1 cases can exceed 15
+> minutes. Pick factorio-rule benchmarks carefully.
 
 ## Idea 4: Probing before branching (lookahead)
 
-**Status: implemented as an experiment** (polarity selection only; the cell-selection variant is
-not implemented). `Config::lookahead` (CLI `--lookahead`, plus toggles in the TUI and the egui
-UI) probes both states of the next unknown cell before guessing it, and guesses the better state
-(or the only non-conflicting one). It is off by default. It only applies to 2-state rules and is
-rejected for Generations rules by `Config::check` (the probe has no analogue for the dying
-states; the old "Generations rules are skipped" behavior — verified to be unaffected by a
-benchmark — was replaced by the explicit check). Probing is implemented
-in `World::probe` (`lib/src/search.rs`): it temporarily sets the cell, propagates with a cap of
-256 deductions (`MAX_PROBE_DEDUCTIONS`), scores the probe, and rolls it back. The rollback reuses
-the existing set/unset + stack machinery; `World::in_probe` prevents probes from corrupting phase
+**Idea.** The CA version of SatZ-style lookahead / DLIS. The lookup tables already embed one
+level of failed literals — `Implication::NeighborhoodAlive/Dead` (`lib/src/rule.rs`) are
+exactly "setting an unknown neighbor to some state leads to a conflict", and the `forced`
+bits of non-totalistic rules are the same for individual neighbors. Probing goes one level
+deeper: before branching on a cell, try its candidate states, propagate for a bounded number
+of steps, and use the outcome to choose. A conflict found while probing is a free
+failed-literal prune. The world is small, `check_affected` is cheap, and everything is local,
+which fits factoriosrc well.
+
+**Status: implemented** (polarity selection only; the cell-selection variant is not).
+`Config::lookahead` (CLI `--lookahead`; toggles in both UIs; off by default; 2-state rules
+only — `Config::check` rejects Generations, since the dying states have no probe analogue).
+`World::probe` (`lib/src/search.rs`) temporarily sets the next unknown cell to each state,
+propagates with a cap of `MAX_PROBE_DEDUCTIONS` deductions, scores the probe, and rolls it
+back (reusing the existing set/unset + stack machinery); the search then guesses the better
+state, or the only non-conflicting one. `World::in_probe` keeps probes from corrupting phase
 saving when both are enabled.
 
-The CA version of SatZ-style lookahead / DLIS.
+**Verdict** (qualitative, from the consolidated benchmarks, 2026-08-31):
 
-- The current lookup tables already embed one level of failed literals:
-  `Implication::NeighborhoodAlive/Dead` (`lib/src/rule.rs:356-365`) are exactly "setting an
-  unknown neighbor to some state leads to a conflict", precomputed; the `forced` bits of
-  non-totalistic rules are the same idea for individual neighbors.
-- **One level deeper**: before branching, probe candidate cells — set, propagate for k steps,
-  count deductions/check for conflicts, unset. Use the score to rank candidate cells. A conflict
-  found while probing is a free failed-literal prune.
-- The world is small, `check_affected` is cheap, and everything is local, which fits factoriosrc
-  well.
-- This needs a snapshot/rollback mechanism: the existing set/unset + stack machinery can be
-  reused, or probing can run on a separate small stack.
+- Dramatic win on the `B3/S23` dead-first search (about 7x faster, and it finds the same
+  pattern as the alive-first search): probes immediately discover failed literals and pick
+  alive first, avoiding long dead branches.
+- Also solves the very large 64x64 case in under a tenth of a second (a different pattern).
+- Clear loss on the default factorio-rule searches, and about 3x slower on the INT-rule and
+  oscillator searches. Lowering the probe cap did not change this (earlier runs), so the
+  overhead is the fixed per-guess probe cost, not the propagation depth.
+- Kept as opt-in because of the large potential win. Follow-ups: probe less often (e.g. only
+  every k-th guess, or only when the preferred state differs from the default guess), probe a
+  single state instead of both, or only probe small neighborhoods where the check is cheap.
+- The cell-selection variant (using probe scores to choose *which* cell to branch on, not
+  just which state) is not implemented; it needs a small search-order refactor to stay sound.
 
-### Experiment results (2026-08, release build, hyperfine)
-
-| Case | Without lookahead | With lookahead | Ratio |
-| --- | --- | --- | --- |
-| `B3/S23 26 8 4 -y 1` (default new state) | 39.0 s | 5.66 s | **6.9x faster** |
-| `B3/S23 26 8 4 -y 1 -n a` (spaceship, alive) | 1.20 s | 5.67 s | 0.21x (4.7x slower) |
-| `3457/357/5 20 16 7 -x 3 -s D2- -n a` (Generations control) | 2.12 s | 2.14 s | 1.01x (no effect) |
-| `R3,C2,S2,B3,N+ 50 10 4 -x 2 -s D2-` (default rule) | 27.8 s | 32.3 s | 0.86x (1.16x slower) |
-| `R3,C2,S2,B3,N+ 50 12 3 -x 1 -s D2-` (default rule) | 141.7 s / 143.6 s | 230.8 s / 231.1 s | 0.62x (1.6x slower) |
-| `R3,C2,S2,B3,N+ 50 12 3 -x 1 -s D2- -n r --seed 42` (random) | 35.7 s | 232.3 s | 0.15x (6.5x slower) |
-
-Notes:
-
-- Lookahead gives a dramatic win on the `B3/S23` default-strategy search (6.9x faster): with
-  dead-first guessing, probes immediately discover failed literals and pick alive first, avoiding
-  long dead branches.
-- It is a clear loss on the default factorio rule searches (1.6x to 6.5x slower). Lowering the
-  probe cap from 256 to 32 deductions did not change this (238 s vs 231 s on the 50x12 case), so
-  the overhead is the fixed per-guess probe cost, not the propagation depth.
-- The Generations control ran before the `Config::check` change: lookahead is now rejected
-  for Generations rules, so this control cannot be reproduced with the current code (the
-  old behavior — the probe was skipped — was the "no effect" that the row shows).
-- The two runs of `50 12 3 -x 1 -s D2-` find the same solution (population 124) with and without
-  lookahead; the probe overhead is pure loss on that search.
-
-Verdict: mixed, and on the whole a net loss for the searches this project cares about most (the
-default factorio rule). It is kept as an opt-in because the `B3/S23` default-strategy case shows
-a large potential win. A follow-up could probe less often (e.g. only every k-th guess, or only
-when the preferred state would be the default guess), probe a single state instead of both, or
-only probe small neighborhoods where the check is cheap.
-
-## Idea 5: Consistency across overlapping neighborhoods (an arc-consistency analogue)
+## Idea 5: Consistency across overlapping neighborhoods
 
 Propagation currently only reasons inside a single cell's descriptor. The descriptors of two
-adjacent cells share variables (shared neighbors + the successor chain), and together they can
-deduce things that neither table can alone. This is the analogue of 2-consistency in CP, or local
-resolution in SAT preprocessing.
+adjacent cells share variables (shared neighbors + the successor chain), and together they
+can deduce things that neither table can alone — the analogue of 2-consistency in CP, or
+local resolution in SAT preprocessing.
 
 - Fully precomputing this is infeasible (two neighborhoods give about 2^(2n) entries). A
-  practical approach is to check "descriptor pairs" encountered during propagation on the fly,
-  with a small cache (transposition-table style).
-- A generative variant: analogous to BVE (bounded variable elimination), fold the deterministic
-  dying chains of Generations rules (they are already deterministic propagation, so they can be
-  eliminated like pseudo-variables).
+  practical approach is to check "descriptor pairs" encountered during propagation on the
+  fly, with a small cache (transposition-table style).
+- A generative variant, analogous to BVE (bounded variable elimination): fold the
+  deterministic dying chains of Generations rules (they are already deterministic
+  propagation, so they can be eliminated like pseudo-variables).
 
 ## Idea 6: Multi-valued encoding for Generations rules
 
 - `Reason::TryAnother` branches in a cycle over the states, while CDCL techniques live in the
   Boolean domain.
-- Treat the dying chain as deterministic propagation (it already is), and restrict learning and
-  backjumping to the dead/alive base layer; or encode Generations rules in Boolean variables (one
-  variable per cell per state, with exactly-one constraints), so that the 2-state CDCL machinery
-  applies unchanged.
+- Options: treat the dying chain as deterministic propagation (it already is) and restrict
+  learning and backjumping to the dead/alive base layer; or encode Generations rules in
+  Boolean variables (one variable per cell per state, with exactly-one constraints), so that
+  the 2-state CDCL machinery applies unchanged.
 - Either way, preserve the asymmetry of deduction (only alive can be deduced).
 
 ## Idea 7: Restarts (Luby sequence) — not recommended for now
 
-- Restarts help find the first solution, but factoriosrc's typical use case is enumerating all
-  solutions, where restarts only repeat work.
-- They only make sense together with idea 2 (nogood memory) and phase saving, and they interact
-  badly with save/load and incremental world growth.
+- Restarts help find the first solution, but factoriosrc's typical use case is enumerating
+  all solutions, where restarts only repeat work.
+- They only make sense together with idea 2 (nogood memory) and phase saving, and they
+  interact badly with save/load and incremental world growth.
 - Reconsider only after the CDCL-style techniques above are mature.
 
 ## Other loose ideas
 
 - **Component caching** (SAT's component caching): split the unknown cells into independent
-  components by constraint dependency and solve each separately. The constraint graph is dense in
-  periodic searches, so components are rare; a large world with many known cells might be an
-  exception.
+  components by constraint dependency and solve each separately. The constraint graph is dense
+  in periodic searches, so components are rare; a large world with many known cells might be
+  an exception.
 - **Cube-and-conquer**: split the search space into cubes to solve in parallel, for future
   parallel search (the egui frontend already runs the search on a background thread).
-- **Encode as CNF and compare against an off-the-shelf SAT solver**: periodic pattern search can
-  be encoded directly (one variable per cell per generation plus transition constraints). This
-  could serve as a baseline for the ceiling of what a SAT-style approach can achieve.
+- **Encode as CNF and compare against an off-the-shelf SAT solver**: periodic pattern search
+  can be encoded directly (one variable per cell per generation plus transition constraints).
+  This could serve as a baseline for the ceiling of what a SAT-style approach can achieve.
 - Borrowing from row-by-row searchers (e.g. qfind) is a separate direction (already in the
   README) and out of scope here.
 
-## Suggested order of exploration
+## Consolidated benchmarks
 
-1. Idea 3, phase saving part: **done** — implemented as an opt-in `Config::phase_saving` and
-   benchmarked (see the results above). Kept as opt-in because the payoff is rule-dependent. The
-   VSIDS-style activity part of idea 3 is **not** done; it is an open follow-up, possibly as an
-   experimental switch compared against the fixed order;
-2. Idea 4, polarity-selection part: **done** — implemented as an opt-in `Config::lookahead` and
-   benchmarked (see the results above). Kept as opt-in; it is a large win on the `B3/S23`
-   default-strategy search but a loss on the default factorio rule. The cell-selection variant of
-   idea 4 (which needs a small search-order refactor to stay sound) is **not** done;
-3. The foundation of idea 1: attach antecedents to `Reason::Deduced` (record only, do not change
-   the algorithm yet) — **done** — implemented as an opt-in `Config::backjump` (the flag records
-   antecedents and decision levels, and also enables the full analysis; see the next item). The
-   recording costs about 2.5-3% when enabled and nothing when disabled. This is the prerequisite
-   for all later CDCL-style techniques;
-4. The full idea 1 (1-UIP backjumping): **done, correctness verified** — implemented and made
-   sound (three fixes: decision-carrier levels, stop-at-reasonless, chain-rank resumption +
-   targeted re-check; see the idea 1 section). The differential matrix (16,200 configurations)
-   matches the default search. Performance: a **loss on small and medium searches** (the analysis
-   re-treads closed branches without a persistent nogood database, ~30x slower on the spaceship
-   benchmark), but a **decisive win on very large searches** (e.g. `B3/S23 64 64 1 -n a` finds a
-   pattern in 19 ms where the default search does not finish — the same regime rlifesrc
-   observed). The flag stays opt-in for experimentation.
-5. Idea 2, exact-position mode with propagation-level firing: **done, correctness verified** —
-   implemented as an opt-in `Config::nogood` (implicitly enables backjumping; see the idea 2
-   section). Iteration 1 (guess-time checks only) recovered part of the re-treading loss;
-   iteration 2 (counter-based unit propagation on the learned nogoods) is the mechanism that
-   actually pays off. Iterations 3 and 4 added anchor classes, translatable templates
-   (`Config::nogood_translate`), and cross-size transfer through `increase_world_size` —
-   verified sound (the growth differential tests caught two classification bugs), but
-   net-negative on wall time so far. The next refinement would be propagation-integrated
-   template matching (watched-literal style), a larger redesign;
-6. Ideas 5 and 6 as needed; idea 7 last.
+> The numbers in earlier revisions of this document came from several one-off runs with
+> slightly different setups and have been retired. The table below is from one unified
+> re-measurement run. Re-run the whole table with the same driver and time limit instead of
+> patching single cells, and keep exact numbers in this section only.
 
-## Things to re-check before implementing
+Setup: 2026-08-31, release build, rustc 1.98.0, Intel i9-12900KS, single run per cell.
+Driver: the in-repo example `lib/examples/bench` (`cargo run --release -p factoriosrc-lib
+--example bench -- <case>`); it accepts the same shapes as the TUI CLI. Timing starts after
+the world and its rule table are built, so it measures the search itself. Uniform time
+limit: 240 s per run, chosen so that the slowest known-finite configuration still finishes.
+Work metric: search steps (calls to `World::search(1)`). Raw solution counts are not
+comparable across strategies (the search may legitimately re-find solutions; correctness is
+solution-set equality, verified by the differential tests), so they are not reported.
 
-- Conflicts from global constraints (front_count, below_max, check_period) are not learnable and
-  must be marked specially in conflict analysis. See `docs/front.md` for the reasoning framework.
+The `--nogood-translate` column and the oscillator seed sweep were re-measured on the same
+day after iteration 5 made single-size translate identical to `--nogood`; the other columns
+are from the original unified run, which the change cannot affect.
+
+| Case | Why this case | default | `--backjump` | `--nogood` | `--nogood-translate` | `--phase-saving` | `--lookahead` |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `B3/S23 26 8 4 -y 1 -n a` | spaceship search; the re-treading case | 1.31 s | 46.8 s | 13.7 s | 15.7 s | 3.99 s | 6.14 s |
+| `B3/S23 26 8 4 -y 1` | same, default (dead-first) `new_state` | 42.3 s | DNF | DNF | DNF | 43.9 s | 6.13 s |
+| `B3/S23 64 64 1 -n a` | very large world; where CDCL shines | DNF | **21 ms** | **7 ms** | 6 ms | 2.08 s | 47 ms |
+| `B3/S23 4 4 2` (enumerate all) | enumeration work, shallow | <1 ms · 389 steps | 2 ms · 2,352 | 2 ms · 563 | 1 ms · 563 | <1 ms · 389 | <1 ms · 343 |
+| `B3/S23 5 5 2` (enumerate all) | enumeration work, deep | 3 ms · 4,649 | 208 ms · 306,064 | 31 ms · 12,246 | 31 ms · 12,246 | 3 ms · 4,649 | 2 ms · 3,777 |
+| `3457/357/5 20 16 7 -x 3 -s D2- -n a` | Generations control | 2.30 s | n/a | n/a | n/a | 3.36 s | n/a |
+| `R3,C2,S2,B3,N+ 50 10 4 -x 2 -s D2-` | factorio rule, solves | 29.3 s | DNF | DNF | DNF | 14.6 s | 34.1 s |
+| `R3,C2,S2,B3,N+ 50 12 3 -x 1 -s D2-` | factorio rule, large | 150.2 s | DNF | DNF | DNF | 145.5 s | DNF |
+| `B2n3/S23-q 30 9 4 -x 1` | isotropic non-totalistic rule | 1.27 s | DNF | DNF | DNF | 2.77 s | 4.05 s |
+| `B3/S23 20 20 2 -n r --seed 42` | deep period-2 oscillator search (random guessing) | 35.4 s | DNF | **7.59 s** | 7.14 s | 77.9 s | 108.6 s |
+| `B3/S23 4 4 1` exhaust-and-grow to 8x8 | growth workflow for cross-size transfer | **5.5 s** | 33.2 s + DNF at 8x8 | 167 s | 213 s | — | — |
+
+DNF = the uniform 240 s limit was exceeded; `n/a` = the flag/rule combination is rejected by
+`Config::check`; `—` = not applicable to this workflow. Enumeration and growth cells show
+`time · steps`. Growth row details: the default search exhausted every size up to 8x8 (8x8:
+38.4M steps, 4.7 s); nogood and nogood-translate also exhausted every size (8x8: 10.2M steps
+in 147 s, and 7.05M steps in 183 s); backjump exhausted up to 7x8 and hit the limit at 8x8
+(429.8M steps without finishing).
+
+Which solution was found (pops = population of the first solution found; "same" = the
+identical pattern):
+
+- Spaceship row: all six configurations find the same pattern (pop 57).
+- Dead-first row: default and phase-saving the same pattern (pop 53); lookahead the same
+  pattern as the spaceship row (pop 57).
+- 64x64 row: backjump, nogood, and nogood-translate the same pattern (pop 1848);
+  phase-saving pop 1821; lookahead pop 1419 — three different patterns.
+- Generations row: default pop 72, phase-saving pop 78.
+- Factorio rows: 50x10 — default pop 72, phase-saving pop 82, lookahead pop 84; 50x12 —
+  default and phase-saving the same pattern (pop 124).
+- INT row: default and lookahead the same pattern (pop 66); phase-saving pop 43.
+- Oscillator row: all five configurations find different patterns (pops 164 / 155 / 167 /
+  159 / 140) — expected with random guessing, and a reminder that a heuristic change also
+  changes *which* example the tool finds.
+
+Observations:
+
+- **The CDCL profile is remarkably uniform on solving searches**: on the factorio rule, the
+  INT rule, and the dead-first spaceship case, backjumping, nogoods, and templates all hit
+  the 240 s limit where the default search finishes. The analysis overhead per conflict
+  dominates there, not the lack of memory (idea 1, lesson 4).
+- **Very large searches remain the CDCL showcase** (64x64 row): the default search made no
+  progress in 240 s (2.6B steps), while backjumping solved in 21 ms and the nogood database
+  in 7 ms — the nogood firing turns the jumps themselves into propagation.
+- **Deep period-2 searches with random guessing are the one measured regime where idea 2
+  beats the plain search** (oscillator row): nogood is 4.7x faster than default, and the
+  seed sweep below shows the win is systematic across seeds — random guessing makes the
+  plain search so redundant that propagation firing's step reduction dwarfs its per-step
+  cost. (The translate variant's apparent 9.6x win on this row in the original run was
+  trajectory luck of the since-removed guess-time template checks.)
+- **Template transfer prunes but does not pay on growth workflows** (growth row):
+  nogood-translate takes ~31% fewer steps than plain nogood at 8x8, but ~25% more wall
+  time; and the plain chronological search beats both by an order of magnitude. After
+  iteration 5 the translate overhead is template bookkeeping and instantiation only.
+- **Phase saving** is about 2x faster on the factorio-rule 50x10 case, neutral on 50x12
+  (same solution), 1.5–3x slower on the other solving searches, and it solves the 64x64
+  case in 2.1 s.
+- **Lookahead** reproduces its dramatic win on the dead-first spaceship case (6.9x faster;
+  it finds the same pattern as the alive-first search) and loses ~1.2–3.2x on the factorio,
+  INT, and oscillator searches.
+
+Seed sweep on the oscillator case (default / `--nogood` / `--nogood-translate`, seeds 1, 2,
+3, 42), run to separate mechanism from trajectory luck. The translate cells are from the
+post-iteration-5 re-measurement, where translate is exactly `--nogood` plus template
+bookkeeping; the pre-iteration-5 translate runs — with the since-removed guess-time checks —
+measured 1.1 s (seed 1), DNF (seed 2), 5.6 s (seed 3), and 3.3 s (seed 42), pure trajectory
+luck of that mechanism:
+
+| Seed | default | `--nogood` | `--nogood-translate` |
+| --- | --- | --- | --- |
+| 1 | 6.0 s · 42.8M steps | 2.1 s · 414k | 2.3 s · 414k |
+| 2 | 10.3 s · 72.5M steps | 1.6 s · 272k | 1.7 s · 272k |
+| 3 | 125.8 s · 836M steps | 5.2 s · 773k | 5.5 s · 773k |
+| 42 | 35.4 s · 252.9M steps | 6.9 s · 780k | 7.1 s · 780k |
+
+`--nogood` is faster than the default search on every seed (the step reduction is 60–1000x
+on a highly redundant random-guessing search). After iteration 5, `--nogood-translate`
+reproduces the `--nogood` trajectory exactly.
+
+Investigation probe for the shelved propagation-integrated template matching (temporary
+instrumentation, since removed): a full template-library scan every 8192nd cell set counted
+translated alignments — excluding the learned ones — that were *fully* matched by the
+current assignment. Oscillator seed 42: 758 matches over 547 samples (~1.4 concurrent);
+oscillator seed 2: 9,043 over 5,211 samples (~1.7); spaceship: 461,832 over 1,308 samples
+(~350 concurrent). The assignment therefore routinely contains forbidden translated
+patterns that nothing catches — but scanning the library costs ~140M operations on the
+spaceship workload against a ~100-operation per-set budget (see the shelving analysis in
+idea 2), so the probe's instrumentation was removed rather than turned into a mechanism.
+
+## Suggested next steps
+
+1. **Reduce the per-conflict analysis overhead** — the uniform DNF profile of the CDCL
+   flags on solving searches (factorio rule, INT rule, dead-first spaceship case) is an
+   overhead problem, not a memory problem (idea 1, "What remains"). This is the biggest
+   unaddressed lever in the benchmark table.
+2. **Idea 2 follow-ups (optional, speculative)**: the probe quantified a large pool of
+   uncaught translated-pattern completions (see idea 2); closing it needs a fundamentally
+   cheaper translated-match index — e.g. a small activity-ranked hot set with periodic
+   doom scans — or accepting exact-position memory as the ceiling. No concrete design
+   exists; do not attempt without one.
+3. **Idea 3: VSIDS activity** as an experimental switch compared against the fixed order
+   (mind the fixed-order synergy with the front optimization).
+4. **Idea 4: cheaper probing** (probe less often, one state, or only cheap neighborhoods);
+   the cell-selection variant needs a small search-order refactor to stay sound.
+5. Ideas 5 and 6 as needed; idea 7 last, only once nogood memory and phase saving are
+   mature.
+
+## Checklist before implementing
+
+- Conflicts from global constraints (`front_count`, `below_max`, `check_period`) are not
+  learnable and must be marked specially in conflict analysis. See `docs/front.md` for the
+  reasoning framework.
 - Any unsafe change in `lib/src/world.rs`, `lib/src/search.rs`, or `lib/src/cell.rs` requires
-  `cargo +nightly miri test test_miri`.
+  Miri: `just init`, then `cargo +nightly miri test test_miri`.
 - New fields or states that need persistence must be synced with `WorldSerde`
-  (`lib/src/world.rs:1384`) and the TUI/egui save formats (which are not interchangeable, see
+  (`lib/src/world.rs`) and the TUI/egui save formats (which are not interchangeable, see
   AGENTS.md).
-- `Config::check()` (`lib/src/config.rs`) is the single source of truth for validation; if a new
-  search strategy affects the supported rules, change `Config` first, then the UIs and docs.
-- Each idea must be validated separately for the combination of "enumerate all solutions +
-  reduce_max_population + incrementally larger worlds": is the learned information still valid
-  after backtracking and after rebuilding the world?
-- For the idea-1 machinery in particular, validate by comparing the *sets* of enumerated
-  solutions against the default search (the raw solution counts differ even without backjumping,
+- `Config::check()` is the single source of truth for validation; if a new search strategy
+  affects the supported rules, change `Config` first, then the UIs and docs — and update the
+  status table of this document in the same change.
+- Validate each idea separately for the combination of "enumerate all solutions +
+  `reduce_max_population` + incrementally larger worlds": is the learned information still
+  valid after backtracking and after rebuilding the world?
+- For the CDCL machinery in particular, validate by comparing the *sets* of enumerated
+  solutions against the default search (raw solution counts differ even without backjumping,
   since the search may legitimately re-find a solution, e.g. a pattern and its generation
   rotation). This differential test caught the incompleteness bug in the first 1-UIP attempt.

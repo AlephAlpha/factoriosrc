@@ -350,10 +350,12 @@ pub struct Config {
     /// When this is `true`, every learned nogood whose derivation did not
     /// rely on untranslatable facts is additionally stored as a template in
     /// coordinates relative to its anchor (edge-pinned nogoods keep their
-    /// pinned coordinates). Before guessing a state, the templates are
-    /// consulted: a forbidden pattern that matches at the guessed cell —
-    /// possibly translated along the axes its anchors allow — blocks that
-    /// guess.
+    /// pinned coordinates). Templates do not participate in the search
+    /// itself; they are handed over to the new world when the world size
+    /// increases (see
+    /// [`increase_world_size`](crate::World::increase_world_size)), where
+    /// they are instantiated as concrete entries and take part in
+    /// propagation-level firing.
     ///
     /// This enables [`nogood`](Config::nogood) implicitly, and inherits its
     /// restrictions. The default is `false`.

@@ -11,9 +11,6 @@ use crate::{
 /// The maximum number of cells that a lookahead probe may set before it stops.
 const MAX_PROBE_DEDUCTIONS: usize = 256;
 
-/// The maximal number of templates examined per state in a guess-time check.
-const MAX_TEMPLATE_CANDIDATES: usize = 16;
-
 /// The result of a guess.
 enum GuessResult {
     /// A guess was made, and the search continues.
@@ -655,15 +652,6 @@ impl World {
         unsafe {
             while let Some(cell) = self.start.as_ref() {
                 if cell.state().is_none() {
-                    // If translated templates are enabled, check whether
-                    // either state of the cell completes a forbidden pattern
-                    // at some translated position.
-                    if self.config.nogood_translate
-                        && let Some(result) = self.nogood_template_check(cell)
-                    {
-                        return result;
-                    }
-
                     // If lookahead is enabled for a 2-state rule, probe both
                     // states of the cell before guessing.
                     //
@@ -909,143 +897,6 @@ impl World {
             y_mode,
             lits,
         }
-    }
-
-    /// Check the translated templates for an unknown cell before guessing it.
-    ///
-    /// A template matches when some translation of it — allowed by its axis
-    /// modes — places one literal on the queried cell with the queried state
-    /// and every other literal on a cell that currently holds its recorded
-    /// state. A match means that no solution extends the current assignment,
-    /// so exactly one blocked state forces the other one, and two blocked
-    /// states make the search backtrack. Like the flip of a guess by
-    /// [`backtrack`](World::backtrack), a forced assignment occupies a
-    /// decision level of its own.
-    ///
-    /// Return [`None`] if no state is blocked.
-    ///
-    /// # Safety
-    ///
-    /// The cell must be in the same world as `self`, and its state must be
-    /// unknown. Otherwise the behavior is undefined.
-    unsafe fn nogood_template_check(&mut self, cell: &LifeCell) -> Option<GuessResult> {
-        debug_assert!(self.config.nogood);
-        debug_assert!(self.config.nogood_translate);
-
-        let (cx, cy, ct) = self.cell_coord(unsafe { self.cell_index(cell) } as u32);
-
-        let dead_blocked = self.template_blocks(cx, cy, ct, CellState::Dead);
-        let alive_blocked = self.template_blocks(cx, cy, ct, CellState::Alive);
-
-        match (dead_blocked, alive_blocked) {
-            (false, false) => None,
-
-            (true, true) => {
-                self.nogood_db.note_template_hit();
-                Some(GuessResult::Conflict)
-            }
-
-            (dead_blocked, _) => {
-                self.nogood_db.note_template_hit();
-                let state = if dead_blocked {
-                    CellState::Alive
-                } else {
-                    CellState::Dead
-                };
-                unsafe {
-                    self.set_cell(cell, state, Reason::Deduced, None, true);
-                }
-                self.start = cell.next;
-                Some(GuessResult::Guessed)
-            }
-        }
-    }
-
-    /// Whether assigning `state` to the cell at `(cx, cy, ct)` would complete
-    /// some translated template; see
-    /// [`nogood_template_check`](World::nogood_template_check).
-    ///
-    /// Only the first [`MAX_QUERY_CANDIDATES`] templates of the bucket are
-    /// examined.
-    fn template_blocks(&self, cx: i32, cy: i32, ct: i32, state: CellState) -> bool {
-        let w = self.config.width as i32;
-        let h = self.config.height as i32;
-        let p = self.config.period as i32;
-
-        let ids = self.nogood_db.template_ids_with(state);
-
-        for &id in ids.iter().take(MAX_TEMPLATE_CANDIDATES) {
-            let template = self.nogood_db.template(id);
-
-            'literals: for (li, &(fx, fy, ft, lit_state)) in template.lits.iter().enumerate() {
-                // Try to align this literal with the queried cell. Literal
-                // states other than the queried one cannot sit on the cell.
-                if lit_state != state {
-                    continue;
-                }
-
-                let bx = match template.x_mode {
-                    XMode::Free => cx - fx,
-                    XMode::Absolute | XMode::AbsoluteAndRight => {
-                        if cx != fx {
-                            continue;
-                        }
-                        0
-                    }
-                    XMode::RightEdge => {
-                        if cx != (w - 1) - fx {
-                            continue;
-                        }
-                        0
-                    }
-                };
-                let by = match template.y_mode {
-                    YMode::Free => cy - fy,
-                    YMode::Absolute | YMode::AbsoluteAndBottom => {
-                        if cy != fy {
-                            continue;
-                        }
-                        0
-                    }
-                    YMode::BottomEdge => {
-                        if cy != (h - 1) - fy {
-                            continue;
-                        }
-                        0
-                    }
-                };
-                let bt = (ct - ft as i32).rem_euclid(p);
-
-                // Verify that every other literal holds at its resolved
-                // position. Cells outside the world read as the background
-                // state, which is sound: a translated pattern may hang over
-                // the boundary, and the background values are facts.
-                for (lj, &(fx2, fy2, ft2, ls2)) in template.lits.iter().enumerate() {
-                    if lj == li {
-                        continue;
-                    }
-                    let ax = match template.x_mode {
-                        XMode::Free => bx + fx2,
-                        XMode::Absolute | XMode::AbsoluteAndRight => fx2,
-                        XMode::RightEdge => (w - 1) - fx2,
-                    };
-                    let ay = match template.y_mode {
-                        YMode::Free => by + fy2,
-                        YMode::Absolute | YMode::AbsoluteAndBottom => fy2,
-                        YMode::BottomEdge => (h - 1) - fy2,
-                    };
-                    let at = (bt + ft2 as i32).rem_euclid(p);
-
-                    if self.get_cell_state((ax, ay, at)) != Some(ls2) {
-                        continue 'literals;
-                    }
-                }
-
-                return true;
-            }
-        }
-
-        false
     }
 
     /// One step of the search.
