@@ -494,7 +494,12 @@ local resolution in SAT preprocessing.
   parallel search (the egui frontend already runs the search on a background thread).
 - **Encode as CNF and compare against an off-the-shelf SAT solver**: periodic pattern search
   can be encoded directly (one variable per cell per generation plus transition constraints).
-  This could serve as a baseline for the ceiling of what a SAT-style approach can achieve.
+  This could serve as a baseline for the ceiling of what a SAT-style approach can achieve —
+  first measured via LLS (see the SAT comparison in the consolidated benchmarks): factoriosrc
+  wins 25–280x on its home turf, generic SAT wins the redundant oscillator regime, and the
+  64x64 row shows factoriosrc's own CDCL machinery beating kissat when enabled. An own
+  encoder for higher-range rules (counting-network decomposition of the 24-input transition)
+  remains the open SAT question.
 - Borrowing from row-by-row searchers (e.g. qfind) is a separate direction (already in the
   README) and out of scope here.
 
@@ -609,12 +614,71 @@ patterns that nothing catches — but scanning the library costs ~140M operation
 spaceship workload against a ~100-operation per-set budget (see the shelving analysis in
 idea 2), so the probe's instrumentation was removed rather than turned into a mechanism.
 
+### SAT comparison: LLS + off-the-shelf solvers (2026-08-31)
+
+Logic Life Search (Python, version 6, git `ec6c24`) encodes a search as CNF and
+calls an off-the-shelf solver; this measures the generic-SAT ceiling on the Life-like cases
+that LLS can express (no higher-range rules, no Generations, no enumeration, no world
+growth). Setup: same machine and 240 s limit as the table above; solver kissat (Debian
+build); `--background vacuum` (border cells dead, matching factoriosrc's semantics — the
+LLS default `possible_strobing` would change the problem); `-c 0 2` for exact period 4;
+`-p ">0"` for the still-life case; default transition encodings (`-M 1` for Life, `-M 2`
+otherwise, both others tried on the ship case). Note the formulation difference: LLS builds
+a fixed window of p+1 generations with the last equal to the first translated by (dx, dy),
+while factoriosrc builds p generations whose successor wraps into the first — so a ship's
+LLS box must be taller/wider than factoriosrc's by roughly (p−1)·|displacement| (the ship
+row uses 26x11/26x12 for factoriosrc's 26x8). Wall time includes CNF generation in Python;
+solver time is LLS's own report.
+
+| Case | CNF (vars / clauses) | LLS + kissat | factoriosrc best | factoriosrc default |
+| --- | --- | --- | --- | --- |
+| 25P3H: `16 6 3 -y 1` | 369 / 34,412 | 1.11 s (+0.3 s encode) | 4 ms (dead-first) | 4 ms |
+| Brain: `17 12 3 -y 1 -s D2\|` | 424 / 43,369 | 2.49 s | 48 ms (dead-first) | 102 ms |
+| ship: `26 11..12 4 -y 1` | 1,405 / 86k–447k (per `-M`) | DNF ×3 encodings | 1.31 s (`-n a`) | 42.3 s |
+| oscillator: `20 20 2` | 1,201 / 130,954 | **0.83 s** | 7.6 s (`--nogood`) | 35.4 s |
+| still life: `64 64 1` | 12,287 / 509,802 | 5.2 s | **21 ms** (`--backjump`) | DNF |
+| INT: `B2n3/S23-q 33 9 4 -x 1` | 1,477 / 461,102 | DNF | 1.27 s | 1.27 s |
+
+Observations:
+
+- **The tutorial's times are outdated.** The LLS tutorial reports 57.5 s for the Brain
+  search; with the current kissat it is 2.5 s. Any conclusion drawn from the tutorial's
+  numbers (including the doubt that motivated this comparison) needs re-measurement — which
+  is what this table is.
+- **factoriosrc wins decisively on its home turf.** On small/medium spaceship and INT-rule
+  searches it is 25–280x faster than LLS+kissat. The specialized machinery — the precomputed
+  rule table (which is worth far more per decision than generic unit propagation over a CNF
+  encoding), the front optimization, and the fixed search order — has no CNF analogue.
+- **SAT wins the redundant regime.** The 20x20 oscillator is the one case where generic SAT
+  beats every factoriosrc configuration (0.83 s vs 7.6 s for `--nogood`, 35.4 s default).
+  This is the same redundancy story as the seed sweep above — kissat learns clauses over the
+  whole box without paying factoriosrc's per-step interpreter cost — and it confirms that
+  factoriosrc's remaining disadvantage there is engineering overhead, not architecture.
+- **The 64x64 split is the most instructive row.** factoriosrc's default search DNFs,
+  `--backjump`/`--nogood` solve it in 7–21 ms — beating kissat's 5.2 s by ~250x — yet those
+  same flags lose on every small/medium search. The table-propagation-plus-conflict-analysis
+  combination is genuinely stronger than a state-of-the-art SAT solver on this encoding when
+  its overhead does not dominate.
+- **Ship searches are LLS's weak spot.** The p+1 fixed-window formulation makes a 26-wide
+  period-4 ship hard for kissat under all three transition encodings, where factoriosrc's
+  moving-window formulation solves it in seconds.
+- **Verdict on the SAT path:** as a replacement for factoriosrc's core, no. As a backend
+  for specific regimes (redundant oscillator-type searches, UNSAT proving, possibly an
+  optimization-search frontend), a hybrid could make sense. The remaining open SAT question
+  is a hand-written encoding for higher-range rules (LLS cannot express them, and the 24-input
+  transition constraint needs a counting-network decomposition); the ship and INT results
+  above temper expectations. Note also: LLS's minisat backend crashes on the Debian build's
+  output format; running minisat standalone on the dumped 25P3H CNF took 0.97 s — comparable
+  to kissat's 1.11 s on this small instance.
+
 ## Suggested next steps
 
 1. **Reduce the per-conflict analysis overhead** — the uniform DNF profile of the CDCL
    flags on solving searches (factorio rule, INT rule, dead-first spaceship case) is an
    overhead problem, not a memory problem (idea 1, "What remains"). This is the biggest
-   unaddressed lever in the benchmark table.
+   unaddressed lever in the benchmark table, and the SAT comparison reinforces it: the one
+   regime where generic SAT wins (the oscillator) is the one where factoriosrc's per-step
+   interpreter cost, not its architecture, is the limiter.
 2. **Idea 2 follow-ups (optional, speculative)**: the probe quantified a large pool of
    uncaught translated-pattern completions (see idea 2); closing it needs a fundamentally
    cheaper translated-match index — e.g. a small activity-ranked hot set with periodic
@@ -624,7 +688,13 @@ idea 2), so the probe's instrumentation was removed rather than turned into a me
    (mind the fixed-order synergy with the front optimization).
 4. **Idea 4: cheaper probing** (probe less often, one state, or only cheap neighborhoods);
    the cell-selection variant needs a small search-order refactor to stay sound.
-5. Ideas 5 and 6 as needed; idea 7 last, only once nogood memory and phase saving are
+5. **SAT follow-ups (optional)**: an own CNF encoder for higher-range rules (counting-network
+   decomposition) would settle whether the factorio rule is tractable for generic SAT;
+   a hybrid "SAT backend for redundant/UNSAT regimes" is conceivable but has no concrete
+   design yet. Learn from Minisat/Kissat with a shopping list tied to the analysis-overhead
+   bottleneck (allocation-free `analyze()`, clause minimization, LBD-based database
+   reduction, restart policies).
+6. Ideas 5 and 6 as needed; idea 7 last, only once nogood memory and phase saving are
    mature.
 
 ## Checklist before implementing
