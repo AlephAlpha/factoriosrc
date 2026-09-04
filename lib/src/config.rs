@@ -355,7 +355,10 @@ pub struct Config {
     /// increases (see
     /// [`increase_world_size`](crate::World::increase_world_size)), where
     /// they are instantiated as concrete entries and take part in
-    /// propagation-level firing.
+    /// propagation-level firing. Only templates whose cloud plus rule radius
+    /// is interior on every unpinned side at both the source and the target
+    /// alignment are transferred, so the instantiated patterns keep the
+    /// rule-consistency context in which they were learned.
     ///
     /// This enables [`nogood`](Config::nogood) implicitly, and inherits its
     /// restrictions. The default is `false`.

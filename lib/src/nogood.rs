@@ -191,6 +191,7 @@ pub(crate) enum XMode {
 
 impl XMode {
     /// Whether this mode survives a change of the width.
+    ///
     pub(crate) const fn transferable(self) -> bool {
         !matches!(self, Self::AbsoluteAndRight)
     }
@@ -212,6 +213,7 @@ pub(crate) enum YMode {
 
 impl YMode {
     /// Whether this mode survives a change of the height.
+    ///
     pub(crate) const fn transferable(self) -> bool {
         !matches!(self, Self::AbsoluteAndBottom)
     }
@@ -231,6 +233,7 @@ pub(crate) struct Template {
     /// What the original derivation relied upon; inherited by everything
     /// learned through matches of this template. This decides whether the
     /// template survives a change of the world size.
+    ///
     pub(crate) anchor: Anchor,
 
     /// How the horizontal coordinates are interpreted.

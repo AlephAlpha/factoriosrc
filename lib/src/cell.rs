@@ -32,12 +32,12 @@ pub enum Antecedent {
     /// The deduction was caused by a learned clause during conflict analysis.
     ///
     /// The cells are the literals of the clause, excluding the deduced cell
-    /// itself. Each literal is paired with the stack position of the cell at
-    /// the time the clause was recorded: a learned clause is only valid while
-    /// all its cells are still set to the states recorded in the trail, which
-    /// is the case exactly when the cells are still at their recorded
-    /// positions. When a cell is set again later, the reason is stale and
-    /// cannot be used in conflict analysis.
+    /// itself. Each literal is paired with the stack position and the state
+    /// of the cell at the time the clause was recorded: a learned clause is
+    /// only valid while all its cells are still set to the states recorded
+    /// in the trail. When a cell is unset, or set again to another state
+    /// (even at a recycled stack position), the reason is stale and cannot
+    /// be used in conflict analysis.
     ///
     /// The clause also carries the [`Anchor`] of its origin: what its
     /// derivation relied upon. A nogood learned through this deduction
@@ -50,9 +50,9 @@ pub enum Antecedent {
 /// The payload of an [`Antecedent::Clause`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClauseReason {
-    /// The literals of the clause with their stack positions at recording
-    /// time; see [`Antecedent::Clause`].
-    pub literals: Box<[(*const LifeCell, u32)]>,
+    /// The literals of the clause with their stack positions and states at
+    /// recording time; see [`Antecedent::Clause`].
+    pub literals: Box<[(*const LifeCell, u32, CellState)]>,
 
     /// What the derivation of the clause relied upon; see [`Anchor`].
     pub anchor: Anchor,

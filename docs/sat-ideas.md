@@ -19,7 +19,7 @@ steps.
 | --- | --- | --- | --- | --- | --- |
 | 1 | Conflict analysis + backjumping | antecedent recording, 1-UIP analysis | implemented | `--backjump` | Net loss on small/medium searches (re-treading); decisive win on very large searches |
 | 2 | Nogood database | exact-position db + propagation-level firing | implemented | `--nogood` (implies `--backjump`) | Recovers most of the re-treading loss; plain search wins typical solving searches but loses on the deep oscillator case |
-| 2 | Nogood database | translated templates + cross-size transfer | implemented | `--nogood-translate` (implies `--nogood`) | Transfer-only: single-size behavior is identical to `--nogood`; templates feed cross-size instantiation |
+| 2 | Nogood database | translated templates + cross-size transfer | implemented | `--nogood-translate` (implies `--nogood`) | Sound after the margin rules (iterations 6-7); instantiation re-enabled, transfer verified against real solution sets |
 | 2 | Nogood database | propagation-integrated template matching | shelved (measured) | — | Translated completions are real but unaffordable to catch at completion time; see idea 2 |
 | 3 | Phase saving | — | implemented | `--phase-saving` | Mixed; helps on the factorio rule, hurts when a fixed `new_state` already fits |
 | 3 | VSIDS-style activity | — | idea only | — | |
@@ -261,9 +261,49 @@ investigated with a measurement probe and shelved (iteration 5).
    instantiated as concrete entries there — and they no longer affect the search within one
    world. `--nogood-translate` is therefore exactly `--nogood` plus template bookkeeping on
    single-size workloads (verified: identical step counts on every benchmark), and its value
-   is confined to the growth workflow, where instantiation still prunes roughly 30% of the
-   steps at 8x8 at the cost of wall time. The template deduplication query also got the same
-   candidate cap as the other queries (it was an unbounded scan over a popular state bucket).
+   is confined to the growth workflow, where instantiation prunes a fifth of the steps at
+   8x8 and — with the margin rules of iteration 7 — pays for itself. The template
+   deduplication query also got the same candidate cap as the other queries (it was an
+   unbounded scan over a popular state bucket).
+6. **Watched-literal maintenance: attempted and reverted.** Profiling attributed ~66% of the
+   nogood run time to the matched-literal counter maintenance (`on_set` 34% + `on_unset`
+   32%: every set and unset of a cell walks the full index bucket of every nogood
+   containing it), so a Minisat-style watched-literal scheme was implemented: two watched
+   literals per entry with blocker-hint caches, an O(1)-per-unset update, and repair hooks
+   for watchers left stale by completed nogoods. It was sound by construction (every
+   firing and full match is re-validated against the live world), single-size traces
+   matched, and Miri passed — but on the benchmarks it **regressed 3–14x** (oscillator
+   `20 20 2`: 779k steps / 6.9 s became > 240 s; spaceship: 1.03M → 3.4M steps, 13 s →
+   55 s): the unit window is only detected through a watched literal, so near-complete
+   nogoods are caught as conflicts instead of firing earlier, and the loss of
+   propagation-level forcing cascades into huge trajectory differences. **Reverted**; the
+   counter scheme stays. The `ClauseReason` hardening from the experiment was kept: the
+   recorded literals now also carry their *state*, closing a latent hole where a recycled
+   stack position could make a stale learned-clause reason pass the position-only check.
+7. **The anchor-path soundness hole was root-caused and fixed with margin rules.** The
+   verification of iteration 6 established that instantiated templates could prune real
+   solutions; the deep-dive of iteration 7 traced the reason: a learned nogood's
+   forbidden-ness depends on the rule-consistency **context** of its cloud (the cloud plus
+   radius), and that context can differ between the source world and a translated
+   alignment — a cloud that was boundary-adjacent at the source (with the boundary's
+   background values feeding the cloud's deductions) has a different constraint network
+   than the same cloud at an interior alignment of a larger world. The anchor's pin flags
+   only record the boundary facts the resolution chain *walked*, not the geometry of the
+   cloud itself (the trace showed a {left,top}-anchored clause whose cloud was
+   bottom-adjacent at the 3x3 source, with no bottom flag). Two complementary rules now
+   close it:
+   - **Build time** (`build_template` returns `None`): the cloud's span plus the rule
+     radius must be interior at the source on every unpinned side; a pinned side may
+     touch the boundary (the pin certifies that interaction), but the opposite side must
+     stay interior. Templates failing this are not stored.
+   - **Instantiation time** (`instantiate_templates`): the translated alignment must keep
+     the same interiority on the equivalent sides of the target world.
+   Soundness is now verified mechanically: a closure checker compares every instantiated
+   entry against the real solution sets of the grown world, and the differential growth
+   tests pass again with instantiation enabled. The instantiation margins also make the
+   machinery's behavior world-size-aware: small worlds reject most templates (their clouds
+   are boundary-bound), and candidates become transferable as the world grows. The
+   previously disabled `--nogood-translate` instantiation is re-enabled with these rules.
 
 **Lessons learned.**
 
@@ -519,30 +559,26 @@ Work metric: search steps (calls to `World::search(1)`). Raw solution counts are
 comparable across strategies (the search may legitimately re-find solutions; correctness is
 solution-set equality, verified by the differential tests), so they are not reported.
 
-The `--nogood-translate` column and the oscillator seed sweep were re-measured on the same
-day after iteration 5 made single-size translate identical to `--nogood`; the other columns
-are from the original unified run, which the change cannot affect.
-
 | Case | Why this case | default | `--backjump` | `--nogood` | `--nogood-translate` | `--phase-saving` | `--lookahead` |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `B3/S23 26 8 4 -y 1 -n a` | spaceship search; the re-treading case | 1.31 s | 46.8 s | 13.7 s | 15.7 s | 3.99 s | 6.14 s |
+| `B3/S23 26 8 4 -y 1 -n a` | spaceship search; the re-treading case | 1.31 s | 41.8 s | 13.7 s | 13.7 s | 3.99 s | 6.14 s |
 | `B3/S23 26 8 4 -y 1` | same, default (dead-first) `new_state` | 42.3 s | DNF | DNF | DNF | 43.9 s | 6.13 s |
-| `B3/S23 64 64 1 -n a` | very large world; where CDCL shines | DNF | **21 ms** | **7 ms** | 6 ms | 2.08 s | 47 ms |
-| `B3/S23 4 4 2` (enumerate all) | enumeration work, shallow | <1 ms · 389 steps | 2 ms · 2,352 | 2 ms · 563 | 1 ms · 563 | <1 ms · 389 | <1 ms · 343 |
-| `B3/S23 5 5 2` (enumerate all) | enumeration work, deep | 3 ms · 4,649 | 208 ms · 306,064 | 31 ms · 12,246 | 31 ms · 12,246 | 3 ms · 4,649 | 2 ms · 3,777 |
+| `B3/S23 64 64 1 -n a` | very large world; where CDCL shines | DNF | **20 ms** | **7 ms** | 6 ms | 2.08 s | 47 ms |
+| `B3/S23 4 4 2` (enumerate all) | enumeration work, shallow | <1 ms · 389 steps | 3 ms · 2,352 | 2 ms · 563 | 1 ms · 563 | <1 ms · 389 | <1 ms · 343 |
+| `B3/S23 5 5 2` (enumerate all) | enumeration work, deep | 3 ms · 4,649 | 196 ms · 306,064 | 31 ms · 12,246 | 33 ms · 12,246 | 3 ms · 4,649 | 2 ms · 3,777 |
 | `3457/357/5 20 16 7 -x 3 -s D2- -n a` | Generations control | 2.30 s | n/a | n/a | n/a | 3.36 s | n/a |
 | `R3,C2,S2,B3,N+ 50 10 4 -x 2 -s D2-` | factorio rule, solves | 29.3 s | DNF | DNF | DNF | 14.6 s | 34.1 s |
 | `R3,C2,S2,B3,N+ 50 12 3 -x 1 -s D2-` | factorio rule, large | 150.2 s | DNF | DNF | DNF | 145.5 s | DNF |
 | `B2n3/S23-q 30 9 4 -x 1` | isotropic non-totalistic rule | 1.27 s | DNF | DNF | DNF | 2.77 s | 4.05 s |
-| `B3/S23 20 20 2 -n r --seed 42` | deep period-2 oscillator search (random guessing) | 35.4 s | DNF | **7.59 s** | 7.14 s | 77.9 s | 108.6 s |
-| `B3/S23 4 4 1` exhaust-and-grow to 8x8 | growth workflow for cross-size transfer | **5.5 s** | 33.2 s + DNF at 8x8 | 167 s | 213 s | — | — |
+| `B3/S23 20 20 2 -n r --seed 42` | deep period-2 oscillator search (random guessing) | 35.4 s | DNF | **7.59 s** | 7.06 s | 77.9 s | 108.6 s |
+| `B3/S23 4 4 1` exhaust-and-grow to 8x8 | growth workflow for cross-size transfer | **5.5 s** | 30.9 s + DNF at 8x8 | 167 s | 146 s | — | — |
 
 DNF = the uniform 240 s limit was exceeded; `n/a` = the flag/rule combination is rejected by
 `Config::check`; `—` = not applicable to this workflow. Enumeration and growth cells show
 `time · steps`. Growth row details: the default search exhausted every size up to 8x8 (8x8:
-38.4M steps, 4.7 s); nogood and nogood-translate also exhausted every size (8x8: 10.2M steps
-in 147 s, and 7.05M steps in 183 s); backjump exhausted up to 7x8 and hit the limit at 8x8
-(429.8M steps without finishing).
+38.4M steps, 4.7 s); nogood also exhausted every size (8x8: 10.2M steps in 147 s);
+nogood-translate exhausted every size too (8x8: 8.35M steps in 127 s); backjump exhausted
+up to 7x8 and hit the limit at 8x8 (467M steps without finishing).
 
 Which solution was found (pops = population of the first solution found; "same" = the
 identical pattern):
@@ -575,10 +611,12 @@ Observations:
   plain search so redundant that propagation firing's step reduction dwarfs its per-step
   cost. (The translate variant's apparent 9.6x win on this row in the original run was
   trajectory luck of the since-removed guess-time template checks.)
-- **Template transfer prunes but does not pay on growth workflows** (growth row):
-  nogood-translate takes ~31% fewer steps than plain nogood at 8x8, but ~25% more wall
-  time; and the plain chronological search beats both by an order of magnitude. After
-  iteration 5 the translate overhead is template bookkeeping and instantiation only.
+- **Template transfer now pays on growth workflows** (growth row): nogood-translate takes
+  ~18% fewer steps at 8x8 and finishes the whole growth sequence faster than plain nogood
+  (146 s vs 167 s) — the margin rules made the transferred knowledge sound and profitable,
+  and also cut the template-building overhead (the single-size translate column is now
+  within noise of `--nogood`, e.g. 13.7 s vs 13.1 s on the spaceship). The plain
+  chronological search still beats both by an order of magnitude.
 - **Phase saving** is about 2x faster on the factorio-rule 50x10 case, neutral on 50x12
   (same solution), 1.5–3x slower on the other solving searches, and it solves the 64x64
   case in 2.1 s.
@@ -595,10 +633,10 @@ luck of that mechanism:
 
 | Seed | default | `--nogood` | `--nogood-translate` |
 | --- | --- | --- | --- |
-| 1 | 6.0 s · 42.8M steps | 2.1 s · 414k | 2.3 s · 414k |
-| 2 | 10.3 s · 72.5M steps | 1.6 s · 272k | 1.7 s · 272k |
-| 3 | 125.8 s · 836M steps | 5.2 s · 773k | 5.5 s · 773k |
-| 42 | 35.4 s · 252.9M steps | 6.9 s · 780k | 7.1 s · 780k |
+| 1 | 6.0 s · 42.8M steps | 2.1 s · 414k | 2.19 s · 414k |
+| 2 | 10.3 s · 72.5M steps | 1.6 s · 272k | 1.67 s · 272k |
+| 3 | 125.8 s · 836M steps | 5.2 s · 773k | 5.35 s · 773k |
+| 42 | 35.4 s · 252.9M steps | 6.9 s · 780k | 7.03 s · 780k |
 
 `--nogood` is faster than the default search on every seed (the step reduction is 60–1000x
 on a highly redundant random-guessing search). After iteration 5, `--nogood-translate`

@@ -826,7 +826,7 @@ impl World {
                 .map(|&(i, s)| unsafe {
                     let other = cells.add(i as usize);
                     debug_assert_eq!((*other).state(), Some(s));
-                    (other, self.cell_pos[self.cell_index(other)])
+                    (other, self.cell_pos[self.cell_index(other)], s)
                 })
                 .collect::<Box<[_]>>();
 
@@ -854,7 +854,7 @@ impl World {
     /// coordinates are stored as offsets from it, edge-pinned coordinates
     /// keep their absolute or edge-relative values, and generations are
     /// stored relative to the origin modulo the period.
-    fn build_template(&self, literals: &[(u32, CellState)], anchor: Anchor) -> Template {
+    fn build_template(&self, literals: &[(u32, CellState)], anchor: Anchor) -> Option<Template> {
         let x_mode = anchor.x_mode();
         let y_mode = anchor.y_mode();
         let w = self.config.width as i32;
@@ -889,14 +889,59 @@ impl World {
                 };
                 (fx, fy, ft, state)
             })
-            .collect();
+            .collect::<Vec<_>>();
 
-        Template {
+        // The source-side margin rule, the mirror image of the instantiation
+        // rule (see `World::instantiate_templates`): a template is worth
+        // translating only if the cloud's r-neighborhood context at the
+        // source matches what the anchor claims. On a free axis the axis is
+        // fully interior (no boundary facts were used); on a pinned axis the
+        // pinned side may touch the boundary, but the opposite side must be
+        // interior. A cloud that was boundary-adjacent on an unpinned side
+        // has a context the transfer cannot reproduce — its forbiddenness is
+        // world-size-specific, exactly the class of bug that the verification
+        // in iteration 6 traced back to.
+        let r = self.rule.radius as i32;
+        let x_ok = match x_mode {
+            XMode::Free => {
+                let lo = ox + lits.iter().map(|l| l.0).min().unwrap();
+                let hi = ox + lits.iter().map(|l| l.0).max().unwrap();
+                lo - r >= 0 && hi + r < w
+            }
+            XMode::Absolute | XMode::AbsoluteAndRight => {
+                let hi = lits.iter().map(|l| l.0).max().unwrap();
+                hi + r < w
+            }
+            XMode::RightEdge => {
+                let lo = lits.iter().map(|l| l.0).min().unwrap();
+                (w - 1) - lo - r >= 0
+            }
+        };
+        let y_ok = match y_mode {
+            YMode::Free => {
+                let lo = oy + lits.iter().map(|l| l.1).min().unwrap();
+                let hi = oy + lits.iter().map(|l| l.1).max().unwrap();
+                lo - r >= 0 && hi + r < h
+            }
+            YMode::Absolute | YMode::AbsoluteAndBottom => {
+                let hi = lits.iter().map(|l| l.1).max().unwrap();
+                hi + r < h
+            }
+            YMode::BottomEdge => {
+                let lo = lits.iter().map(|l| l.1).min().unwrap();
+                (h - 1) - lo - r >= 0
+            }
+        };
+        if !(x_ok && y_ok) {
+            return None;
+        }
+
+        Some(Template {
             anchor,
             x_mode,
             y_mode,
-            lits,
-        }
+            lits: lits.into_boxed_slice(),
+        })
     }
 
     /// One step of the search.
@@ -1203,21 +1248,30 @@ impl World {
             let boxed = literals.clone().into_boxed_slice();
             let stored = self.nogood_db.learn(boxed, anchor, &mut state_of);
 
-            // Store a translatable template if the anchors allow it.
-            if stored && self.config.nogood_translate && anchor.template_eligible() {
-                let template = self.build_template(&literals, anchor);
+            // Store a translatable template if the anchors allow it and the
+            // cloud's source-side context is transferable (see the margin
+            // rule in `build_template`).
+            if stored
+                && self.config.nogood_translate
+                && anchor.template_eligible()
+                && let Some(template) = self.build_template(&literals, anchor)
+            {
                 self.nogood_db.add_template(template);
             }
         }
 
         // Record the learned clause: each literal with its current stack
-        // position. The clause is valid while the cells stay at these
-        // positions, i.e. until the cells are set again. The clause carries
-        // the anchors accumulated during this analysis, so that nogoods
-        // learned through resolutions of this flip inherit them.
+        // position and state. The clause is valid while the cells stay at
+        // these positions and states, i.e. until the cells are set again.
+        // The clause carries the anchors accumulated during this analysis, so
+        // that nogoods learned through resolutions of this flip inherit
+        // them.
         let literals = clause
             .into_iter()
-            .map(|cell| unsafe { (cell, self.cell_pos[self.cell_index(cell)]) })
+            .map(|cell| unsafe {
+                let state = (*cell).state().unwrap();
+                (cell, self.cell_pos[self.cell_index(cell)], state)
+            })
             .collect::<Box<[_]>>();
         let anchor = self.pending_anchor;
 
@@ -1346,9 +1400,13 @@ impl World {
             },
             Some(Antecedent::Clause(reason)) => unsafe {
                 anchor.merge(&reason.anchor);
-                for &(cell, pos) in reason.literals.iter() {
-                    if (*cell).state().is_none() || self.cell_pos[self.cell_index(cell)] != pos {
-                        // The clause is stale.
+                for &(cell, pos, state) in reason.literals.iter() {
+                    // The clause is stale when a cell is unset, set to another
+                    // state, or set again at another position. The position
+                    // check alone is not enough: after the trail unwinds, a
+                    // recycled position can be occupied by another assignment.
+                    if (*cell).state() != Some(state) || self.cell_pos[self.cell_index(cell)] != pos
+                    {
                         return false;
                     }
                     literals.push(cell);

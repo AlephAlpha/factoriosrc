@@ -1322,6 +1322,7 @@ impl World {
     /// its inherited templates. Alignments are clamped to the padded world,
     /// and the total number of instantiations is bounded; smaller templates
     /// are preferred because they are the ones that match often.
+    ///
     fn instantiate_templates(&mut self, templates: &[crate::nogood::Template]) {
         const MAX_INSTANTIATIONS: usize = 20_000;
 
@@ -1391,7 +1392,30 @@ impl World {
                             };
                             let at = (bt as u32 + ft) % p as u32;
 
-                            if !(-r..w + r).contains(&ax) || !(-r..h + r).contains(&ay) {
+                            // The margin rule: on a free axis the whole
+                            // r-neighborhood of every cloud cell must be
+                            // strictly inside the world (the derivation
+                            // relied on no boundary facts there, so this is
+                            // the context in which the pattern's
+                            // forbidden-ness was established); on a pinned
+                            // axis the pinned side may touch the boundary
+                            // (the pin certifies that interaction), but the
+                            // opposite side must stay interior (else the
+                            // derivation would have flagged it too, and the
+                            // template would not be transferable).
+                            let x_ok = match template.x_mode {
+                                XMode::Free => ax - r >= 0 && ax + r < w,
+                                XMode::AbsoluteAndRight => ax - r >= 0 && ax + r < w,
+                                XMode::Absolute => ax + r < w,
+                                XMode::RightEdge => ax - r >= 0,
+                            };
+                            let y_ok = match template.y_mode {
+                                YMode::Free => ay - r >= 0 && ay + r < h,
+                                YMode::AbsoluteAndBottom => ay - r >= 0 && ay + r < h,
+                                YMode::Absolute => ay + r < h,
+                                YMode::BottomEdge => ay - r >= 0,
+                            };
+                            if !(x_ok && y_ok) {
                                 ok = false;
                                 break;
                             }
@@ -1736,6 +1760,11 @@ impl World {
             //
             // The instantiations inherit the anchors of their templates and
             // are bounded in number.
+            // Transfer the templates, then instantiate them with the margin
+            // rule (see `instantiate_templates`): a grown-world concrete
+            // entry carries the pattern's forbidden-ness soundly exactly
+            // when the alignment keeps the cloud's rule-consistency context
+            // identical to the source's.
             for template in templates
                 .iter()
                 .filter(|t| t.anchor.transferable())
