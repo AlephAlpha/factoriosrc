@@ -22,12 +22,14 @@ rfd = { version = "0.17.2", optional = true }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # Enables the `wasm_js` backend of both `getrandom` versions in the
 # dependency graph; without it, the `wasm32-unknown-unknown` build fails.
-getrandom = { version = "0.3", features = ["wasm_js"] }
-getrandom_0_4 = { package = "getrandom", version = "0.4", features = ["wasm_js"] }
-js-sys = "0.3.104"
-wasm-bindgen = "0.2.127"
-wasm-bindgen-futures = "0.4.77"
-web-sys = { version = "0.3.104", features = [
+getrandom_0_3 = { package = "getrandom", version = "0.3.4", features = [
+    "wasm_js",
+] }
+getrandom = { version = "0.4.3", features = ["wasm_js"] }
+js-sys = "0.3.105"
+wasm-bindgen = "0.2.128"
+wasm-bindgen-futures = "0.4.78"
+web-sys = { version = "0.3.105", features = [
     "Blob",
     "DedicatedWorkerGlobalScope",
     "Document",

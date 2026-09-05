@@ -27,3 +27,9 @@
 - egui runs the search on a background thread in `egui/src/search.rs`; keep TUI and egui start/pause/no-stop behavior aligned when changing search control flow.
 - TUI and egui save files are not interchangeable: TUI serializes `tui::App`, egui serializes `egui::search::Search`. The README also says save formats may change between versions.
 - `just gui` is the quickest GUI debug path because it sets `RUST_LOG=factoriosrc_egui=DEBUG`.
+
+## SAT Ideas Documentation
+- `docs/sat-ideas.md` is an implementation note for the SAT-inspired search experiments. Keep its status table, implementation sections, and benchmark table consistent with the current code.
+- Cite file paths and symbol names rather than line numbers, which drift as the search code changes.
+- Distinguish implemented, correctness-tested, and measured claims. Add performance results only with a reproducible command, commit, build profile, environment, stopping condition, and result; do not turn historical anecdotes into test evidence.
+- `Config::check()` and `Config::parse_rule()` are the authority for feature restrictions. When those restrictions change, update `docs/sat-ideas.md` and the frontend documentation together.

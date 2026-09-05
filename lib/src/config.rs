@@ -327,10 +327,11 @@ pub struct Config {
     ///
     /// When this is `true`, the clauses derived by the conflict analysis of
     /// [`backjump`](Config::backjump), which this option enables implicitly,
-    /// are recorded in a database of forbidden patterns. Before guessing a
-    /// state for an unknown cell, the database is consulted: if the guess
-    /// would complete a forbidden pattern, the other state is used instead;
-    /// if both states are blocked, the search backtracks immediately.
+    /// are recorded in a database of forbidden patterns. During propagation,
+    /// the database can force an unknown cell away from the state that would
+    /// complete a forbidden pattern. When chronological backtracking retries
+    /// the opposite state of a two-state guess, the database also checks
+    /// whether that state would complete a stored pattern and skips it if so.
     ///
     /// The nogoods are stored by absolute cell indices, so they are only
     /// reused within one world: they are dropped when the world is saved and
