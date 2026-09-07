@@ -60,6 +60,18 @@ pub struct TrailMeta {
     /// conflict analysis relies on.
     pub(crate) decision: bool,
 
+    /// Whether this decision carrier is a *flip*: the opposite state of a
+    /// guessed cell, set by [`backtrack`](World::backtrack) when it retries
+    /// the other branch of the decision.
+    ///
+    /// A flip carrier means that the first branch of the decision has been
+    /// exhausted by the search (possibly after reporting solutions), while its
+    /// current branch is still being explored. The conflict analysis must
+    /// never pop a flip carrier, and must never re-set the flip cell to its
+    /// exhausted first-branch value: either would re-enter a region whose
+    /// solutions have already been reported, duplicating them in enumeration.
+    pub(crate) flip: bool,
+
     /// The antecedent of the deduction that set the cell.
     ///
     /// This is [`None`] for [`Known`](Reason::Known),
@@ -177,6 +189,21 @@ pub struct World {
     /// enabled; the entries are pushed and popped in lockstep with the stack.
     /// When it is disabled, this vector is always empty.
     pub(crate) trail_meta: Vec<TrailMeta>,
+
+    /// The decision levels of the flip carriers in
+    /// [`trail_meta`](World::trail_meta), in trail order.
+    ///
+    /// The last entry is the deepest flip carrier: the level whose carrier was
+    /// created by the most recent chronological flip of
+    /// [`backtrack`](World::backtrack). The conflict analysis clamps its
+    /// backjump target to this level, so that no flip carrier is ever popped:
+    /// see [`TrailMeta::flip`](TrailMeta::flip).
+    ///
+    /// This is only used when [`Config::backjump`](crate::Config::backjump) is
+    /// enabled. It is maintained in lockstep with the flip entries of
+    /// [`trail_meta`](World::trail_meta) by [`set_cell`](World::set_cell) and
+    /// [`pop_meta`](World::pop_meta), and is empty otherwise.
+    pub(crate) flip_levels: Vec<u32>,
 
     /// The current decision level: the number of decision carriers in the
     /// stack.
@@ -345,6 +372,7 @@ impl World {
             front_count: 0,
             stack: Vec::with_capacity(size),
             trail_meta: Vec::new(),
+            flip_levels: Vec::new(),
             current_level: 0,
             cell_level: if backjump { vec![0; size] } else { Vec::new() },
             cell_pos: if backjump { vec![0; size] } else { Vec::new() },
@@ -1033,12 +1061,20 @@ impl World {
         // starts a new decision level; a deduced cell inherits the current
         // one.
         if self.config.backjump {
+            // A chronological flip (`backtrack` retrying the other state of a
+            // guess) is a decision carrier whose first branch is exhausted;
+            // its level must never be popped by the conflict analysis.
+            let flip = decision && matches!(reason, Reason::Deduced);
             if decision {
                 self.current_level += 1;
+            }
+            if flip {
+                self.flip_levels.push(self.current_level);
             }
             self.trail_meta.push(TrailMeta {
                 level: self.current_level,
                 decision,
+                flip,
                 antecedent,
             });
             let index = unsafe { self.cell_index(cell) };
@@ -1076,8 +1112,20 @@ impl World {
             if meta.decision {
                 self.current_level -= 1;
             }
+            if meta.flip {
+                self.flip_levels.pop();
+            }
             debug_assert_eq!(self.stack.len(), self.trail_meta.len());
         }
+    }
+
+    /// The decision level of the deepest flip carrier in the trail.
+    ///
+    /// A flip carrier is a chronological flip of [`backtrack`](World::backtrack);
+    /// see [`TrailMeta::flip`](TrailMeta::flip). Return zero if the trail has
+    /// no flip carriers.
+    pub(crate) fn deepest_flip_level(&self) -> u32 {
+        self.flip_levels.last().copied().unwrap_or(0)
     }
 
     /// Unset the state of a cell. The cell should be known.
@@ -2614,10 +2662,118 @@ mod test {
             );
         }
 
+        // A flip carrier is a decision carrier of a chronological flip: it
+        // has no antecedent, and the flip levels are maintained in lockstep
+        // with the trail.
+        let mut replayed_flip_levels = Vec::new();
+        for meta in &world.trail_meta {
+            if meta.flip {
+                assert!(meta.decision, "a flip must be a decision carrier");
+                assert!(
+                    meta.antecedent.is_none(),
+                    "a flip must not have an antecedent"
+                );
+                replayed_flip_levels.push(meta.level);
+            }
+        }
+        assert_eq!(world.flip_levels, replayed_flip_levels);
+        assert_eq!(
+            world.flip_levels.last().copied().unwrap_or(0),
+            world.deepest_flip_level()
+        );
+
         assert!(
             deduced_with_antecedent > 0,
             "no deduction was recorded with an antecedent"
         );
+    }
+
+    #[test]
+    fn test_backjump_enumerates_each_solution_once() {
+        // The front optimization leaves exactly one canonical solution for
+        // this configuration. Conflict analysis used to re-enter the
+        // exhausted branch of the post-solution chronological flip, reporting
+        // the same solution over and over (16 times with backjumping, 5 with
+        // the nogood database).
+        for config in [
+            Config::new("B3/S23", 3, 3, 2).with_backjump(),
+            Config::new("B3/S23", 3, 3, 2).with_nogood(),
+            Config::new("B3/S23", 3, 3, 2)
+                .with_backjump()
+                .with_phase_saving(),
+            Config::new("B3/S23", 3, 3, 2)
+                .with_nogood()
+                .with_phase_saving(),
+        ] {
+            assert_eq!(count_solutions(&config), 1);
+        }
+    }
+
+    #[test]
+    fn test_backjump_nogood_enumeration_counts_match_plain() {
+        // Enumeration must not duplicate solutions: the *number* of solutions
+        // found by the experimental options must equal the number found by
+        // the plain chronological search, not just the sets of unique
+        // solutions. (Comparing sets alone hides duplicates.)
+        let mut glide = Config::new("B3/S23", 4, 4, 4);
+        glide.dx = 1;
+        glide.dy = 1;
+
+        let mut sym_d2h = Config::new("B3/S23", 5, 5, 2);
+        sym_d2h.symmetry = Symmetry::D2H;
+
+        let mut sym_c2 = Config::new("B3/S23", 5, 5, 2);
+        sym_c2.symmetry = Symmetry::C2;
+
+        let mut transformation = Config::new("B3/S23", 5, 5, 2);
+        transformation.transformation = Transformation::R2;
+
+        let known = Config::new("B3/S23", 4, 4, 2).with_known_cell(KnownCell::new(
+            0,
+            0,
+            0,
+            CellState::Alive,
+        ));
+
+        for config in [
+            Config::new("B3/S23", 4, 4, 2),
+            Config::new("B3/S23", 5, 5, 1),
+            Config::new("B3/S23", 5, 5, 2),
+            Config::new("B3/S23", 4, 4, 2).with_max_population(6),
+            Config::new("B2n3/S23-q", 4, 4, 2),
+            Config::new("B0/S23", 3, 3, 2),
+            glide,
+            sym_d2h,
+            sym_c2,
+            transformation,
+            known,
+        ] {
+            let expected = count_solutions(&config);
+            assert!(
+                expected > 0,
+                "the test configuration {config:?} should have solutions"
+            );
+            assert_eq!(
+                count_solutions(&config.clone().with_backjump()),
+                expected,
+                "backjump changed the number of solutions"
+            );
+            assert_eq!(
+                count_solutions(&config.clone().with_nogood()),
+                expected,
+                "nogood changed the number of solutions"
+            );
+            assert_eq!(
+                count_solutions(&config.clone().with_backjump().with_phase_saving()),
+                expected,
+                "backjump with phase saving changed the number of solutions"
+            );
+            assert_eq!(
+                count_solutions(&config.clone().with_nogood().with_phase_saving()),
+                expected,
+                "nogood with phase saving changed the number of solutions"
+            );
+        }
     }
 
     /// The set of unique solutions of a configuration.

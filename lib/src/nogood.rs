@@ -184,7 +184,16 @@ impl NogoodDb {
             .iter()
             .filter(|&&(cell, state)| state_of(cell) == Some(state))
             .count() as u32;
-        debug_assert!(matched < literals.len() as u32);
+        // Usually an entry is learned while its anchor cell is unset or
+        // rejected, so it is at most one literal short of a full match.
+        // An entry learned by the chronological fallback of the conflict
+        // analysis may start fully matched: the analysis learned it while
+        // the 1-UIP cell still held its rejected state, and the
+        // backtracking that follows unsets that cell immediately, bringing
+        // the counter back in sync. In the meantime the current partial
+        // assignment really is contradictory, which is what a full match
+        // means.
+        debug_assert!(matched <= literals.len() as u32);
 
         self.entries.push(Nogood { literals, matched });
 

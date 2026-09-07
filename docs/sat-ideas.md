@@ -22,7 +22,7 @@ frontends expose the same options.
 | Local propagation and chronological search | Implemented by default | The baseline search uses the fixed `next` chain, incremental descriptors, and chronological backtracking. |
 | Phase saving | Implemented, opt-in | Remembers the last real state of a cell and tries it first. Works with supported two-state and Generations rules. |
 | Lookahead | Implemented, opt-in | Probes both states of the next cell and chooses a polarity. Two-state rules only; it does not choose a different cell. |
-| Conflict analysis and backjumping | Implemented, opt-in | A 1-UIP-style analysis for local rule, symmetry, and learned-nogood conflicts. Two-state rules only. |
+| Conflict analysis and backjumping | Implemented, opt-in | A 1-UIP-style analysis for local rule, symmetry, and learned-nogood conflicts. Two-state rules only. A protocol guard keeps enumeration free of repeated solutions. |
 | Exact-position nogood database | Implemented, opt-in | Learns from successful local conflict analysis and propagates learned forbidden patterns. Nogoods use absolute cell indices and are valid only in the current `World`. Two-state rules only. |
 | VSIDS-style activity | Not implemented | The current branching cell still comes from the fixed search-order chain. |
 | Translated or cross-size nogoods | Not implemented | The current database is not normalized to relative coordinates. |
@@ -141,9 +141,15 @@ lookahead are restricted to two-state rules.
 solutions, and it can lower the population bound after a solution when
 `reduce_max_population` is enabled. A heuristic is therefore judged both by
 whether it preserves the solution set and by how it changes traversal work.
-Raw solution counts are not always a suitable differential oracle because the
-search can report equivalent encodings, such as generation rotations, more
-than once.
+
+A chronological flip (the retry of the other state of a guess) marks its
+first branch as exhausted; undoing it would re-report the solutions found
+there, so the
+[enumeration protocol guard](#preserving-the-enumeration-protocol) prevents
+this. For configurations that differ only in the experimental switches, the
+number of reported solutions is therefore a valid differential oracle, not
+just the set. Equivalent encodings, such as generation rotations, still
+appear as separate solutions.
 
 ### Unsafe hot paths and persistence
 
@@ -152,11 +158,11 @@ unsafe code. Changes to `lib/src/cell.rs`, `lib/src/world.rs`, or
 `lib/src/search.rs` require the Miri check described in `AGENTS.md`.
 
 The serialized `World` stores the configuration, ordinary search stack, and
-visible search state, but not `TrailMeta`, decision-level arrays, or the
-nogood database. Loading replays stack assignments without reconstructing the
-original antecedent graph. Phase history for unset cells is also not
-serialized. This affects performance and heuristic state, not the intended
-semantics of a completed search.
+visible search state, but not `TrailMeta`, decision-level arrays, flip levels,
+or the nogood database. Loading replays stack assignments without
+reconstructing the original antecedent graph. Phase history for unset cells is
+also not serialized. This affects performance and heuristic state, not the
+intended semantics of a completed search.
 
 ## Conflict Analysis and Backjumping
 
@@ -174,7 +180,8 @@ When backjumping is enabled, `World` records a parallel `TrailMeta` entry for
 each stack entry. It contains:
 
 - the decision level;
-- whether the entry is a decision carrier; and
+- whether the entry is a decision carrier;
+- whether the carrier is a flip; and
 - an optional `Antecedent`.
 
 The current `Antecedent` variants are:
@@ -197,7 +204,8 @@ A normal guess starts a decision level. When chronological backtracking flips
 a two-state guess, the opposite state is represented as a reasonless
 `Deduced` entry with `decision = true`. This entry is a **decision carrier**:
 it represents a retry of the same decision and ensures that every active level
-has exactly one reasonless decision entry.
+has exactly one reasonless decision entry. A carrier of this kind is a
+**flip** (`TrailMeta::flip`): the first branch of the decision is exhausted.
 
 The 1-UIP walk stops at that carrier instead of resolving a reasonless literal
 with an empty antecedent. This convention is specific to the mutable trail
@@ -215,8 +223,9 @@ For a local conflict, `World::analyze()` performs the following work:
 3. If a learned-clause antecedent no longer matches the recorded stack
    positions, abandon the analysis and fall back to chronological
    backtracking.
-4. Pop the trail to the highest decision level represented by the remaining
-   literals.
+4. Pop the trail to the backjump target: the highest decision level of the
+   remaining literals, never at or below the deepest flip carrier (see
+   below).
 5. Because trail order and the spatial `next` chain differ, resume at the
    chain-earliest popped cell and re-check descriptors affected by the pops.
 6. Set the 1-UIP cell to the opposite state with a temporary learned-clause
@@ -230,6 +239,35 @@ recorded stack positions. It is not a persistent database entry unless
 `Confl::Global` cannot. Lookahead finding that both polarities conflict and a
 failed `check_period()` also use ordinary backtracking.
 
+### Preserving the enumeration protocol
+
+Chronological backtracking enumerates without repetition because the trail
+records which branches are exhausted: after a flip, the search never returns
+to the first branch of that decision. Conflict analysis discards this
+information. After a solution is reported, the continuation flips the deepest
+carrier; if the flipped assignment conflicts, the 1-UIP is the flip itself,
+and restoring it re-derives the just-reported solution. Popping the flip and
+re-guessing the cell has the same effect one level down. Without a guard, an
+exhausted `B3/S23 3 3 2` search — one canonical solution — reported it 16
+times with backjumping and 5 times with nogood learning.
+
+`World::analyze()` therefore tracks the flip levels (`World::flip_levels`) and
+applies two rules:
+
+- The backjump target is clamped to `max(clause_level, deepest_flip_level)`,
+  so the analysis never pops a flip carrier: everything popped lies in
+  branches that are still being explored.
+- When the target would reach the deepest flip carrier — the 1-UIP is the
+  flip itself or one of its deductions — the analysis skips the restoration
+  and falls back to chronological backtracking.
+
+Skipping a flip branch is sound because the learned clause proves it
+contradictory: all its literals are still on the trail, and the 1-UIP's
+rejected state was assigned inside the flip branch. The fallback may still
+learn the nogood; such an entry can start fully matched, and the backtracking
+that follows resyncs its counter. First-result searches are not measurably
+affected; see the rerun note in the benchmark section.
+
 ### Correctness status
 
 The repository contains explicit solution-set and invariant tests for
@@ -238,15 +276,17 @@ backjumping, including:
 - ordinary, non-totalistic, B0, symmetry, and transformation configurations;
 - deeper searches and max-population searches;
 - `reduce_max_population`;
-- the backjump trail metadata invariant; and
+- the backjump trail metadata invariant, including the flip-carrier lockstep;
+- the enumeration protocol: solution counts must match the plain search
+  (`B3/S23 3 3 2` reports one solution with backjumping or nogood); and
 - combinations with lookahead and the nogood database.
 
-The comparison oracle is the set of serialized solutions, not the number of
-times the search happens to reach them. These tests establish the behavior of
-the checked configurations; they are not an exhaustive configuration matrix
-and they do not establish a performance improvement. Backjumping remains
-opt-in because conflict analysis can cost more than chronological search when
-learned information is not retained across backtracking.
+The comparison oracle is both the set and the number of serialized solutions.
+These tests establish the behavior of the checked configurations; they are not
+an exhaustive configuration matrix and they do not establish a performance
+improvement. Backjumping remains opt-in because conflict analysis can cost
+more than chronological search when learned information is not retained across
+backtracking.
 
 ## Exact-Position Nogood Learning
 
@@ -444,8 +484,8 @@ The implementation and tests relevant to this note are concentrated in:
 
 When checking a change:
 
-- compare the **sets** of enumerated solutions with the default search rather
-  than relying only on raw counts;
+- compare the **number and sets** of enumerated solutions with the default
+  search;
 - include B0/background behavior, symmetry and transformation, population
   bounds, `reduce_max_population`, and option combinations when the change
   affects learning or backtracking;
@@ -498,6 +538,28 @@ that any option is better. For a later rerun, record the date, revision,
 dependency state, release profile, CPU, operating system, toolchain, timeout,
 warmup/repetition policy, random seed, stopping condition, and whether the run
 measures a first result or full enumeration.
+
+### Rerun after the enumeration-protocol fix (2026-09-07)
+
+The affected cells were re-measured with the same protocol and environment,
+using a release build of the working tree with the guard:
+
+| Case | Baseline (2026-09-05) | Rerun (2026-09-07) |
+| --- | ---: | ---: |
+| `B3/S23 26 8 4 -y 1 -n a --backjump` | 38.126 s | 38.463 s |
+| `B3/S23 26 8 4 -y 1 -n a --nogood` | 12.145 s | 12.186 s |
+| `B3/S23 64 64 1 -n a --backjump` | 0.023 s | 0.027 s |
+| `B3/S23 64 64 1 -n a --nogood` | 0.013 s | 0.015 s |
+| `R3,C2,S2,B3,N+ 50 10 4 -x 2 -s D2- -n a --nogood` | >60 s | >60 s |
+| `B2n3/S23-q 30 9 4 -x 1 -n a --nogood` | >60 s | >60 s |
+
+The backjump and nogood cells match the baseline within noise. The plain
+controls drifted — `R3,C2,S2,B3,N+ 50 10 4` from 28.445 s to a timeout and
+`B2n3/S23-q 30 9 4` from 1.288 s to 4.193 s — but their code path is
+unchanged, so this is machine-state variance between the two dates. For full
+enumeration, the guard removes duplicated work: an exhausted `B3/S23 5 5 2`
+search with backjumping reported 5,332 solutions before the guard and 26
+after, matching the plain count.
 
 ## Comparison with Logic Life Search (LLS)
 

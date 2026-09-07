@@ -1039,7 +1039,39 @@ impl World {
         // The state of the 1-UIP cell before it is popped.
         let state = unsafe { (*uip).state() }.unwrap();
 
-        // Truncate the trail down to the highest level of the learned clause.
+        // The enumeration protocol guard.
+        //
+        // A flip carrier ([`TrailMeta::flip`](crate::world::TrailMeta::flip)) is the
+        // chronological flip of [`backtrack`](World::backtrack): its first
+        // branch has been exhausted by the search — possibly after reporting
+        // solutions — while its current branch is still being explored. The
+        // conflict analysis must preserve this:
+        //
+        // - if the 1-UIP *is* the flip carrier, the restoration below would
+        //   re-set the flip cell to its exhausted first-branch value,
+        //   re-deriving an already reported solution from the rest of the
+        //   complete assignment; and
+        // - if the backjump target reaches the deepest flip carrier, popping
+        //   it would discard the flip and let the search re-guess the flip
+        //   cell into its exhausted first branch.
+        //
+        // In both cases (which coincide: the deepest flip carrier is at the
+        // current level exactly when the target below would reach it), the
+        // learned clause proves the whole flip branch contradictory — every
+        // literal of the clause is still on the trail. The branch can
+        // therefore be skipped soundly: fall back to chronological
+        // backtracking, which abandons the flip branch and retries the
+        // previous decision, exactly as the enumeration protocol requires.
+        let pop_target = max_level.max(self.deepest_flip_level());
+        if pop_target >= current {
+            self.learn_analysis_nogood(uip, state, &clause);
+            return self.backtrack();
+        }
+
+        // Truncate the trail down to the backjump target: the highest level
+        // of the learned clause, but never at or below the deepest flip
+        // carrier (see the enumeration protocol guard above).
+        //
         // This pops the 1-UIP cell as well, since it is at a higher level.
         //
         // The search chain (the `next` pointers) is in a fixed spatial order
@@ -1053,7 +1085,7 @@ impl World {
         // re-checked, since their incremental checks are stale (for example,
         // a symmetry deduction may not have set the mirrored cells).
         let mut recheck = self.stack.len();
-        while self.current_level > max_level {
+        while self.current_level > pop_target {
             let (cell, _) = self.stack.pop().unwrap();
             let rank = unsafe { self.chain_pos[self.cell_index(cell)] };
             if rank < resume_rank {
@@ -1090,32 +1122,7 @@ impl World {
         self.start = resume;
 
         // Learn the nogood for the persistent database.
-        //
-        // The nogood consists of the 1-UIP cell with its rejected state, and
-        // the literals of the learned clause with their current states. All
-        // of these cells are still set: the truncation above stopped at the
-        // highest level of the clause.
-        //
-        // Within one world this nogood is unconditionally valid; whether it
-        // can be reused in other worlds is not tracked yet, so the database
-        // is dropped whenever the world is rebuilt.
-        if self.config.nogood {
-            let mut literals = Vec::with_capacity(clause.len() + 1);
-            literals.push((unsafe { self.cell_index(uip) } as u32, state));
-            unsafe {
-                for &lit in clause.iter() {
-                    literals.push((self.cell_index(lit) as u32, (*lit).state().unwrap()));
-                }
-            }
-
-            // Read the cell states through a copy of the cells pointer, so
-            // that the callback does not borrow `self` while the database (a
-            // field of `self`) is borrowed mutably.
-            let cells = self.cells_ptr as *const LifeCell;
-            let mut state_of = |i: u32| unsafe { (*cells.add(i as usize)).state() };
-            self.nogood_db
-                .learn(literals.into_boxed_slice(), &mut state_of);
-        }
+        self.learn_analysis_nogood(uip, state, &clause);
 
         // Record the learned clause: each literal with its current stack
         // position. The clause is valid while the cells stay at these
@@ -1139,6 +1146,48 @@ impl World {
         }
 
         Status::Running
+    }
+
+    /// Learn the nogood of a conflict analysis.
+    ///
+    /// The nogood consists of the 1-UIP cell with its rejected state, and
+    /// the literals of the learned clause with their current states. It is
+    /// unconditionally valid within one world; whether it can be reused in
+    /// other worlds is not tracked yet, so the database is dropped whenever
+    /// the world is rebuilt.
+    ///
+    /// The clause cells are still set when this is called: the analysis never
+    /// pops below the highest level of the clause (or falls back to
+    /// chronological backtracking without popping at all). The 1-UIP cell
+    /// itself may still hold its rejected state — this happens when the
+    /// analysis falls back before popping — in which case the new entry
+    /// starts fully matched; the chronological backtracking that follows
+    /// unsets the cell and brings the matched counter back in sync.
+    fn learn_analysis_nogood(
+        &mut self,
+        uip: *const LifeCell,
+        state: CellState,
+        clause: &[*const LifeCell],
+    ) {
+        if !self.config.nogood {
+            return;
+        }
+
+        let mut literals = Vec::with_capacity(clause.len() + 1);
+        literals.push((unsafe { self.cell_index(uip) } as u32, state));
+        unsafe {
+            for &lit in clause.iter() {
+                literals.push((self.cell_index(lit) as u32, (*lit).state().unwrap()));
+            }
+        }
+
+        // Read the cell states through a copy of the cells pointer, so that
+        // the callback does not borrow `self` while the database (a field of
+        // `self`) is borrowed mutably.
+        let cells = self.cells_ptr as *const LifeCell;
+        let mut state_of = |i: u32| unsafe { (*cells.add(i as usize)).state() };
+        self.nogood_db
+            .learn(literals.into_boxed_slice(), &mut state_of);
     }
 
     /// Collect the known cells in the neighborhood descriptor of a cell.
