@@ -98,8 +98,7 @@ pub struct NewArgs {
     ///
     /// Leave this empty or omit it to disable result export.
     ///
-    /// This only applies in TUI mode; in non-TUI mode the search stops at the
-    /// first solution and nothing is exported.
+    /// This only applies in TUI mode; nothing is exported in non-TUI mode.
     #[arg(
         long = "export-results",
         value_name = "TEMPLATE",

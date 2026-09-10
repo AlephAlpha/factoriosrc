@@ -20,7 +20,15 @@ use std::collections::HashMap;
 ///
 /// When the database outgrows this bound, the older half of the entries is
 /// evicted, like the clause-database reduction of a SAT solver.
-const DEFAULT_CAPACITY: usize = 1 << 16;
+///
+/// The value is deliberately small. The per-set maintenance of the
+/// matched-literal counters walks the index bucket of the set literal, whose
+/// size grows with the number of stored entries, so a smaller database is
+/// proportionally cheaper to maintain. A capacity sweep on the benchmark
+/// workloads (see `docs/sat-ideas.md`) measured the best results around a
+/// few thousand entries; the previous default of 65,536 entries cost 38–60%
+/// more time on those workloads without buying more pruning.
+const DEFAULT_CAPACITY: usize = 1 << 12;
 
 /// The maximal number of candidates examined by a single query.
 ///
@@ -57,6 +65,39 @@ pub struct NogoodStats {
 
     /// The number of times the database has been reduced.
     pub reductions: u64,
+
+    /// The number of completion queries that found a non-empty index bucket.
+    ///
+    /// A query looks up the nogoods sharing a `(cell, state)` literal and
+    /// checks whether one of them would be completed by that assignment.
+    /// Empty buckets are not counted: they cost one hash lookup and nothing
+    /// else.
+    pub queries: u64,
+
+    /// The number of completion queries whose index bucket was larger than
+    /// [`MAX_QUERY_CANDIDATES`](self::MAX_QUERY_CANDIDATES).
+    ///
+    /// A capped query examines only a prefix of its bucket, so it may miss a
+    /// matching entry; that is a lost pruning, never a correctness issue.
+    /// A high ratio means that the cap is binding and the bucket structure
+    /// needs attention.
+    pub capped_queries: u64,
+
+    /// The total number of literals of the stored nogoods, counted at learn
+    /// time.
+    ///
+    /// Together with [`learned`](NogoodStats::learned) this gives the average
+    /// length of the entries ever stored; the current entries may be shorter
+    /// after evictions.
+    pub literals_total: u64,
+
+    /// The number of learned clauses rejected because they had more than
+    /// [`MAX_NOGOOD_LITERALS`](self::MAX_NOGOOD_LITERALS) literals.
+    ///
+    /// These clauses are never stored, so their pruning power is lost
+    /// entirely. A high count suggests that shorter learned clauses (e.g.
+    /// through minimization) would admit more entries.
+    pub rejected_long: u64,
 }
 
 /// The result of a firing: the index of the cell to force, the state it is
@@ -164,9 +205,16 @@ impl NogoodDb {
     where
         F: FnMut(u32) -> Option<CellState>,
     {
-        if !self.is_enabled()
-            || literals.len() > MAX_NOGOOD_LITERALS
-            || literals.is_empty()
+        if !self.is_enabled() {
+            return;
+        }
+
+        if literals.len() > MAX_NOGOOD_LITERALS {
+            self.stats.rejected_long += 1;
+            return;
+        }
+
+        if literals.is_empty()
             || !self.learnable(literals.as_ref())
             || self.contains_identical(&literals)
         {
@@ -174,6 +222,7 @@ impl NogoodDb {
         }
 
         self.stats.learned += 1;
+        self.stats.literals_total += literals.len() as u64;
 
         let id = self.entries.len() as u32;
         for &(cell, state) in literals.iter() {
@@ -408,8 +457,12 @@ impl NogoodDb {
     /// The candidates are checked without building anything; the literal
     /// vector is allocated only for the matching entry, since a popular
     /// anchor cell may share its index bucket with many nogoods.
+    ///
+    /// The query statistics are updated here: a query is counted when its
+    /// index bucket is non-empty, and separately when the bucket is larger
+    /// than the candidate cap.
     pub(crate) fn completed<F>(
-        &self,
+        &mut self,
         cell: u32,
         state: CellState,
         state_of: &mut F,
@@ -418,6 +471,11 @@ impl NogoodDb {
         F: FnMut(u32) -> Option<CellState>,
     {
         let ids = self.index.get(&(cell, state))?;
+
+        self.stats.queries += 1;
+        if ids.len() > MAX_QUERY_CANDIDATES {
+            self.stats.capped_queries += 1;
+        }
 
         for &id in ids.iter().take(MAX_QUERY_CANDIDATES) {
             let entry = &self.entries[id as usize];

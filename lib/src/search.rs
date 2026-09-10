@@ -603,7 +603,12 @@ impl World {
                             // assignment would live in.
                             if self.config.nogood {
                                 let index = self.cell_index(cell) as u32;
-                                let mut state_of = |i: u32| (*self.cell_by_index(i)).state();
+                                // Read the cell states through a copy of the
+                                // cells pointer, so that the closure does not
+                                // borrow `self` while the database (a field
+                                // of `self`) is borrowed mutably.
+                                let cells = self.cells_ptr as *const LifeCell;
+                                let mut state_of = |i: u32| (*cells.add(i as usize)).state();
                                 let blocked = self
                                     .nogood_db
                                     .completed(index, !state, &mut state_of)

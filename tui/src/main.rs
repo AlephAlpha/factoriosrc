@@ -23,10 +23,11 @@ fn run_no_tui(
     step: Option<usize>,
     format: OutputFormat,
     generation: i32,
+    no_stop: bool,
 ) -> Result<()> {
     let start = Instant::now();
 
-    while matches!(world.status(), Status::NotStarted | Status::Running) {
+    loop {
         let status = world.search(step);
         let solved = status == Status::Solved;
 
@@ -38,12 +39,26 @@ fn run_no_tui(
             }
             OutputFormat::Json => {
                 let rle = solved.then(|| world.rle(generation, true));
+                let nogood = world.nogood_stats().map(|stats| {
+                    serde_json::json!({
+                        "learned": stats.learned,
+                        "hits": stats.hits,
+                        "fired": stats.fired,
+                        "evicted": stats.evicted,
+                        "reductions": stats.reductions,
+                        "queries": stats.queries,
+                        "capped_queries": stats.capped_queries,
+                        "literals_total": stats.literals_total,
+                        "rejected_long": stats.rejected_long,
+                    })
+                });
                 let output = serde_json::json!({
                     "status": status.to_string(),
                     "generation": generation,
                     "population": world.population(generation),
                     "elapsed_secs": start.elapsed().as_secs_f64(),
                     "cells_checked": world.cells_checked(),
+                    "nogood": nogood,
                     "rle": rle,
                 });
                 println!("{output}");
@@ -62,7 +77,9 @@ fn run_no_tui(
             }
         }
 
-        if matches!(status, Status::Solved | Status::NoSolution) {
+        // Continue after a solution when `no_stop` is set, like the TUI loop;
+        // calling `search` again on a solved world resumes the enumeration.
+        if status == Status::NoSolution || (solved && !no_stop) {
             break;
         }
     }
@@ -76,8 +93,9 @@ fn run_no_tui_new(args: NewArgs) -> Result<()> {
     let step = args.step;
     let format = args.format;
     let generation = args.generation;
+    let no_stop = args.no_stop;
 
-    run_no_tui(&mut world, step, format, generation)
+    run_no_tui(&mut world, step, format, generation, no_stop)
 }
 
 /// Run a loaded search without the TUI interface.
@@ -87,12 +105,14 @@ fn run_no_tui_load(args: LoadArgs) -> Result<()> {
     let app = App::load(args)?;
     let mut world = app.world;
     let step = Some(app.step);
+    let no_stop = app.no_stop;
 
     run_no_tui(
         &mut world,
         step,
         format,
         generation.unwrap_or(app.generation),
+        no_stop,
     )
 }
 

@@ -24,6 +24,8 @@ frontends expose the same options.
 | Lookahead | Implemented, opt-in | Probes both states of the next cell and chooses a polarity. Two-state rules only; it does not choose a different cell. |
 | Conflict analysis and backjumping | Implemented, opt-in | A 1-UIP-style analysis for local rule, symmetry, and learned-nogood conflicts. Two-state rules only. A protocol guard keeps enumeration free of repeated solutions. |
 | Exact-position nogood database | Implemented, opt-in | Learns from successful local conflict analysis and propagates learned forbidden patterns. Nogoods use absolute cell indices and are valid only in the current `World`. Two-state rules only. |
+| Clause-database size management | Implemented (smaller default capacity), part of `--nogood` | The database evicts the older half at 4,096 entries. A capacity sweep measured the smaller default 38% faster on the deep first-result workload and 15% faster on the enumeration workload; see the nogood section. |
+| Learned-nogood minimization | Investigated, measured negative, reverted | A Minisat-style antecedent-cone walk over the learned clause was sound (full-enumeration differential tests passed) but cost 50% more on the deep first-result workload and 12× on the enumeration workload; see the nogood section. |
 | VSIDS-style activity | Not implemented | The current branching cell still comes from the fixed search-order chain. |
 | Translated or cross-size nogoods | Not implemented | The current database is not normalized to relative coordinates. |
 | Dynamic cell selection for lookahead | Not implemented | Lookahead only changes the state tried for the next cell. |
@@ -315,13 +317,103 @@ The current implementation constants are intentionally modest and bounded:
 
 | Limit | Current value | Purpose |
 | --- | ---: | --- |
-| Database capacity | `1 << 16` entries | When full, the older half is evicted and the index is rebuilt. |
+| Database capacity | `1 << 12` entries | When full, the older half is evicted and the index is rebuilt. |
 | Literals per nogood | `16` | Avoids indexing very large learned patterns. |
 | Candidates checked by one indexed query | `64` | Bounds work for a popular `(cell, state)` bucket. |
 
 These are implementation limits, not correctness assumptions. Missing a
 candidate because of the query cap loses pruning but must not change the
 solution set.
+
+### Database size and eviction (measured)
+
+The maintenance of the matched-literal counters is the measured bottleneck
+of `--nogood`: every real `set_cell()`/`unset_cell()` walks the index
+bucket of the assigned literal, and the bucket sizes grow with the number
+of stored entries. The database size is therefore the main tuning knob,
+and the previous default (`1 << 16` entries) was far beyond the point
+where additional entries pay for their maintenance.
+
+A capacity sweep (2026-09-10, release build, base revision `b801800`,
+single runs, same machine and protocol as the benchmark section) compared
+`FACTORIOSRC_NOGOOD_CAPACITY` values on the two nogood-heavy benchmark
+cells. The capacity was temporarily env-tunable for the sweep; the
+measured best region is a few thousand entries, and the default was
+lowered to `1 << 12`:
+
+| Capacity | `B3/S23 26 8 4 -y 1` first result | `B3/S23 20 20 2 -n r --seed 1` to 10th solution |
+| --- | ---: | ---: |
+| 65,536 (old default) | 12.151 s | 2.055 s |
+| 16,384 | 9.524 s | 2.062 s |
+| 8,192 | 6.854 s | 2.054 s |
+| 4,096 (new default) | 7.474 s | 1.758 s |
+| 2,048 | 10.628 s | 1.198 s |
+| 1,024 | 10.603 s | 7.785 s |
+
+The two workloads put their optimum at different capacities (the deep
+first-result case near 8,192, the enumeration case near 2,048), and
+single-run trajectories are noisy, so `4,096` was chosen as the default:
+it improves both cells substantially over the old default (the final
+configuration measured 7.60 s / 7.57 s and 1.756 s / 1.757 s on repeated
+runs), and the full-enumeration differential oracle is unchanged
+(`B3/S23 5 5 2` still reports exactly 26 solutions).
+
+The eviction *policy* was also varied during this work, with a clear
+negative result: a Glucose-style quality policy (per-entry LBD computed
+from the decision levels of the literals, per-entry activity bumped on
+firings, hot-entry and glue protection) was **slower** than the plain
+oldest-half eviction at small capacities — on the enumeration workload
+3×–27× at capacities 4,096 and 2,048. The most likely explanation is that
+CA search has strong spatial locality: recent conflicts sit at the
+current search front, so *recency* (which is what oldest-half eviction
+implements) is the right retention signal, while activity-based
+retention preserves entries from abandoned regions. A hybrid (protect
+recently-used entries, evict the oldest among the rest) matched the
+oldest-half results within noise and was also dropped. The shipped
+database keeps the simple oldest-half eviction.
+
+### Learned-clause minimization (measured negative)
+
+A Minisat-style learned-clause minimization
+(`Solver::litRedundant` from `~/文档/Sat/minisat`, adapted to the CA
+setting) was implemented and measured before being reverted:
+
+- *Design.* After the 1-UIP is found, the body of the learned clause (the
+  lower-level literals, never the anchor) was walked through the
+  antecedent graph: a literal could be dropped when its antecedent cone
+  contained only level-0 cells (permanent known cells and deductions
+  forced by them), other clause literals, or literals already proven
+  redundant by the walk. Guesses and flip carriers were treated as
+  unremovable branch assumptions, stale clause antecedents made a literal
+  non-removable, and a shared budget bounded the walk. The minimization
+  affected only the stored nogood; the temporary clause antecedent and
+  the backjump target kept the original clause.
+- *Correctness.* The full-enumeration differential tests (solution sets
+  of plain vs. `--nogood`, including the exhausted `B3/S23 5 5 2` search
+  reporting exactly 26 solutions) all passed, and Miri was clean, so the
+  walk was sound.
+- *Measured cost.* With an env-var A/B toggle and alternating runs on
+  `B3/S23 26 8 4 -y 1 -n a --nogood` (first result, 12.0 s baseline):
+  the full pass measured 18.6–19.6 s. A dry-run mode that performed the
+  walk but stored the original clause measured 19.6 s — the walk itself
+  accounts for the regression, not the changed entries. On the
+  enumeration workload (`B3/S23 20 20 2 -n r --seed 1 --no-stop`, time
+  to the 10th solution, 2.03 s baseline) the full pass measured 26.2 s,
+  with 4.3× more conflict analyses and 6.5× more propagation firings.
+- *Why it loses.* The conflict analyses are extremely numerous (≈460,000
+  on the 12 s deep run), and each walk recovers antecedents through
+  `reason_literals()`, which allocates; a per-analysis walk of several
+  hundred examinations costs more than the shorter entries save. On the
+  enumeration workload the shortened entries also perturb the search
+  trajectory catastrophically. This mirrors the earlier lesson that
+  trajectory effects dominate small heuristic changes here.
+
+The minimization code was removed; the counters added for its evaluation
+(`rejected_long`, `literals_total`, `queries`, `capped_queries`) are
+kept in `NogoodStats`. A cheaper subset of the idea — minimizing only
+clauses short enough to be stored — was measured within the same
+experiments and inherited both problems, so it is not worth pursuing
+without a fundamentally cheaper antecedent recovery.
 
 ### Propagation-level firing
 
@@ -560,6 +652,102 @@ unchanged, so this is machine-state variance between the two dates. For full
 enumeration, the guard removes duplicated work: an exhausted `B3/S23 5 5 2`
 search with backjumping reported 5,332 solutions before the guard and 26
 after, matching the plain count.
+
+### Instrumentation and a profile-driven baseline (2026-09-10)
+
+The `NogoodStats` struct in `lib/src/nogood.rs` gained four counters:
+`queries` and `capped_queries` (completion queries that hit a non-empty
+index bucket, and how many of those were truncated by
+`MAX_QUERY_CANDIDATES`), `literals_total` (the total length of the stored
+nogoods, giving the average entry length together with `learned`), and
+`rejected_long` (clauses rejected for exceeding `MAX_NOGOOD_LITERALS`).
+`World::nogood_stats()` is now exposed in the JSON output of the non-TUI
+TUI frontend, and `--no-stop` now also takes effect in non-TUI mode
+(previously the non-TUI loop stopped at the first solution regardless), so
+enumeration workloads are measurable from the CLI. The stopping condition
+of an enumeration cell is the time to the *K*-th solution (`head -n K`), a
+reproducible bound.
+
+The measurements below were collected on 2026-09-10, single runs, 60 s
+hard timeout per cell (120 s for the combination cells noted), on the same
+machine as the 2026-09-05 protocol, Linux `7.1.13-2-MANJARO`,
+`rustc 1.98.1`, base revision `b801800`, plain `cargo build --release`.
+
+| Case | Plain | `--phase-saving` | `--lookahead` | `--backjump` | `--nogood` |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `B3/S23 26 8 4 -y 1 -n a` | 1.245 s | 3.815 s | 5.787 s | 40.785 s | 12.232 s |
+| `B3/S23 64 64 1 -n a` | >60 s | 1.879 s | 0.047 s | 0.020 s | 0.009 s |
+| `3457/357/5 20 16 7 -x 3 -s D2- -n a` | 2.255 s | 3.282 s | N/A | N/A | N/A |
+| `R3,C2,S2,B3,N+ 50 10 4 -x 2 -s D2- -n a` | >60 s | 14.129 s | 32.430 s | >60 s | >60 s |
+| `B2n3/S23-q 30 9 4 -x 1 -n a` | 4.213 s | 3.542 s | N/A | >60 s | >60 s |
+
+Option combinations, measured on the `26 8 4` case with a 120 s timeout:
+`--backjump --phase-saving`, `--nogood --phase-saving`, and
+`--nogood --lookahead` all exceeded **120 s** — far worse than their parts
+(40.8 s, 12.2 s, and 12.2 s respectively). The earlier single-flag protocol
+underestimated how badly these combinations degrade. This is a heuristic
+trajectory effect (phase saving and lookahead change which state is guessed),
+not a correctness issue, and it is a warning for evaluating future option
+changes: a change that helps alone may regress in combination.
+
+Enumeration cells, time to the 10th solution (60 s timeout):
+
+| Case | Plain | `--nogood` |
+| --- | ---: | ---: |
+| `B3/S23 20 20 2 -n r --seed 1 --no-stop` | 5.741 s | 2.059 s |
+| `B3/S23 6 6 2 -n a --no-stop` | 0.003 s | 0.016 s |
+
+The `20 20 2` random-polarity case is the memory regime: propagation-level
+firing deduplicates the revisited subspaces. The `6 6 2` numbers only show
+the first ten, unusually cheap solutions; full enumeration of that cell
+exceeds minutes and was not used.
+
+**Where the `--nogood` time goes.** `perf record` on
+`B3/S23 26 8 4 -y 1 -n a --nogood` (52K cycle samples, release build with
+line tables): `NogoodDb::on_set` 25.4% plus `NogoodDb::on_unset` 20.4% —
+about **46% in matched-literal counter maintenance**; `check_stack_with_cap`
+27.0% (the propagation itself); the deduplication path of
+`NogoodDb::learn` (`learnable`/`contains_identical`, seen via the
+`insertion_sort_shift_left` and hash symbols) ≈ 9%; `fire_candidate` 1.9%;
+`learn_analysis_nogood` 0.19%. The database, not the analysis, is the
+measured bottleneck, and the maintenance cost is driven by the number of
+stored entries and the length of their index buckets.
+
+**What the new counters say on the same run.** 42,595 entries learned,
+417,647 clauses rejected for length (**91%** of all learning rejected),
+average entry length 12.6 literals, 2.18 M propagation firings, and —
+notably — **zero** completion queries with a non-empty bucket: on this
+deep first-result search all pruning came from firing, and no guess or
+flip was ever blocked. On the `20 20 2` enumeration run the picture
+inverts: 168,817 of 176,874 learning attempts rejected for length (95%),
+and a large share of completion queries hit the candidate cap (94% on an
+earlier 89 s run of the same case that was killed before exhausting).
+The maintenance cost and the rejection rate both scale with the number
+of stored entries, which pointed at database size management (see the
+capacity sweep above) rather than at clause minimization (measured
+negative above).
+
+### Database-size results (2026-09-10, step 2)
+
+The final configuration — default capacity lowered from 65,536 to 4,096
+entries in `NogoodDb::DEFAULT_CAPACITY`, oldest-half eviction unchanged —
+was re-measured on the same day and machine as the sweep, with the plain
+and backjump controls run immediately before to verify that the machine
+had not drifted (plain 1.238 s and backjump 40.629 s against the 1.245 s
+and 40.785 s of the morning table):
+
+| Case | Baseline (65,536 entries) | Final (4,096 entries) |
+| --- | ---: | ---: |
+| `B3/S23 26 8 4 -y 1 -n a --nogood` | 12.232 s | 7.597 s / 7.568 s |
+| `B3/S23 64 64 1 -n a --nogood` | 0.009 s | 0.008 s |
+| `B3/S23 20 20 2 -n r --seed 1 --no-stop` to 10th solution | 2.059 s | 1.756 s / 1.757 s |
+
+The full-enumeration oracle is unchanged: an exhausted
+`B3/S23 5 5 2 --nogood` search still reports exactly 26 solutions. The
+reduced database stores about eight times fewer entries at the point of
+eviction, so the counter maintenance walks proportionally smaller index
+buckets; the pruning count drops (`fired` 2.18 M → 1.81 M on the deep
+run) but the search as a whole is faster.
 
 ## Comparison with Logic Life Search (LLS)
 
