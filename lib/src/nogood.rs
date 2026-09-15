@@ -14,21 +14,55 @@
 //! whenever the world is rebuilt.
 
 use crate::rule::CellState;
-use std::collections::HashMap;
+use rustc_hash::{FxHashMap, FxHashSet, FxHasher};
+use std::hash::Hasher;
+
+/// The literal-to-ids index of the database.
+///
+/// The index is queried once per cell assignment, so the default SipHash of
+/// [`HashMap`](std::collections::HashMap) is a measurable part of the search
+/// time; the Fx hash of `rustc-hash` is the fast non-cryptographic hasher
+/// used by `rustc` itself. A collision only costs a little probing: the key
+/// is mapped to its own bucket, and no other property of the hash is relied
+/// on.
+type LiteralMap = FxHashMap<u64, Vec<u32>>;
+
+/// The set of the hashes of the stored nogoods.
+type LiteralSet = FxHashSet<u64>;
+
+/// The key of a literal in the index: the cell index and the state number,
+/// packed into one integer.
+#[inline]
+fn literal_key(cell: u32, state: CellState) -> u64 {
+    debug_assert!(matches!(state, CellState::Dead | CellState::Alive));
+    (u64::from(cell) << 1) | u64::from(state.number() & 1)
+}
+
+/// A hash of the sorted literals of a nogood, used to reject duplicates.
+///
+/// A collision only rejects a duplicate-looking entry and loses pruning; it
+/// never affects correctness.
+fn literals_hash(literals: &[(u32, CellState)]) -> u64 {
+    let mut hasher = FxHasher::default();
+    for &(cell, state) in literals {
+        hasher.write_u32(cell);
+        hasher.write_u8(state.number());
+    }
+    hasher.finish()
+}
 
 /// The default capacity of the database, in entries.
 ///
 /// When the database outgrows this bound, the older half of the entries is
 /// evicted, like the clause-database reduction of a SAT solver.
 ///
-/// The value is deliberately small. The per-set maintenance of the
-/// matched-literal counters walks the index bucket of the set literal, whose
-/// size grows with the number of stored entries, so a smaller database is
-/// proportionally cheaper to maintain. A capacity sweep on the benchmark
-/// workloads (see `docs/sat-ideas.md`) measured the best results around a
-/// few thousand entries; the previous default of 65,536 entries cost 38–60%
-/// more time on those workloads without buying more pruning.
-const DEFAULT_CAPACITY: usize = 1 << 12;
+/// The per-set maintenance walks the index bucket of the set literal, whose
+/// size grows with the number of stored entries and with their average
+/// length, so a smaller database is proportionally cheaper to maintain. A
+/// capacity sweep on the benchmark workloads (see `docs/sat-ideas.md`)
+/// measured the best results around a few thousand entries; a much larger
+/// database costs more per assignment without buying enough extra pruning.
+const DEFAULT_CAPACITY: usize = 1 << 11;
 
 /// The maximal number of candidates examined by a single query.
 ///
@@ -40,9 +74,15 @@ const MAX_QUERY_CANDIDATES: usize = 64;
 
 /// The maximal number of literals of a learned nogood.
 ///
-/// Large patterns rarely materialize again in full, so they cost more than
-/// they are worth as index entries.
-const MAX_NOGOOD_LITERALS: usize = 16;
+/// The learned clauses of the conflict analysis are often much longer than
+/// the descriptor that seeded them, because resolving the current-level
+/// literals can accumulate many lower-level literals. A sweep on the
+/// benchmark workloads (see `docs/sat-ideas.md`) found that rejecting the
+/// long clauses discards most of the pruning power: allowing them shortens
+/// the deep first-result benchmark by a factor of two. The bound is only a
+/// guard against pathological growth; it is well above the observed clause
+/// lengths.
+const MAX_NOGOOD_LITERALS: usize = 96;
 
 /// Statistics of the nogood database.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -92,48 +132,26 @@ pub struct NogoodStats {
     pub literals_total: u64,
 
     /// The number of learned clauses rejected because they had more than
-    /// [`MAX_NOGOOD_LITERALS`](self::MAX_NOGOOD_LITERALS) literals.
+    /// [`MAX_NOGOOD_LITERALS`](self::MAX_NOGOOD_LITERALS) literals or
+    /// contained a repeated cell.
     ///
     /// These clauses are never stored, so their pruning power is lost
-    /// entirely. A high count suggests that shorter learned clauses (e.g.
-    /// through minimization) would admit more entries.
+    /// entirely. With the current bound the count is small on the benchmark
+    /// workloads: the long clauses of the conflict analysis are useful, and
+    /// rejecting them was a major source of lost pruning.
     pub rejected_long: u64,
 }
-
-/// The result of a firing: the index of the cell to force, the state it is
-/// blocked from taking, and the other literals of the nogood.
-type Firing = (u32, CellState, Box<[(u32, CellState)]>);
 
 /// A learned nogood: an assignment of states to cells that cannot be part of
 /// any solution.
 ///
 /// The literals are pairs of absolute cell indices and the states that these
-/// cells must not all take at once.
+/// cells must not all take at once. They are kept sorted by `(cell, state)`,
+/// so that duplicate entries are recognized by a hash.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Nogood {
-    /// The literals of the nogood. The first literal is the anchor: the cell
-    /// whose rejected state triggered the learning (the 1-UIP of the conflict).
+    /// The literals of the nogood, sorted.
     literals: Box<[(u32, CellState)]>,
-
-    /// The number of literals whose cell currently holds the recorded state,
-    /// maintained incrementally by [`on_set`](NogoodDb::on_set) and
-    /// [`on_unset`](NogoodDb::on_unset).
-    ///
-    /// While this is one less than the number of literals and the remaining
-    /// cell is unknown, the nogood *fires*: the remaining cell cannot take
-    /// its recorded state. When all the literals hold, the current partial
-    /// assignment is contradictory.
-    ///
-    /// This relies on the following invariants:
-    ///
-    /// - every set and unset of a cell outside a lookahead probe updates the
-    ///   counters through the `(cell, state)` index;
-    /// - the database starts empty in every world (fresh worlds, save/load,
-    ///   and world growth), so the counters are built up from a clean state;
-    /// - a firing prevents the last unknown cell from completing the nogood,
-    ///   and a full match that arises through a re-set cell is caught by the
-    ///   full-match check of [`on_set`](NogoodDb::on_set).
-    matched: u32,
 }
 
 /// A database of learned nogoods.
@@ -148,8 +166,35 @@ pub struct NogoodDb {
     /// in this vector.
     entries: Vec<Nogood>,
 
+    /// The number of literals of each entry that do not currently hold,
+    /// indexed by entry id and maintained incrementally by
+    /// [`on_set`](NogoodDb::on_set) and [`on_unset`](NogoodDb::on_unset).
+    ///
+    /// While this is one and the remaining cell is unknown, the nogood
+    /// *fires*: the remaining cell cannot take its recorded state. When all
+    /// the literals hold, the current partial assignment is contradictory.
+    ///
+    /// The counters live in a dense array next to the entries, not inside
+    /// them, so that the hot bucket walk of `on_set` and `on_unset` touches
+    /// only compact memory.
+    ///
+    /// This relies on the following invariants:
+    ///
+    /// - every set and unset of a cell outside a lookahead probe updates the
+    ///   counters through the `(cell, state)` index;
+    /// - the database starts empty in every world (fresh worlds, save/load,
+    ///   and world growth), so the counters are built up from a clean state;
+    /// - a firing prevents the last unknown cell from completing the nogood,
+    ///   and a full match that arises through a re-set cell is caught by the
+    ///   full-match check of [`on_set`](NogoodDb::on_set).
+    remaining: Vec<u32>,
+
     /// For each literal, the ids of the nogoods containing it.
-    index: HashMap<(u32, CellState), Vec<u32>>,
+    index: LiteralMap,
+
+    /// The hashes of the sorted literals of the stored entries, used to
+    /// reject verbatim duplicates without comparing entries.
+    hashes: LiteralSet,
 
     /// The maximal number of entries before the older half is evicted.
     ///
@@ -174,7 +219,9 @@ impl NogoodDb {
     pub fn new(capacity: usize) -> Self {
         Self {
             entries: Vec::new(),
-            index: HashMap::new(),
+            remaining: Vec::new(),
+            index: LiteralMap::default(),
+            hashes: LiteralSet::default(),
             capacity,
             stats: NogoodStats::default(),
         }
@@ -193,15 +240,15 @@ impl NogoodDb {
 
     /// Learn a nogood.
     ///
-    /// The literals are (cell index, state) pairs; the first pair is the
-    /// anchor of the nogood. Entries with a repeated literal are rejected
-    /// (they would be subsumed by a smaller nogood), and so are entries that
-    /// are already stored verbatim.
+    /// The literals are (cell index, state) pairs. The literals are stored
+    /// sorted. Entries with a repeated cell are rejected (they could never
+    /// hold together, and would be subsumed by a smaller nogood), and so are
+    /// entries that are already stored verbatim.
     ///
     /// The `state_of` callback reports the current state of a cell, so that
-    /// the matched-literal counters of the new entry (and, after an eviction,
-    /// of all the kept entries) start in sync with the world.
-    pub fn learn<F>(&mut self, literals: Box<[(u32, CellState)]>, state_of: &mut F)
+    /// the unmatched-literal counters of the new entry (and, after an
+    /// eviction, of all the kept entries) start in sync with the world.
+    pub fn learn<F>(&mut self, mut literals: Box<[(u32, CellState)]>, state_of: &mut F)
     where
         F: FnMut(u32) -> Option<CellState>,
     {
@@ -214,10 +261,21 @@ impl NogoodDb {
             return;
         }
 
-        if literals.is_empty()
-            || !self.learnable(literals.as_ref())
-            || self.contains_identical(&literals)
-        {
+        if literals.is_empty() {
+            return;
+        }
+
+        // Canonicalize the literals, so that a duplicate stored entry has the
+        // same hash. A cell appearing twice means that the nogood can never
+        // hold (two states of a cell cannot both hold at once), so it is
+        // useless.
+        literals.sort_unstable();
+        if literals.windows(2).any(|window| window[0].0 == window[1].0) {
+            self.stats.rejected_long += 1;
+            return;
+        }
+
+        if !self.hashes.insert(literals_hash(&literals)) {
             return;
         }
 
@@ -226,7 +284,10 @@ impl NogoodDb {
 
         let id = self.entries.len() as u32;
         for &(cell, state) in literals.iter() {
-            self.index.entry((cell, state)).or_default().push(id);
+            self.index
+                .entry(literal_key(cell, state))
+                .or_default()
+                .push(id);
         }
 
         let matched = literals
@@ -244,50 +305,18 @@ impl NogoodDb {
         // means.
         debug_assert!(matched <= literals.len() as u32);
 
-        self.entries.push(Nogood { literals, matched });
+        self.remaining.push(literals.len() as u32 - matched);
+        self.entries.push(Nogood { literals });
 
         if self.entries.len() >= self.capacity {
             self.reduce(state_of);
         }
     }
 
-    /// Whether the given literals can be stored: they must not contain the
-    /// same (cell, state) pair twice, which would make the nogood subsumed
-    /// by a smaller one.
-    fn learnable(&self, literals: &[(u32, CellState)]) -> bool {
-        let mut sorted = literals.to_vec();
-        sorted.sort_unstable();
-        sorted.dedup();
-        sorted.len() == literals.len()
-    }
-
-    /// Whether an entry with exactly these literals is already stored.
-    ///
-    /// Only the nogoods sharing the anchor literal are compared, which keeps
-    /// the cost proportional to the collisions of one index bucket.
-    fn contains_identical(&self, literals: &[(u32, CellState)]) -> bool {
-        let Some(&(anchor_cell, anchor_state)) = literals.first() else {
-            return false;
-        };
-
-        let Some(ids) = self.index.get(&(anchor_cell, anchor_state)) else {
-            return false;
-        };
-
-        let mut query = literals.to_vec();
-        query.sort_unstable();
-
-        ids.iter().any(|&id| {
-            let mut stored = self.entries[id as usize].literals.to_vec();
-            stored.sort_unstable();
-            stored == query
-        })
-    }
-
     /// Evict the older half of the entries and rebuild the index.
     ///
-    /// The matched-literal counters are rebuilt from the world state via the
-    /// `state_of` callback, since all the ids shift.
+    /// The unmatched-literal counters are rebuilt from the world state via
+    /// the `state_of` callback, since all the ids shift.
     fn reduce<F>(&mut self, state_of: &mut F)
     where
         F: FnMut(u32) -> Option<CellState>,
@@ -299,16 +328,23 @@ impl NogoodDb {
         // The ids in the index are positions in `entries`, so they all shift
         // when the older half is drained; rebuild the index from scratch.
         self.entries.drain(..keep);
+        self.remaining.drain(..keep);
         self.index.clear();
-        for (id, entry) in self.entries.iter_mut().enumerate() {
+        self.hashes.clear();
+        for (id, entry) in self.entries.iter().enumerate() {
             let id = id as u32;
-            entry.matched = entry
+            self.hashes.insert(literals_hash(&entry.literals));
+            let matched = entry
                 .literals
                 .iter()
                 .filter(|&&(cell, state)| state_of(cell) == Some(state))
                 .count() as u32;
+            self.remaining[id as usize] = entry.literals.len() as u32 - matched;
             for &(cell, state) in entry.literals.iter() {
-                self.index.entry((cell, state)).or_default().push(id);
+                self.index
+                    .entry(literal_key(cell, state))
+                    .or_default()
+                    .push(id);
             }
         }
     }
@@ -325,19 +361,19 @@ impl NogoodDb {
     /// be unset later and re-set to the recorded state, skipping the
     /// one-literal-short window.
     ///
-    /// The ids are read from the index while only the `entries` field is
+    /// The ids are read from the index while only the `remaining` field is
     /// mutated, which is sound because the two fields never alias.
     pub fn on_set(&mut self, cell: u32, state: CellState, out: &mut Vec<u32>) -> Option<u32> {
         let mut full_match = None;
 
-        if let Some(ids) = self.index.get(&(cell, state)) {
+        if let Some(ids) = self.index.get(&literal_key(cell, state)) {
             for &id in ids.iter() {
-                let entry = &mut self.entries[id as usize];
-                debug_assert!(entry.matched < entry.literals.len() as u32);
-                entry.matched += 1;
-                if entry.matched == entry.literals.len() as u32 {
+                let remaining = &mut self.remaining[id as usize];
+                debug_assert!(*remaining > 0);
+                *remaining -= 1;
+                if *remaining == 0 {
                     full_match = Some(id);
-                } else if entry.matched + 1 == entry.literals.len() as u32 {
+                } else if *remaining == 1 {
                     out.push(id);
                 }
             }
@@ -348,39 +384,36 @@ impl NogoodDb {
 
     /// Update the counters when a cell is unset from a state.
     pub fn on_unset(&mut self, cell: u32, state: CellState) {
-        if let Some(ids) = self.index.get(&(cell, state)) {
+        if let Some(ids) = self.index.get(&literal_key(cell, state)) {
             for &id in ids.iter() {
-                let entry = &mut self.entries[id as usize];
-                debug_assert!(entry.matched > 0);
-                entry.matched -= 1;
+                let remaining = &mut self.remaining[id as usize];
+                debug_assert!(*remaining < self.entries[id as usize].literals.len() as u32);
+                *remaining += 1;
             }
         }
     }
 
-    /// Evaluate whether an entry fires, and return the information needed to
-    /// force the remaining cell: its index, its blocked state, and the other
-    /// literals of the nogood (the cells that currently hold their recorded
-    /// states).
+    /// Evaluate whether an entry fires, and return the cell to force and the
+    /// state it is blocked from taking.
     ///
     /// The entry fires when exactly one literal does not hold and its cell is
     /// unknown. Candidates are re-evaluated when they are processed, not when
     /// they were queued, so a stale candidate simply returns [`None`].
-    pub fn fire_candidate<F>(&self, id: u32, state_of: &mut F) -> Option<Firing>
+    pub fn fire_candidate<F>(&self, id: u32, state_of: &mut F) -> Option<(u32, CellState)>
     where
         F: FnMut(u32) -> Option<CellState>,
     {
-        let entry = &self.entries.get(id as usize)?;
-
-        if entry.matched + 1 != entry.literals.len() as u32 {
+        if *self.remaining.get(id as usize)? != 1 {
             return None;
         }
 
-        let mut others = Vec::with_capacity(entry.literals.len() - 1);
+        let entry = self.entries.get(id as usize)?;
+
         let mut target = None;
 
         for &(cell, state) in entry.literals.iter() {
             match state_of(cell) {
-                Some(current) if current == state => others.push((cell, state)),
+                Some(current) if current == state => {}
                 // The first unknown cell can be forced away from its
                 // recorded state...
                 None if target.is_none() => target = Some((cell, state)),
@@ -390,9 +423,7 @@ impl NogoodDb {
             }
         }
 
-        let (target_cell, blocked_state) = target?;
-
-        Some((target_cell, blocked_state, others.into_boxed_slice()))
+        target
     }
 
     /// The literals of an entry, for seeding the conflict analysis of a
@@ -470,7 +501,7 @@ impl NogoodDb {
     where
         F: FnMut(u32) -> Option<CellState>,
     {
-        let ids = self.index.get(&(cell, state))?;
+        let ids = self.index.get(&literal_key(cell, state))?;
 
         self.stats.queries += 1;
         if ids.len() > MAX_QUERY_CANDIDATES {
@@ -516,7 +547,9 @@ impl NogoodDb {
     /// forced outside the search range).
     pub fn clear(&mut self) {
         self.entries.clear();
+        self.remaining.clear();
         self.index.clear();
+        self.hashes.clear();
     }
 
     /// The number of stored nogoods.
@@ -592,11 +625,23 @@ mod test {
     }
 
     #[test]
-    fn learn_rejects_duplicate_literals() {
+    fn learn_rejects_a_repeated_cell() {
         let mut db = NogoodDb::with_default_capacity();
         let mut none = |_| None;
+        // An exact duplicate and two different states of the same cell can
+        // never hold together, so both entries are useless.
         db.learn(vec![(1, D), (1, D)].into_boxed_slice(), &mut none);
+        db.learn(vec![(1, A), (1, D)].into_boxed_slice(), &mut none);
         assert!(db.is_empty());
+        assert_eq!(db.stats().rejected_long, 2);
+    }
+
+    #[test]
+    fn learn_stores_the_literals_sorted() {
+        let mut db = NogoodDb::with_default_capacity();
+        let mut none = |_| None;
+        db.learn(vec![(9, A), (1, D), (5, A)].into_boxed_slice(), &mut none);
+        assert_eq!(db.entry_literals(0), &[(1, D), (5, A), (9, A)]);
     }
 
     #[test]
@@ -711,7 +756,7 @@ mod test {
             .filter_map(|&id| db.fire_candidate(id, &mut state_of_fn(0b10, 0b11)))
             .collect();
         assert_eq!(fired.len(), 1);
-        assert_eq!(fired[0], (3, A, Box::from([(0, D), (1, A)].as_slice())));
+        assert_eq!(fired[0], (3, A));
     }
 
     #[test]

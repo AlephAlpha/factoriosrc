@@ -23,7 +23,7 @@ frontends expose the same options.
 | Phase saving | Implemented, opt-in | Remembers the last real state of a cell and tries it first. Works with supported two-state and Generations rules. |
 | Lookahead | Implemented, opt-in | Probes both states of the next cell and chooses a polarity. Two-state rules only; it does not choose a different cell. |
 | Conflict analysis and backjumping | Implemented, opt-in | A 1-UIP-style analysis for local rule, symmetry, and learned-nogood conflicts. Two-state rules only. A protocol guard keeps enumeration free of repeated solutions. |
-| Exact-position nogood database | Implemented, opt-in | Learns from successful local conflict analysis and propagates learned forbidden patterns. It uses absolute cell indices, a 4,096-entry oldest-half-evicting database, and is valid only in the current `World`. Two-state rules only. Clause minimization was investigated and reverted after a negative performance result. |
+| Exact-position nogood database | Implemented, opt-in | Learns from successful local conflict analysis and propagates learned forbidden patterns. It uses absolute cell indices, a 2,048-entry oldest-half-evicting database, and is valid only in the current `World`. Two-state rules only. Clause minimization was investigated and reverted after a negative performance result; allowing long learned clauses was later found to be a large win. |
 | VSIDS-style activity | Not implemented | The current branching cell still comes from the fixed search-order chain. |
 | Translated or cross-size nogoods | Not implemented | The current database is not normalized to relative coordinates. |
 | Dynamic cell selection for lookahead | Not implemented | Lookahead only changes the state tried for the next cell. |
@@ -295,10 +295,12 @@ It is enabled by `Config::nogood` and automatically enables backjumping.
 
 ### Representation and lifetime
 
-A learned entry is a bounded list of `(absolute cell index, state)` literals.
-The first literal is the rejected state of the 1-UIP cell; the remaining
-literals are the states in the learned clause. The database indexes every
-literal so that a matching entry can be found without scanning all entries.
+A learned entry is a bounded list of `(absolute cell index, state)` literals:
+the rejected state of the 1-UIP cell and the states of the learned clause.
+The canonical form of an entry is the sorted literal list. The database
+indexes every literal so that a matching entry can be found without scanning
+all entries, and it keeps a hash of the sorted list so that verbatim
+duplicates are rejected at learn time.
 
 The current implementation deliberately uses absolute indices:
 
@@ -311,26 +313,48 @@ The current implementation deliberately uses absolute indices:
 The database is persistent only across backtracking inside one `World`. It
 does not persist across save/load or world growth.
 
-The current implementation constants are intentionally modest and bounded:
+The current implementation constants are:
 
 | Limit | Current value | Purpose |
 | --- | ---: | --- |
-| Database capacity | `1 << 12` entries | When full, the older half is evicted and the index is rebuilt. |
-| Literals per nogood | `16` | Avoids indexing very large learned patterns. |
+| Database capacity | `1 << 11` entries | When full, the older half is evicted and the index is rebuilt. |
+| Literals per nogood | `96` | Guards against pathological clause growth; the observed clauses stay below it. |
 | Candidates checked by one indexed query | `64` | Bounds work for a popular `(cell, state)` bucket. |
 
 These are implementation limits, not correctness assumptions. Missing a
 candidate because of the query cap loses pruning but must not change the
 solution set.
 
-The default capacity is deliberately small because counter maintenance walks
-the index bucket of every real assignment. A capacity sweep selected a few
-thousand entries, so the shipped database uses `1 << 12` with simple
-oldest-half eviction. More elaborate activity/LBD-based eviction policies were
-slower and were dropped. A Minisat-style antecedent-cone minimization was also
-implemented and passed the differential correctness tests, but its per-conflict
-walk made both first-result and enumeration searches slower; the code was
-removed. The current implementation does not minimize learned nogoods.
+The counter maintenance walks the index bucket of every real assignment, so
+the capacity is kept around a few thousand entries. A capacity sweep selected
+the current `1 << 11` with simple oldest-half eviction. More elaborate
+activity/LBD-based eviction policies were slower and were dropped. A
+Minisat-style antecedent-cone minimization was also implemented and passed the
+differential correctness tests, but its per-conflict walk made both
+first-result and enumeration searches slower; the code was removed. The
+current implementation does not minimize learned nogoods.
+
+The length bound and the hot paths were revised together after the benchmark
+sweep:
+
+- The bound was originally `16` literals, on the assumption that long patterns
+  rarely materialize again in full. The benchmark workloads contradict the
+  assumption: most learned clauses are longer than 16 literals, and rejecting
+  them discarded most of the pruning power. Raising the bound to `96` roughly
+  halves the deep first-result benchmark and cuts the enumeration benchmark by
+  more than an order of magnitude.
+- The counters are kept in the dense `NogoodDb::remaining` array instead of
+  inside the entries, so the bucket walk only touches compact memory.
+- The index keys are packed into one integer and hashed with the
+  `rustc_hash::FxHashMap` and `FxHashSet` types of the `rustc-hash` crate
+  instead of the default SipHash, and duplicate rejection uses a hash of the
+  sorted literals instead of re-sorting stored entries at every query.
+
+A two-watched-literal propagation layer, modeled on MiniSat and Glucose, was
+implemented and dropped. Under this search's chronological backtracking the
+watch lists thrash as cells are re-set and unset, so the per-event scans of
+the clause literals cost more than the incremental counters, even though the
+counters touch more entries per assignment.
 
 `NogoodStats` retains the useful instrumentation from these experiments:
 `queries`, `capped_queries`, `literals_total`, and `rejected_long`, in addition
@@ -341,8 +365,9 @@ the time to a later solution.
 ### Propagation-level firing
 
 Each database entry maintains a counter of literals whose cells currently hold
-the recorded states. Real `set_cell()` and `unset_cell()` operations update
-the counters through the `(cell, state)` index.
+the recorded states, stored in the dense `NogoodDb::remaining` array. Real
+`set_cell()` and `unset_cell()` operations update the counters through the
+`(cell, state)` index.
 
 - When exactly one literal is missing and its cell is unknown, the database
   forces that cell away from the recorded state. This is unit propagation on
@@ -516,26 +541,27 @@ condition, and result.
 
 ## Benchmark Snapshot
 
-This is the latest recorded snapshot, measured on 2026-09-10 with a release
+This is the latest recorded snapshot, measured on 2026-09-15 with a release
 build, single runs, and a 60-second per-cell timeout (120 seconds for the
-listed combinations). The `--nogood` column uses the current 4,096-entry
-database; for enumeration, the value is the time to the 10th solution with
-`--no-stop`. Replace this table on a future rerun instead of appending another
-historical table.
+listed combinations). The `--nogood` column uses the current `1 << 11`-entry
+database with the 96-literal bound; for enumeration, the value is the time to
+the 10th solution with `--no-stop`. Replace this table on a future rerun
+instead of appending another historical table.
 
 | Case | Plain | `--phase-saving` | `--lookahead` | `--backjump` | `--nogood` |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `B3/S23 26 8 4 -y 1 -n a` | 1.245 s | 3.815 s | 5.787 s | 40.785 s | 7.60 / 7.57 s |
-| `B3/S23 64 64 1 -n a` | >60 s | 1.879 s | 0.047 s | 0.020 s | 0.008 s |
-| `3457/357/5 20 16 7 -x 3 -s D2- -n a` | 2.255 s | 3.282 s | N/A | N/A | N/A |
-| `R3,C2,S2,B3,N+ 50 10 4 -x 2 -s D2- -n a` | >60 s | 14.129 s | 32.430 s | >60 s | >60 s |
-| `B2n3/S23-q 30 9 4 -x 1 -n a` | 4.213 s | 3.542 s | N/A | >60 s | >60 s |
-| `B3/S23 20 20 2 -n r --seed 1 --no-stop` to 10th solution | 5.741 s | N/A | N/A | N/A | 1.756 / 1.757 s |
+| `B3/S23 26 8 4 -y 1 -n a` | 1.227 s | 3.752 s | 5.665 s | 36.538 s | 2.690 s |
+| `B3/S23 64 64 1 -n a` | >60 s | 1.854 s | 0.049 s | 0.026 s | 0.014 s |
+| `3457/357/5 20 16 7 -x 3 -s D2- -n a` | 2.269 s | 3.208 s | N/A | N/A | N/A |
+| `R3,C2,S2,B3,N+ 50 10 4 -x 2 -s D2- -n a` | >60 s | 13.622 s | 30.922 s | >60 s | >60 s |
+| `B2n3/S23-q 30 9 4 -x 1 -n a` | 4.154 s | 3.498 s | N/A | >60 s | 14.728 s |
+| `B3/S23 20 20 2 -n r --seed 1 --no-stop` to 10th solution | 5.716 s | N/A | N/A | N/A | 0.114 s |
 
-The combined options `--backjump --phase-saving`, `--nogood --phase-saving`,
-and `--nogood --lookahead` all exceeded 120 seconds on the deep `26 8 4`
-case. The enumeration guard makes solution counts match the plain search;
-`B3/S23 5 5 2` reports 26 solutions with backjumping and nogood.
+On the deep `26 8 4` case the combined options `--nogood --phase-saving` and
+`--nogood --lookahead` take 9.189 s and 8.180 s, while `--backjump
+--phase-saving` still exceeds 120 seconds. The enumeration guard makes
+solution counts match the plain search; `B3/S23 5 5 2` reports 26 solutions
+with backjumping and nogood.
 
 ## Comparison with Logic Life Search (LLS)
 
@@ -585,7 +611,7 @@ patterns, but the boundary handling differs:
 | Tutorial 1: 25-cell c/3 ship, `B3/S23`, 16×6 box | 1.140 s / 0.799 s | 0.009 s | `lls -c -b 16 6 -s p3 x0 y1`; factoriosrc `B3/S23 16 6 3 -y 1 -n a`. Both found the tutorial's 25-cell ship. The tutorial reports 1.7 s with an older solver. |
 | Tutorial 2: mirror-symmetric c/3 ship, `B3/S23`, 17×12, `D2\|` | 15.698 s / 15.313 s | 0.105 s | `lls -c -b 17 12 -s p3 x0 y1 -s "D2\|"`; factoriosrc `B3/S23 17 12 3 -y 1 -s D2\| -n a`. First solutions depend on the solver: 62 cells here (12.2 s on a second run), ~69 cells in the tutorial, 34 cells for factoriosrc. The tutorial reports 57.5 s. |
 | `B3/S23 26 8 4 -y 1 -n a` (c/4 ship) | >60 s (timeout); a follow-up run without the timeout solved it in ~587 s wall / 586.6 s solver | 1.245 s (plain) | `lls -c -b 26 8 -s p4 x0 y1`; also >60 s with `-b 26 9`. LLS encoding: 1,015 variables, 116,442 clauses; its 53-cell ship differs from factoriosrc's edge-touching 57-cell one. |
-| `B3/S23 64 64 1 -n a` (period 1) | 4.07 s / 0.092 s, but the solution is the all-dead pattern; with `-p ">=100"`: >60 s (a dry run did not even finish encoding within 180 s) | >60 s (plain); 0.008–1.879 s with experimental modes | LLS has no non-empty requirement; the ≥100-population attempt died in LLS's cardinality encoding, not in the solver. |
+| `B3/S23 64 64 1 -n a` (period 1) | 4.07 s / 0.092 s, but the solution is the all-dead pattern; with `-p ">=100"`: >60 s (a dry run did not even finish encoding within 180 s) | >60 s (plain); 0.014–1.854 s with experimental modes | LLS has no non-empty requirement; the ≥100-population attempt died in LLS's cardinality encoding, not in the solver. |
 | `B2n3/S23-q 30 9 4 -x 1` (INT c/4 ship) | >60 s (timeout; also >60 s with `-b 31 9`) | 4.213 s (plain) | `lls -c -b 30 9 -s p4 x1 y0 -r B2n3/S23-q`; encoding: 1,342 variables, 416,480 clauses. |
 
 ### Observations

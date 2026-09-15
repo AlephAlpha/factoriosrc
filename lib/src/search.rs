@@ -818,15 +818,17 @@ impl World {
             }
 
             let mut state_of = |i: u32| unsafe { (*cells.add(i as usize)).state() };
-            let Some((target, blocked, others)) = self.nogood_db.fire_candidate(id, &mut state_of)
-            else {
+            let Some((target, blocked)) = self.nogood_db.fire_candidate(id, &mut state_of) else {
                 continue;
             };
 
             self.nogood_db.note_fired();
 
-            let clause = others
+            let clause = self
+                .nogood_db
+                .entry_literals(id)
                 .iter()
+                .filter(|&&(i, _)| i != target)
                 .map(|&(i, s)| unsafe {
                     let other = cells.add(i as usize);
                     debug_assert_eq!((*other).state(), Some(s));
