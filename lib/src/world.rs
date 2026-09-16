@@ -22,6 +22,27 @@ use strum::Display;
 /// The third coordinate is the generation of the cell.
 pub type Coord = (i32, i32, i32);
 
+/// The number of unknown cells after the search-order cursor that
+/// activity-based branching may choose from.
+///
+/// Keeping the window small preserves the front optimization and the spatial
+/// locality of descriptor propagation, while still letting the search focus on
+/// a cell of a recent conflict. See [`Config::activity`](crate::Config::activity).
+pub const ACTIVITY_WINDOW: usize = 8;
+
+/// The factor by which the activity bump amount grows after each conflict.
+///
+/// This is the standard VSIDS decay: recent conflicts count more.
+pub const ACTIVITY_DECAY: f64 = 0.95;
+
+/// When the activity bump amount exceeds this, it and all activities are
+/// rescaled by [`ACTIVITY_RESCALE_FACTOR`] to avoid overflow.
+pub const ACTIVITY_RESCALE_THRESHOLD: f64 = 1e100;
+
+/// The factor used to rescale activities when the bump amount becomes too
+/// large.
+pub const ACTIVITY_RESCALE_FACTOR: f64 = 1e-100;
+
 /// Status of the search.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Display)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -236,11 +257,12 @@ pub struct World {
     /// The rank of each cell in the search-order chain, indexed by the cell
     /// index in the world; meaningless for cells not in the chain.
     ///
-    /// This is only used when [`Config::backjump`](crate::Config::backjump) is
-    /// enabled. The conflict analysis resumes the search in the chain after a
-    /// backjump: since the chain order and the trail order differ, the
-    /// resumption point is the smallest chain rank among the popped cells,
-    /// not the deepest trail position.
+    /// This is used when [`Config::backjump`](crate::Config::backjump) or
+    /// [`Config::activity`](crate::Config::activity) is enabled. The conflict
+    /// analysis and the chronological backtracking resume the search in the
+    /// chain after a conflict: since the chain order and the trail order
+    /// differ, the resumption point is the smallest chain rank among the
+    /// cells that become unknown, not the deepest trail position.
     pub(crate) chain_pos: Vec<u32>,
 
     /// The timestamp of the last conflict analysis, used to mark the cells
@@ -272,6 +294,24 @@ pub struct World {
     /// the cells for phase saving, since the assignments of a probe are not
     /// real.
     pub(crate) in_probe: bool,
+
+    /// The conflict activity of each cell, indexed by the cell index in the
+    /// world.
+    ///
+    /// This is only used when [`Config::activity`](crate::Config::activity) is
+    /// enabled; otherwise it is empty. The activity is bumped when a cell is
+    /// involved in a conflict and decays over time, so that the search favors
+    /// the cells of recent conflicts. It is a heuristic state and is not
+    /// serialized, like the phases of cells that have already been unset.
+    pub(crate) activity: Vec<f64>,
+
+    /// The amount added to a cell's activity on each bump.
+    ///
+    /// It grows geometrically to give recent conflicts more weight, and is
+    /// rescaled together with the activities when it becomes too large. This
+    /// is only used when [`Config::activity`](crate::Config::activity) is
+    /// enabled.
+    pub(crate) activity_inc: f64,
 
     /// The database of learned nogoods.
     ///
@@ -357,6 +397,7 @@ impl World {
 
         let backjump = config.backjump;
         let nogood = config.nogood;
+        let activity = config.activity;
 
         let mut world = Self {
             config,
@@ -376,7 +417,7 @@ impl World {
             current_level: 0,
             cell_level: if backjump { vec![0; size] } else { Vec::new() },
             cell_pos: if backjump { vec![0; size] } else { Vec::new() },
-            chain_pos: if backjump {
+            chain_pos: if backjump || activity {
                 vec![u32::MAX; size]
             } else {
                 Vec::new()
@@ -386,6 +427,12 @@ impl World {
             stack_index: 0,
             start: std::ptr::null(),
             in_probe: false,
+            activity: if activity {
+                vec![0.0; size]
+            } else {
+                Vec::new()
+            },
+            activity_inc: 1.0,
             nogood_db: if nogood {
                 NogoodDb::with_default_capacity()
             } else {
@@ -823,7 +870,7 @@ impl World {
         // The ranks of the cells in the chain, in chain order. The chain is
         // built by pushing cells to the front, so the order of the chain is
         // the reverse of the order of the build loops.
-        if self.config.backjump {
+        if self.config.backjump || self.config.activity {
             let mut rank = 0u32;
             let mut cell = self.start;
             while !cell.is_null() {
@@ -1126,6 +1173,41 @@ impl World {
     /// no flip carriers.
     pub(crate) fn deepest_flip_level(&self) -> u32 {
         self.flip_levels.last().copied().unwrap_or(0)
+    }
+
+    /// Bump the conflict activity of a cell.
+    ///
+    /// A no-op when [`Config::activity`](crate::Config::activity) is disabled.
+    ///
+    /// # Safety
+    ///
+    /// The cell must be in the same world as `self`.
+    /// Otherwise the behavior is undefined.
+    pub(crate) unsafe fn bump_activity(&mut self, cell: *const LifeCell) {
+        if self.activity.is_empty() {
+            return;
+        }
+        let index = unsafe { self.cell_index(cell) };
+        self.activity[index] += self.activity_inc;
+    }
+
+    /// Decay the conflict activity after a conflict.
+    ///
+    /// This grows the bump amount so that recent conflicts weigh more, and
+    /// rescales the activities when the bump amount becomes too large.
+    ///
+    /// A no-op when [`Config::activity`](crate::Config::activity) is disabled.
+    pub(crate) fn decay_activity(&mut self) {
+        if self.activity.is_empty() {
+            return;
+        }
+        self.activity_inc /= ACTIVITY_DECAY;
+        if self.activity_inc > ACTIVITY_RESCALE_THRESHOLD {
+            for activity in &mut self.activity {
+                *activity *= ACTIVITY_RESCALE_FACTOR;
+            }
+            self.activity_inc *= ACTIVITY_RESCALE_FACTOR;
+        }
     }
 
     /// Unset the state of a cell. The cell should be known.
@@ -2293,6 +2375,25 @@ mod test {
     }
 
     #[test]
+    fn test_miri_activity() {
+        // Exercise activity-based branching under Miri: the window selection
+        // walks the raw `next` pointers, and the conflict paths bump and
+        // decay the activity.
+        let config = Config::new("B3/S23", 4, 4, 2).with_activity();
+        let mut world = World::new(config).unwrap();
+        world.search(Some(2000));
+        assert_eq!(world.status(), Status::Solved);
+
+        // A contradictory configuration triggers many conflicts and bumps.
+        let config = Config::new("B3/S23", 4, 4, 2)
+            .with_max_population(1)
+            .with_activity();
+        let mut world = World::new(config).unwrap();
+        world.search(None);
+        assert_eq!(world.status(), Status::NoSolution);
+    }
+
+    #[test]
     fn test_below_max_invariant() {
         // The `below_max` counter should always be the number of generations
         // whose population is at most `max_population`.
@@ -2443,6 +2544,151 @@ mod test {
 
         let mut world2 = World::try_from(world.to_serde()).unwrap();
         assert!(world2.config().phase_saving);
+
+        world.search(None);
+        world2.search(None);
+        assert_eq!(world.status(), world2.status());
+    }
+
+    #[test]
+    fn test_activity_finds_solution() {
+        // Activity-based branching only changes the branching order, so it
+        // should still find solutions for 2-state and Generations rules.
+        for config in [
+            Config::new("B3/S23", 3, 3, 2).with_activity(),
+            Config::new("B2a/S12", 3, 3, 1).with_activity(),
+            Config::new("B2o/S23oH", 3, 3, 2).with_activity(),
+            Config::new("B3/S23/4", 4, 4, 1).with_activity(),
+        ] {
+            let mut world = World::new(config).unwrap();
+            world.search(None);
+            assert_eq!(world.status(), Status::Solved);
+        }
+    }
+
+    #[test]
+    fn test_activity_solution_is_complete() {
+        // The activity window may pick a cell that is later in the chain than the
+        // earliest unknown cell. This guards against the cursor skipping unknown
+        // cells: when the search reports a solution, every cell of the searchable
+        // region must be known. A large, shallow search is used because that is
+        // where the activity selection diverges most from the chain order.
+        let config = Config::new("B3/S23", 64, 64, 1)
+            .with_new_state(NewState::Alive)
+            .with_activity();
+        let mut world = World::new(config).unwrap();
+        assert_eq!(world.search(None), Status::Solved);
+
+        for t in 0..world.config().period {
+            for y in 0..world.config().height {
+                for x in 0..world.config().width {
+                    assert!(
+                        world
+                            .get_cell_state((x as i32, y as i32, t as i32))
+                            .is_some(),
+                        "cell ({x}, {y}, {t}) is unknown after a solution"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_activity_enumerates_same_solutions() {
+        // Activity-based branching changes the branching order, but not the
+        // set or the number of solutions.
+        for config in [
+            Config::new("B3/S23", 3, 3, 2),
+            Config::new("B3/S23", 2, 2, 1),
+            Config::new("B2o/S23oH", 3, 3, 2),
+            Config::new("B3/S23/4", 4, 4, 1),
+        ] {
+            assert_eq!(
+                count_solutions(&config),
+                count_solutions(&config.clone().with_activity()),
+                "activity changes the solution count for {config:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_activity_with_conflict_options() {
+        // Activity-based branching must compose with the conflict and
+        // polarity heuristics.
+        for config in [
+            Config::new("B3/S23", 3, 3, 2)
+                .with_activity()
+                .with_backjump(),
+            Config::new("B3/S23", 4, 4, 2).with_activity().with_nogood(),
+            Config::new("B3/S23", 3, 3, 2)
+                .with_activity()
+                .with_phase_saving(),
+            Config::new("B3/S23", 3, 3, 2)
+                .with_activity()
+                .with_lookahead(),
+            Config::new("B3/S23", 4, 4, 2)
+                .with_activity()
+                .with_nogood()
+                .with_phase_saving(),
+        ] {
+            let mut world = World::new(config).unwrap();
+            world.search(None);
+            assert_eq!(world.status(), Status::Solved);
+        }
+    }
+
+    #[test]
+    fn test_activity_with_max_population() {
+        // The population check must still work with activity-based branching.
+        let mut world = World::new(
+            Config::new("B3/S23", 4, 4, 2)
+                .with_max_population(1)
+                .with_activity(),
+        )
+        .unwrap();
+        world.search(None);
+        assert_eq!(world.status(), Status::NoSolution);
+    }
+
+    #[test]
+    fn test_activity_with_reduce_max_population() {
+        // The improving searches must still work with activity-based
+        // branching. The improving sequence may contain duplicates, so the
+        // sets of solutions found under decreasing population bounds are
+        // compared.
+        let mut reference =
+            World::new(Config::new("B3/S23", 4, 4, 2).with_reduce_max_population()).unwrap();
+        let mut activity = World::new(
+            Config::new("B3/S23", 4, 4, 2)
+                .with_reduce_max_population()
+                .with_activity(),
+        )
+        .unwrap();
+
+        let mut reference_solutions = std::collections::BTreeSet::new();
+        while reference.search(None) == Status::Solved {
+            reference_solutions.insert(reference.rle(0, true));
+        }
+        let mut activity_solutions = std::collections::BTreeSet::new();
+        while activity.search(None) == Status::Solved {
+            activity_solutions.insert(activity.rle(0, true));
+        }
+
+        assert_eq!(reference_solutions, activity_solutions);
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn test_activity_round_trip_through_serde() {
+        // The activity option should survive a save/load round trip. The
+        // activity itself is heuristic state and is not serialized, so it
+        // restarts from zero; this only affects the traversal, not the
+        // correctness of the search.
+        let mut world = World::new(Config::new("B3/S23", 3, 3, 2).with_activity()).unwrap();
+        world.search(Some(1000));
+
+        let mut world2 = World::try_from(world.to_serde()).unwrap();
+        assert!(world2.config().activity);
 
         world.search(None);
         world2.search(None);
@@ -2772,6 +3018,31 @@ mod test {
                 count_solutions(&config.clone().with_nogood().with_phase_saving()),
                 expected,
                 "nogood with phase saving changed the number of solutions"
+            );
+            assert_eq!(
+                count_solutions(&config.clone().with_activity()),
+                expected,
+                "activity changed the number of solutions"
+            );
+            assert_eq!(
+                count_solutions(&config.clone().with_backjump().with_activity()),
+                expected,
+                "activity with backjump changed the number of solutions"
+            );
+            assert_eq!(
+                count_solutions(&config.clone().with_nogood().with_activity()),
+                expected,
+                "activity with nogood changed the number of solutions"
+            );
+            assert_eq!(
+                count_solutions(&config.clone().with_activity().with_phase_saving()),
+                expected,
+                "activity with phase saving changed the number of solutions"
+            );
+            assert_eq!(
+                count_solutions(&config.clone().with_activity().with_lookahead()),
+                expected,
+                "activity with lookahead changed the number of solutions"
             );
         }
     }

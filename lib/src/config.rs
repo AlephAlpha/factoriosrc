@@ -346,6 +346,22 @@ pub struct Config {
     #[cfg_attr(feature = "serde", serde(default))]
     pub nogood: bool,
 
+    /// Whether to choose the next cell to guess by its conflict activity.
+    ///
+    /// When this is `true`, the search remembers how often each cell took part
+    /// in a conflict. When it has to guess a cell, it looks at a small fixed
+    /// window of the next unknown cells in the search order and guesses the
+    /// cell with the highest activity; ties keep the search order. When no
+    /// cell has any activity yet, the search order is unchanged.
+    ///
+    /// This is an experimental heuristic inspired by the VSIDS branching
+    /// heuristic of SAT solvers. It only changes the branching order, so it
+    /// does not change the set of solutions. Unlike the other experimental
+    /// options, it also applies to Generations rules. The default is `false`.
+    #[cfg_attr(feature = "clap", arg(long, help_heading = "Experimental"))]
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub activity: bool,
+
     /// Random seed for guessing the state of an unknown cell.
     ///
     /// This is only used when [`new_state`](Config::new_state) is [`Random`](NewState::Random).
@@ -407,6 +423,7 @@ impl Config {
             lookahead: false,
             backjump: false,
             nogood: false,
+            activity: false,
             seed: None,
             known_cells: Vec::new(),
             max_population: None,
@@ -515,6 +532,16 @@ impl Config {
     #[must_use]
     pub const fn with_nogood(mut self) -> Self {
         self.nogood = true;
+        self
+    }
+
+    /// Enable choosing the next cell to guess by its conflict activity.
+    ///
+    /// See [`activity`](Config::activity) for more details.
+    #[inline]
+    #[must_use]
+    pub const fn with_activity(mut self) -> Self {
+        self.activity = true;
         self
     }
 

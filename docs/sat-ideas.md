@@ -13,9 +13,9 @@ and what remains worth exploring.
 ## Current Status
 
 The public configuration is defined by `Config` in `lib/src/config.rs`. The
-four experimental switches are available from the CLI as
-`--phase-saving`, `--lookahead`, `--backjump`, and `--nogood`; the TUI and egui
-frontends expose the same options.
+five experimental switches are available from the CLI as
+`--phase-saving`, `--lookahead`, `--backjump`, `--nogood`, and `--activity`;
+the TUI and egui frontends expose the same options.
 
 | Technique | Current status | Scope and important limits |
 | --- | --- | --- |
@@ -24,15 +24,16 @@ frontends expose the same options.
 | Lookahead | Implemented, opt-in | Probes both states of the next cell and chooses a polarity. Two-state rules only; it does not choose a different cell. |
 | Conflict analysis and backjumping | Implemented, opt-in | A 1-UIP-style analysis for local rule, symmetry, and learned-nogood conflicts. Two-state rules only. A protocol guard keeps enumeration free of repeated solutions. |
 | Exact-position nogood database | Implemented, opt-in | Learns from successful local conflict analysis and propagates learned forbidden patterns. It uses absolute cell indices, a 2,048-entry oldest-half-evicting database, and is valid only in the current `World`. Two-state rules only. Clause minimization was investigated and reverted after a negative performance result; allowing long learned clauses was later found to be a large win. |
-| VSIDS-style activity | Not implemented | The current branching cell still comes from the fixed search-order chain. |
+| VSIDS-style activity | Implemented, opt-in | Bumps the cells of recent conflicts and guesses the most active cell among a small window of the search-order chain. Changes the branching order only, so it works with both two-state and Generations rules. Not serialized. |
 | Translated or cross-size nogoods | Not implemented | The current database is not normalized to relative coordinates. |
 | Dynamic cell selection for lookahead | Not implemented | Lookahead only changes the state tried for the next cell. |
 | Restarts, component caching, and CNF encoding | Not implemented | These remain possible future experiments, not current search modes. |
 
 `--nogood` enables `backjump` implicitly in `Config::check()`. `lookahead`,
 `backjump`, and `nogood` are rejected for Generations rules because their
-current reasoning is defined only for the two-state layer. Phase saving has no
-such restriction.
+current reasoning is defined only for the two-state layer. Phase saving and
+activity have no such restriction: activity only reorders the branching cell,
+which is meaningful for every rule family.
 
 The status terms in this document have a precise meaning:
 
@@ -432,13 +433,39 @@ phases of cells that had already been unset are lost. This changes only the
 heuristic. Repository tests cover finding solutions, solution-set equality,
 and the save/load option behavior for phase saving.
 
-### Activity-based variable selection
+### Activity-based cell selection
 
-VSIDS-style activity is not implemented. The current `guess()` always follows
-the `next` chain. A future activity heuristic must be evaluated against the
-front optimization and the locality of descriptor propagation; replacing the
-spatial order globally is not automatically a win. A constrained local
-reordering or an explicit experimental mode would be safer first steps.
+`Config::activity` is an opt-in branching heuristic inspired by the VSIDS
+activity heuristic of SAT solvers. `World` keeps an activity value per cell. A
+conflict bumps the cells that participated in it: an analyzed conflict bumps
+the 1-UIP cell and the literals of the learned clause in `World::analyze()`,
+while a conflict handled by chronological backtracking bumps its seed cells in
+`World::bump_conflict()`. The bump amount grows geometrically after each
+conflict and is rescaled when it becomes too large, so that recent conflicts
+weigh more.
+
+`World::guess()` normally follows the `next` chain. With activity enabled, it
+scans a fixed window (`ACTIVITY_WINDOW`, currently 8) of the next unknown cells
+of the chain and guesses the one with the highest activity; ties keep the chain
+order, and a search where no cell has any activity yet behaves exactly like the
+default. Keeping the window small is deliberate: the chain order is aligned
+with the front optimization and with the locality of descriptor propagation,
+and replacing it globally is not automatically a win. The front cells remain
+near the window head, but a sufficiently active later cell can still be chosen
+before them, so the interaction with `init_front()` is a measurement question.
+
+Because the branching cell may be later in the chain than the earliest unknown
+cell, the cursor cannot simply advance to `cell.next` after a guess. The search
+keeps the cursor at the earliest unknown cell and, in
+`World::backtrack()` and `World::analyze()`, moves it to the chain-earliest
+cell that becomes unknown again, using `World::chain_pos` (which is now
+allocated when either `backjump` or `activity` is enabled).
+
+The activity is heuristic state, so it is not serialized: save/load and
+`increase_world_size()` restart it from zero, like the phases of cells that have
+already been unset. Repository tests cover finding solutions, solution-count
+and solution-set equality for two-state and Generations rules, and combinations
+with backjump, nogood, phase saving, and lookahead.
 
 ## Lookahead
 
@@ -530,7 +557,8 @@ When checking a change:
   bounds, `reduce_max_population`, and option combinations when the change
   affects learning or backtracking;
 - remember that save/load and `increase_world_size()` intentionally discard
-  learned nogoods and the original conflict-analysis metadata; and
+  learned nogoods, the original conflict-analysis metadata, and the activity
+  values; and
 - run Miri for unsafe search-internal changes as specified in `AGENTS.md`.
 
 Use file paths and symbol names in this note instead of line numbers. When an
@@ -548,14 +576,18 @@ database with the 96-literal bound; for enumeration, the value is the time to
 the 10th solution with `--no-stop`. Replace this table on a future rerun
 instead of appending another historical table.
 
-| Case | Plain | `--phase-saving` | `--lookahead` | `--backjump` | `--nogood` |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| `B3/S23 26 8 4 -y 1 -n a` | 1.227 s | 3.752 s | 5.665 s | 36.538 s | 2.690 s |
-| `B3/S23 64 64 1 -n a` | >60 s | 1.854 s | 0.049 s | 0.026 s | 0.014 s |
-| `3457/357/5 20 16 7 -x 3 -s D2- -n a` | 2.269 s | 3.208 s | N/A | N/A | N/A |
-| `R3,C2,S2,B3,N+ 50 10 4 -x 2 -s D2- -n a` | >60 s | 13.622 s | 30.922 s | >60 s | >60 s |
-| `B2n3/S23-q 30 9 4 -x 1 -n a` | 4.154 s | 3.498 s | N/A | >60 s | 14.728 s |
-| `B3/S23 20 20 2 -n r --seed 1 --no-stop` to 10th solution | 5.716 s | N/A | N/A | N/A | 0.114 s |
+| Case | Plain | `--phase-saving` | `--lookahead` | `--backjump` | `--nogood` | `--activity` |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `B3/S23 26 8 4 -y 1 -n a` | 1.227 s | 3.752 s | 5.665 s | 36.538 s | 2.690 s | TBD |
+| `B3/S23 64 64 1 -n a` | >60 s | 1.854 s | 0.049 s | 0.026 s | 0.014 s | TBD |
+| `3457/357/5 20 16 7 -x 3 -s D2- -n a` | 2.269 s | 3.208 s | N/A | N/A | N/A | TBD |
+| `R3,C2,S2,B3,N+ 50 10 4 -x 2 -s D2- -n a` | >60 s | 13.622 s | 30.922 s | >60 s | >60 s | TBD |
+| `B2n3/S23-q 30 9 4 -x 1 -n a` | 4.154 s | 3.498 s | N/A | >60 s | 14.728 s | TBD |
+| `B3/S23 20 20 2 -n r --seed 1 --no-stop` to 10th solution | 5.716 s | N/A | N/A | N/A | 0.114 s | TBD |
+
+The `--activity` column is pending measurement; the current runs were made on a
+different machine than the one used for the other columns, so they are not
+comparable and are not recorded here.
 
 On the deep `26 8 4` case the combined options `--nogood --phase-saving` and
 `--nogood --lookahead` take 9.189 s and 8.180 s, while `--backjump

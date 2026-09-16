@@ -63,6 +63,7 @@ pub enum ConfigField {
     Lookahead,
     Backjump,
     Nogood,
+    Activity,
     Seed,
     MaxPopulation,
     ReduceMaxPopulation,
@@ -99,6 +100,7 @@ impl ConfigField {
             Self::Lookahead,
             Self::Backjump,
             Self::Nogood,
+            Self::Activity,
             Self::Apply,
             Self::Cancel,
         ]
@@ -121,6 +123,7 @@ impl ConfigField {
             Self::Lookahead => "Lookahead",
             Self::Backjump => "Backjump",
             Self::Nogood => "Nogood",
+            Self::Activity => "Activity",
             Self::Seed => "Seed",
             Self::MaxPopulation => "Max pop",
             Self::ReduceMaxPopulation => "Reduce pop",
@@ -158,6 +161,7 @@ impl ConfigField {
                 | Self::Lookahead
                 | Self::Backjump
                 | Self::Nogood
+                | Self::Activity
                 | Self::SearchOrder
                 | Self::ReduceMaxPopulation
                 | Self::IncreaseWorldSize
@@ -173,7 +177,7 @@ impl ConfigField {
     pub const fn is_experimental(self) -> bool {
         matches!(
             self,
-            Self::PhaseSaving | Self::Lookahead | Self::Backjump | Self::Nogood
+            Self::PhaseSaving | Self::Lookahead | Self::Backjump | Self::Nogood | Self::Activity
         )
     }
 }
@@ -248,6 +252,7 @@ impl ConfigState {
             ConfigField::Lookahead => cfg.lookahead.to_string(),
             ConfigField::Backjump => cfg.backjump.to_string(),
             ConfigField::Nogood => cfg.nogood.to_string(),
+            ConfigField::Activity => cfg.activity.to_string(),
             ConfigField::Seed => cfg.seed.map_or(String::new(), |s| s.to_string()),
             ConfigField::MaxPopulation => {
                 cfg.max_population.map_or(String::new(), |p| p.to_string())
@@ -447,6 +452,9 @@ impl ConfigState {
                 if self.working_config.nogood {
                     self.working_config.backjump = true;
                 }
+            }
+            ConfigField::Activity => {
+                self.working_config.activity = !self.working_config.activity;
             }
             ConfigField::IncreaseWorldSize => {
                 self.increase_world_size = !self.increase_world_size;
@@ -1783,10 +1791,14 @@ mod tests {
             position(ConfigField::Nogood),
             position(ConfigField::Backjump) + 1
         );
+        assert_eq!(
+            position(ConfigField::Activity),
+            position(ConfigField::Nogood) + 1
+        );
         // The group sits at the end of the form, right before the buttons, so
         // no other field can be mistaken for part of it.
         assert!(position(ConfigField::ExportResults) < position(ConfigField::PhaseSaving));
-        assert!(position(ConfigField::Nogood) < position(ConfigField::Apply));
+        assert!(position(ConfigField::Activity) < position(ConfigField::Apply));
     }
 
     #[test]
@@ -1808,9 +1820,10 @@ mod tests {
                 position(ConfigField::Lookahead),
                 position(ConfigField::Backjump),
                 position(ConfigField::Nogood),
+                position(ConfigField::Activity),
             )
         };
-        let (export, phase_saving, lookahead, backjump, nogood) = field_positions;
+        let (export, phase_saving, lookahead, backjump, nogood, activity) = field_positions;
 
         // The caption (a blank line plus the title) is inserted between them:
         // two extra lines plus the field's own line.
@@ -1821,6 +1834,7 @@ mod tests {
         assert_eq!(before[lookahead], before[phase_saving] + 1);
         assert_eq!(before[backjump], before[lookahead] + 1);
         assert_eq!(before[nogood], before[backjump] + 1);
+        assert_eq!(before[activity], before[nogood] + 1);
 
         // No caption appears when the experimental fields are removed.
         if let Some(state) = app.config_state.as_mut() {

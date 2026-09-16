@@ -795,6 +795,11 @@ impl App {
                                     config.backjump = true;
                                 }
                                 ui.end_row();
+
+                                ui.label("activity")
+                                    .on_hover_text(ConfigHelpField::Activity.short_help());
+                                ui.checkbox(&mut config.activity, "");
+                                ui.end_row();
                             });
 
                         ui.label(muted("Off by default; may speed up or slow down searches."));

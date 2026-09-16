@@ -37,6 +37,8 @@ pub enum ConfigHelpField {
     Backjump,
     /// The nogood field.
     Nogood,
+    /// The activity field.
+    Activity,
     /// The random-seed field.
     Seed,
     /// The known-cells field.
@@ -67,6 +69,7 @@ impl ConfigHelpField {
             Self::Lookahead,
             Self::Backjump,
             Self::Nogood,
+            Self::Activity,
             Self::Seed,
             Self::KnownCells,
             Self::MaxPopulation,
@@ -80,7 +83,7 @@ impl ConfigHelpField {
     pub const fn is_experimental(self) -> bool {
         matches!(
             self,
-            Self::PhaseSaving | Self::Lookahead | Self::Backjump | Self::Nogood
+            Self::PhaseSaving | Self::Lookahead | Self::Backjump | Self::Nogood | Self::Activity
         )
     }
 
@@ -103,6 +106,7 @@ impl ConfigHelpField {
             Self::Lookahead => "Lookahead",
             Self::Backjump => "Backjump",
             Self::Nogood => "Nogood",
+            Self::Activity => "Activity",
             Self::Seed => "Seed",
             Self::KnownCells => "Known cells",
             Self::MaxPopulation => "Max population",
@@ -143,6 +147,9 @@ impl ConfigHelpField {
             Self::Nogood => {
                 "Experimental: remember learned forbidden patterns and use them to reject guesses. Enables Backjump. Only for 2-state rules."
             }
+            Self::Activity => {
+                "Experimental: favor cells that were recently involved in a conflict when guessing. Changes the branching order only."
+            }
             Self::Seed => "Random seed used only when New state is random.",
             Self::KnownCells => "Pinned alive/dead cells that must hold before the search starts.",
             Self::MaxPopulation => "Optional upper bound on the population.",
@@ -170,6 +177,7 @@ impl ConfigHelpField {
             Self::Lookahead => "lookahead",
             Self::Backjump => "backjump",
             Self::Nogood => "nogood",
+            Self::Activity => "activity",
             Self::Seed => "seed",
             Self::KnownCells => "known_cells",
             Self::MaxPopulation => "max_population",
@@ -311,7 +319,7 @@ mod tests {
         let fields: Vec<_> = ConfigHelpField::iter().collect();
         assert!(fields.contains(&ConfigHelpField::RuleString));
         assert!(fields.contains(&ConfigHelpField::KnownCells));
-        assert_eq!(fields.len(), 19);
+        assert_eq!(fields.len(), 20);
     }
 
     #[test]
@@ -326,6 +334,7 @@ mod tests {
                 ConfigHelpField::Lookahead,
                 ConfigHelpField::Backjump,
                 ConfigHelpField::Nogood,
+                ConfigHelpField::Activity,
             ]
         );
     }

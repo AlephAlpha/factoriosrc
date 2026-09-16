@@ -415,7 +415,13 @@ mod tests {
             .expect("new subcommand should exist");
         let map = help_headings(new);
 
-        for flag in ["phase-saving", "lookahead", "backjump", "nogood"] {
+        for flag in [
+            "phase-saving",
+            "lookahead",
+            "backjump",
+            "nogood",
+            "activity",
+        ] {
             assert_eq!(
                 heading(&map, flag),
                 Some("Experimental"),

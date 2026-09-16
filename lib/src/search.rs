@@ -4,7 +4,7 @@ use crate::{
     cell::{Antecedent, LifeCell, Reason},
     config::NewState,
     rule::{CellState, CheckResult, Implication},
-    world::{Confl, Status, World},
+    world::{ACTIVITY_WINDOW, Confl, Status, World},
 };
 
 /// The maximum number of cells that a lookahead probe may set before it stops.
@@ -565,17 +565,45 @@ impl World {
     /// - If this goes back to the time before the search started, return [`NoSolution`](Status::NoSolution).
     /// - Otherwise, return [`Running`](Status::Running).
     fn backtrack(&mut self) -> Status {
+        // With activity-based branching, a decision may be made on a cell that
+        // is later in the chain than the earliest unknown cell, so the cells
+        // before it can be set and unset during its subtree. The cursor must
+        // then be moved to the earliest cell that becomes unknown again,
+        // instead of the chain successor of the guessed cell. When activity is
+        // disabled, the classic `cell.next` behavior is kept unchanged.
+        let track = self.config.activity;
+
+        // The earliest unknown cell of the chain seen so far. The cursor is
+        // always unknown at this point, so it is the initial candidate.
+        let mut resume = self.start;
+        let mut resume_rank = if track && !self.start.is_null() {
+            unsafe { self.chain_pos[self.cell_index(self.start)] }
+        } else {
+            u32::MAX
+        };
+
         while let Some((cell, reason)) = self.stack.pop() {
             unsafe {
                 self.pop_meta();
                 let cell = &*cell;
                 match reason {
                     Reason::Known => break,
-                    Reason::Deduced => self.unset_cell(cell),
+                    Reason::Deduced => {
+                        if track {
+                            let rank = self.chain_pos[self.cell_index(cell)];
+                            if rank < resume_rank {
+                                resume_rank = rank;
+                                resume = cell;
+                            }
+                        }
+                        self.unset_cell(cell);
+                    }
                     Reason::Guessed => {
                         let state = cell.state().unwrap();
                         self.stack_index = self.stack.len();
-                        self.start = cell.next;
+                        if !track {
+                            self.start = cell.next;
+                        }
                         self.unset_cell(cell);
 
                         if self.rule.is_generations() {
@@ -615,18 +643,32 @@ impl World {
                                     .is_some();
                                 if blocked {
                                     self.nogood_db.note_hit();
+                                    // The cell stays unknown, so it becomes
+                                    // the new cursor candidate.
+                                    if track {
+                                        let rank = self.chain_pos[self.cell_index(cell)];
+                                        if rank < resume_rank {
+                                            resume_rank = rank;
+                                            resume = cell;
+                                        }
+                                    }
                                     continue;
                                 }
                             }
 
                             self.set_cell(cell, !state, Reason::Deduced, None, true);
                         }
+                        if track {
+                            self.start = resume;
+                        }
                         return Status::Running;
                     }
                     Reason::TryAnother(n) => {
                         let state = cell.state().unwrap();
                         self.stack_index = self.stack.len();
-                        self.start = cell.next;
+                        if !track {
+                            self.start = cell.next;
+                        }
                         self.unset_cell(cell);
 
                         let next = CellState::from_number(
@@ -638,6 +680,9 @@ impl World {
                             Reason::TryAnother(n - 1)
                         };
                         self.set_cell(cell, next, reason, None, false);
+                        if track {
+                            self.start = resume;
+                        }
                         return Status::Running;
                     }
                 }
@@ -649,61 +694,118 @@ impl World {
 
     /// Find a cell whose state is unknown, and make a guess.
     ///
+    /// The cursor [`start`](World::start) always points at the earliest unknown
+    /// cell of the search-order chain. When activity-based branching is
+    /// enabled, the guessed cell may be a later cell of the chain: the cursor
+    /// is then left unchanged, so that no unknown cell is skipped.
+    ///
     /// If lookahead is enabled for a 2-state rule, the two states of the cell
     /// are probed first, and the result determines the state to guess, or
     /// whether the search should backtrack.
     fn guess(&mut self) -> GuessResult {
         unsafe {
+            // Advance the cursor past the cells that are already known. The
+            // cells before the cursor are always known, so reaching the end of
+            // the chain means that all cells are known.
             while let Some(cell) = self.start.as_ref() {
-                if cell.state().is_none() {
-                    // If lookahead is enabled for a 2-state rule, probe both
-                    // states of the cell before guessing.
-                    //
-                    // The `Config::check` rejects lookahead for Generations
-                    // rules, so this condition is only a defense in depth.
-                    if self.config.lookahead && !self.rule.is_generations() {
-                        match self.probe(cell) {
-                            Some(state) => {
-                                self.set_cell(cell, state, Reason::Guessed, None, true);
-                                self.start = cell.next;
-                                return GuessResult::Guessed;
-                            }
-                            // Neither state is possible: the current partial
-                            // assignment is contradictory.
-                            None => return GuessResult::Conflict,
+                if cell.state().is_some() {
+                    self.start = cell.next;
+                } else {
+                    break;
+                }
+            }
+
+            if self.start.is_null() {
+                return GuessResult::Solved;
+            }
+
+            // Choose the cell to branch on. With activity-based branching the
+            // cell may be later in the chain than the cursor, so the cursor is
+            // not advanced here; the next call advances it past the cells that
+            // this guess made known.
+            let cell = if self.config.activity {
+                self.select_branch_cell(self.start)
+            } else {
+                self.start
+            };
+            let cell = &*cell;
+
+            // If lookahead is enabled for a 2-state rule, probe both
+            // states of the cell before guessing.
+            //
+            // The `Config::check` rejects lookahead for Generations
+            // rules, so this condition is only a defense in depth.
+            if self.config.lookahead && !self.rule.is_generations() {
+                match self.probe(cell) {
+                    Some(state) => {
+                        self.set_cell(cell, state, Reason::Guessed, None, true);
+                        return GuessResult::Guessed;
+                    }
+                    // Neither state is possible: the current partial
+                    // assignment is contradictory.
+                    None => return GuessResult::Conflict,
+                }
+            }
+
+            // If phase saving is enabled and the cell has been set
+            // before, guess its last state first.
+            let state = if self.config.phase_saving
+                && let Some(phase) = cell.phase.get()
+            {
+                phase
+            } else {
+                match self.config.new_state {
+                    NewState::Alive => CellState::Alive,
+                    NewState::Dead => CellState::Dead,
+                    NewState::Random => {
+                        if self.rule.is_generations() {
+                            CellState::from_number(self.rng.random_range(0..self.rule.num_states()))
+                        } else {
+                            self.rng.random()
                         }
                     }
-
-                    // If phase saving is enabled and the cell has been set
-                    // before, guess its last state first.
-                    let state = if self.config.phase_saving
-                        && let Some(phase) = cell.phase.get()
-                    {
-                        phase
-                    } else {
-                        match self.config.new_state {
-                            NewState::Alive => CellState::Alive,
-                            NewState::Dead => CellState::Dead,
-                            NewState::Random => {
-                                if self.rule.is_generations() {
-                                    CellState::from_number(
-                                        self.rng.random_range(0..self.rule.num_states()),
-                                    )
-                                } else {
-                                    self.rng.random()
-                                }
-                            }
-                        }
-                    };
-                    self.set_cell(cell, state, Reason::Guessed, None, true);
-                    self.start = cell.next;
-                    return GuessResult::Guessed;
                 }
-                self.start = cell.next;
+            };
+            self.set_cell(cell, state, Reason::Guessed, None, true);
+            GuessResult::Guessed
+        }
+    }
+
+    /// Choose the cell to guess among the first
+    /// [`ACTIVITY_WINDOW`](crate::world::ACTIVITY_WINDOW) unknown cells of the
+    /// search-order chain, starting at `first`.
+    ///
+    /// The cell with the highest conflict activity is chosen; ties keep the
+    /// search order, so the default order is preserved when no cell has any
+    /// activity yet. `first` must be unknown.
+    ///
+    /// # Safety
+    ///
+    /// `first` must be in the same world as `self`.
+    /// Otherwise the behavior is undefined.
+    unsafe fn select_branch_cell(&self, first: *const LifeCell) -> *const LifeCell {
+        let mut best = first;
+        let mut best_activity = self.activity[unsafe { self.cell_index(first) }];
+        let mut cell = unsafe { (*first).next };
+
+        for _ in 1..ACTIVITY_WINDOW {
+            if cell.is_null() {
+                break;
             }
+
+            // Safety: the cells of the chain are in the same world as `self`.
+            if unsafe { (*cell).state().is_none() } {
+                let activity = self.activity[unsafe { self.cell_index(cell) }];
+                if activity > best_activity {
+                    best_activity = activity;
+                    best = cell;
+                }
+            }
+
+            cell = unsafe { (*cell).next };
         }
 
-        GuessResult::Solved
+        best
     }
 
     /// Probe the two states of a cell to see which one is better to guess.
@@ -878,8 +980,37 @@ impl World {
                 {
                     self.analyze(confl)
                 }
-                _ => self.backtrack(),
+                _ => {
+                    // Conflicts handled by chronological backtracking do not
+                    // reach `analyze`, so record their activity here. The
+                    // analyzed conflicts bump the literals of their learned
+                    // clause in `analyze` instead.
+                    if self.config.activity {
+                        self.bump_conflict(confl);
+                    }
+                    self.backtrack()
+                }
             },
+        }
+    }
+
+    /// Bump the activity of the cells of a local conflict that is handled by
+    /// chronological backtracking.
+    ///
+    /// This is a no-op when [`Config::activity`](crate::Config::activity) is
+    /// disabled. A [`Global`](Confl::Global) conflict has no cells to bump.
+    fn bump_conflict(&mut self, confl: Confl) {
+        match confl {
+            // Safety: the cells of a conflict are in the same world as `self`.
+            Confl::Rule(source) => unsafe { self.bump_activity(source) },
+            Confl::Symmetry(cell, symmetry) => unsafe {
+                self.bump_activity(cell);
+                self.bump_activity(symmetry);
+            },
+            // A `Nogood` conflict is always analyzed when nogood learning is
+            // enabled, because nogood learning implies backjumping. It is
+            // therefore not handled here.
+            Confl::Nogood(_) | Confl::Global => {}
         }
     }
 
@@ -1072,6 +1203,7 @@ impl World {
         let pop_target = max_level.max(self.deepest_flip_level());
         if pop_target >= current {
             self.learn_analysis_nogood(uip, state, &clause);
+            self.bump_learned(uip, &clause);
             return self.backtrack();
         }
 
@@ -1085,8 +1217,15 @@ impl World {
         // that differs from the trail order, so the resumption point is the
         // chain-earliest cell among the popped ones: any popped cell before
         // the chosen resumption point would otherwise never be revisited.
-        let mut resume = std::ptr::null();
-        let mut resume_rank = u32::MAX;
+        //
+        // With activity-based branching the cursor may point at an unknown
+        // cell that is not popped, so it is the initial candidate as well.
+        let mut resume = self.start;
+        let mut resume_rank = if self.start.is_null() {
+            u32::MAX
+        } else {
+            unsafe { self.chain_pos[self.cell_index(self.start)] }
+        };
         // The lowest trail position of a remaining cell whose descriptor has
         // been changed by the pops. That cell and the cells above it must be
         // re-checked, since their incremental checks are stale (for example,
@@ -1130,6 +1269,7 @@ impl World {
 
         // Learn the nogood for the persistent database.
         self.learn_analysis_nogood(uip, state, &clause);
+        self.bump_learned(uip, &clause);
 
         // Record the learned clause: each literal with its current stack
         // position. The clause is valid while the cells stay at these
@@ -1153,6 +1293,23 @@ impl World {
         }
 
         Status::Running
+    }
+
+    /// Bump the activity of the 1-UIP cell and the literals of a learned clause,
+    /// and decay the activity.
+    ///
+    /// This is a no-op when [`Config::activity`](crate::Config::activity) is
+    /// disabled. It is called once per analyzed conflict.
+    fn bump_learned(&mut self, uip: *const LifeCell, clause: &[*const LifeCell]) {
+        if self.activity.is_empty() {
+            return;
+        }
+        // Safety: the cells of a learned clause are in the same world as `self`.
+        unsafe { self.bump_activity(uip) };
+        for &lit in clause {
+            unsafe { self.bump_activity(lit) };
+        }
+        self.decay_activity();
     }
 
     /// Learn the nogood of a conflict analysis.
