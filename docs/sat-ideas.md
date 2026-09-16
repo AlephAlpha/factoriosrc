@@ -571,29 +571,27 @@ condition, and result.
 
 This is the latest recorded snapshot, measured on 2026-09-15 with a release
 build, single runs, and a 60-second per-cell timeout (120 seconds for the
-listed combinations). The `--nogood` column uses the current `1 << 11`-entry
-database with the 96-literal bound; for enumeration, the value is the time to
-the 10th solution with `--no-stop`. Replace this table on a future rerun
-instead of appending another historical table.
+listed combinations). The `--activity` column was measured on 2026-09-16 on
+the same machine and with the same protocol. The `--nogood` column uses the
+current `1 << 11`-entry database with the 96-literal bound; for enumeration,
+the value is the time to the 10th solution with `--no-stop`. Replace this
+table on a future rerun instead of appending another historical table.
 
 | Case | Plain | `--phase-saving` | `--lookahead` | `--backjump` | `--nogood` | `--activity` |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `B3/S23 26 8 4 -y 1 -n a` | 1.227 s | 3.752 s | 5.665 s | 36.538 s | 2.690 s | TBD |
-| `B3/S23 64 64 1 -n a` | >60 s | 1.854 s | 0.049 s | 0.026 s | 0.014 s | TBD |
-| `3457/357/5 20 16 7 -x 3 -s D2- -n a` | 2.269 s | 3.208 s | N/A | N/A | N/A | TBD |
-| `R3,C2,S2,B3,N+ 50 10 4 -x 2 -s D2- -n a` | >60 s | 13.622 s | 30.922 s | >60 s | >60 s | TBD |
-| `B2n3/S23-q 30 9 4 -x 1 -n a` | 4.154 s | 3.498 s | N/A | >60 s | 14.728 s | TBD |
-| `B3/S23 20 20 2 -n r --seed 1 --no-stop` to 10th solution | 5.716 s | N/A | N/A | N/A | 0.114 s | TBD |
-
-The `--activity` column is pending measurement; the current runs were made on a
-different machine than the one used for the other columns, so they are not
-comparable and are not recorded here.
+| `B3/S23 26 8 4 -y 1 -n a` | 1.227 s | 3.752 s | 5.665 s | 36.538 s | 2.690 s | 1.520 s |
+| `B3/S23 64 64 1 -n a` | >60 s | 1.854 s | 0.049 s | 0.026 s | 0.014 s | 0.026 s |
+| `3457/357/5 20 16 7 -x 3 -s D2- -n a` | 2.269 s | 3.208 s | N/A | N/A | N/A | 2.523 s |
+| `R3,C2,S2,B3,N+ 50 10 4 -x 2 -s D2- -n a` | >60 s | 13.622 s | 30.922 s | >60 s | >60 s | ~60 s |
+| `B2n3/S23-q 30 9 4 -x 1 -n a` | 4.154 s | 3.498 s | N/A | >60 s | 14.728 s | 2.685 s |
+| `B3/S23 20 20 2 -n r --seed 1 --no-stop` to 10th solution | 5.716 s | N/A | N/A | N/A | 0.114 s | 2.114 s |
 
 On the deep `26 8 4` case the combined options `--nogood --phase-saving` and
 `--nogood --lookahead` take 9.189 s and 8.180 s, while `--backjump
---phase-saving` still exceeds 120 seconds. The enumeration guard makes
-solution counts match the plain search; `B3/S23 5 5 2` reports 26 solutions
-with backjumping and nogood.
+--phase-saving` still exceeds 120 seconds. The factorio `--activity` run
+finishes just under the timeout (about 59.7 s) and is recorded as `~60 s`. The
+enumeration guard makes solution counts match the plain search; `B3/S23 5 5 2`
+reports 26 solutions with backjumping and nogood.
 
 ## Comparison with Logic Life Search (LLS)
 
