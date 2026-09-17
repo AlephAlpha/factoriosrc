@@ -19,6 +19,10 @@ pub enum ConfigError {
     #[error("The population upper bound is zero")]
     InvalidMaxPopulation,
 
+    /// The nogood database capacity is zero.
+    #[error("The nogood database capacity is zero")]
+    InvalidNogoodCapacity,
+
     /// The period is not a multiple of the background period.
     ///
     /// For a B0 rule, the cells outside the search range are assumed to follow

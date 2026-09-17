@@ -796,6 +796,25 @@ impl App {
                                 }
                                 ui.end_row();
 
+                                ui.label("nogood capacity")
+                                    .on_hover_text(ConfigHelpField::NogoodCapacity.short_help());
+                                ui.horizontal(|ui| {
+                                    let mut checked = config.nogood_capacity.is_some();
+                                    ui.checkbox(&mut checked, "");
+                                    let mut dummy = 0;
+                                    let capacity = if checked {
+                                        config.nogood_capacity.get_or_insert(2048)
+                                    } else {
+                                        config.nogood_capacity = None;
+                                        &mut dummy
+                                    };
+                                    ui.add_enabled(
+                                        checked,
+                                        DragValue::new(capacity).speed(1).range(1..=usize::MAX),
+                                    );
+                                });
+                                ui.end_row();
+
                                 ui.label("activity")
                                     .on_hover_text(ConfigHelpField::Activity.short_help());
                                 ui.checkbox(&mut config.activity, "");

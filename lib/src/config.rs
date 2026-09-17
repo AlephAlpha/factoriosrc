@@ -346,6 +346,23 @@ pub struct Config {
     #[cfg_attr(feature = "serde", serde(default))]
     pub nogood: bool,
 
+    /// The maximal number of learned nogoods kept by the database.
+    ///
+    /// When this is [`None`], the capacity is chosen from the size of the
+    /// search world: `max(2048, 4 * cells)`, where `cells` is the number of
+    /// cells in the world including the padding ring. A larger database
+    /// remembers learned patterns for longer, which can reduce the number of
+    /// search steps on large worlds a lot, at the cost of more work per
+    /// assignment. Setting a value overrides the automatic choice; the
+    /// database is reduced to half of its capacity whenever the capacity is
+    /// reached, so the live database holds between half and all of it.
+    ///
+    /// This only applies when [`nogood`](Config::nogood) is enabled. The
+    /// default is `None`.
+    #[cfg_attr(feature = "clap", arg(long, help_heading = "Experimental"))]
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub nogood_capacity: Option<usize>,
+
     /// Whether to choose the next cell to guess by its conflict activity.
     ///
     /// When this is `true`, the search remembers how often each cell took part
@@ -423,6 +440,7 @@ impl Config {
             lookahead: false,
             backjump: false,
             nogood: false,
+            nogood_capacity: None,
             activity: false,
             seed: None,
             known_cells: Vec::new(),
@@ -532,6 +550,16 @@ impl Config {
     #[must_use]
     pub const fn with_nogood(mut self) -> Self {
         self.nogood = true;
+        self
+    }
+
+    /// Set the capacity of the nogood database explicitly.
+    ///
+    /// See [`nogood_capacity`](Config::nogood_capacity) for more details.
+    #[inline]
+    #[must_use]
+    pub const fn with_nogood_capacity(mut self, capacity: usize) -> Self {
+        self.nogood_capacity = Some(capacity);
         self
     }
 
@@ -671,6 +699,10 @@ impl Config {
                 return Err(ConfigError::NogoodUnsupported);
             }
             self.backjump = true;
+        }
+
+        if self.nogood_capacity == Some(0) {
+            return Err(ConfigError::InvalidNogoodCapacity);
         }
 
         // Backjumping only applies to rules with 2 states: the Generations
@@ -968,6 +1000,14 @@ mod tests {
                 .with_max_population(0)
                 .check(),
             Err(ConfigError::InvalidMaxPopulation)
+        ));
+
+        assert!(matches!(
+            Config::new("B3/S23", 3, 3, 1)
+                .with_nogood()
+                .with_nogood_capacity(0)
+                .check(),
+            Err(ConfigError::InvalidNogoodCapacity)
         ));
 
         assert!(matches!(

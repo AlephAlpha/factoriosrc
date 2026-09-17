@@ -422,6 +422,7 @@ impl World {
 
         let backjump = config.backjump;
         let nogood = config.nogood;
+        let nogood_capacity = config.nogood_capacity;
         let activity = config.activity;
 
         let mut world = Self {
@@ -459,7 +460,7 @@ impl World {
             },
             activity_inc: 1.0,
             nogood_db: if nogood {
-                NogoodDb::with_default_capacity()
+                nogood_capacity.map_or_else(|| NogoodDb::with_world_size(size), NogoodDb::new)
             } else {
                 NogoodDb::new(0)
             },

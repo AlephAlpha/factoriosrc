@@ -51,18 +51,28 @@ fn literals_hash(literals: &[(u32, CellState)]) -> u64 {
     hasher.finish()
 }
 
-/// The default capacity of the database, in entries.
+/// The minimal capacity of the database, in entries.
 ///
-/// When the database outgrows this bound, the older half of the entries is
+/// When the database outgrows its capacity, the older half of the entries is
 /// evicted, like the clause-database reduction of a SAT solver.
 ///
 /// The per-set maintenance walks the index bucket of the set literal, whose
 /// size grows with the number of stored entries and with their average
-/// length, so a smaller database is proportionally cheaper to maintain. A
-/// capacity sweep on the benchmark workloads (see `docs/sat-ideas.md`)
-/// measured the best results around a few thousand entries; a much larger
-/// database costs more per assignment without buying enough extra pruning.
+/// length, so a smaller database is proportionally cheaper to maintain. The
+/// minimal capacity keeps small worlds cheap; larger worlds scale the
+/// capacity with the number of cells (see [`NogoodDb::with_world_size`]),
+/// because a database that only remembers the last few thousand steps cannot
+/// reuse anything on a long search. A fixed capacity of this size was the old
+/// default and is still the floor for the automatic choice.
 const DEFAULT_CAPACITY: usize = 1 << 11;
+
+/// The factor applied to the number of cells for the automatic capacity.
+///
+/// The live database then holds between `FACTOR * cells / 2` and
+/// `FACTOR * cells` entries, while the average index bucket stays roughly
+/// constant as the world grows, because the number of distinct literals also
+/// grows with the number of cells.
+const ADAPTIVE_CAPACITY_FACTOR: usize = 4;
 
 /// The maximal number of candidates examined by a single query.
 ///
@@ -307,6 +317,19 @@ impl NogoodDb {
     /// Create an empty enabled database with the default capacity.
     pub fn with_default_capacity() -> Self {
         Self::new(DEFAULT_CAPACITY)
+    }
+
+    /// Create an empty enabled database with a capacity adapted to the
+    /// number of cells in the search world.
+    ///
+    /// The capacity is `max(2048, 4 * world_size)`. On a large world, a fixed
+    /// small database only remembers the recent history of a long search, and
+    /// the same patterns are learned and evicted over and over without being
+    /// reused; scaling the capacity with the world keeps the average index
+    /// bucket roughly constant while letting learned patterns live long
+    /// enough to be useful.
+    pub fn with_world_size(world_size: usize) -> Self {
+        Self::new(DEFAULT_CAPACITY.max(ADAPTIVE_CAPACITY_FACTOR.saturating_mul(world_size)))
     }
 
     /// Whether the database accepts new entries.
@@ -716,6 +739,12 @@ impl NogoodDb {
         self.entries.len()
     }
 
+    /// The maximal number of entries before the database is reduced.
+    #[inline]
+    pub const fn capacity(&self) -> usize {
+        self.capacity
+    }
+
     /// Whether the database stores no nogoods.
     #[inline]
     pub const fn is_empty(&self) -> bool {
@@ -831,6 +860,18 @@ mod test {
         db.learn(vec![(1, D)].into_boxed_slice(), &mut none);
         assert!(db.is_empty());
         assert!(!db.blocks(1, D, |_| None));
+    }
+
+    #[test]
+    fn world_size_scales_the_capacity() {
+        // Small worlds keep the minimal capacity.
+        assert_eq!(NogoodDb::with_world_size(0).capacity(), DEFAULT_CAPACITY);
+        assert_eq!(NogoodDb::with_world_size(512).capacity(), DEFAULT_CAPACITY);
+        // Larger worlds scale it with the number of cells.
+        assert_eq!(
+            NogoodDb::with_world_size(1000).capacity(),
+            ADAPTIVE_CAPACITY_FACTOR * 1000
+        );
     }
 
     #[test]

@@ -420,6 +420,7 @@ mod tests {
             "lookahead",
             "backjump",
             "nogood",
+            "nogood-capacity",
             "activity",
         ] {
             assert_eq!(

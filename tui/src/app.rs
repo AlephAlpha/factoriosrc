@@ -63,6 +63,7 @@ pub enum ConfigField {
     Lookahead,
     Backjump,
     Nogood,
+    NogoodCapacity,
     Activity,
     Seed,
     MaxPopulation,
@@ -100,6 +101,7 @@ impl ConfigField {
             Self::Lookahead,
             Self::Backjump,
             Self::Nogood,
+            Self::NogoodCapacity,
             Self::Activity,
             Self::Apply,
             Self::Cancel,
@@ -123,6 +125,7 @@ impl ConfigField {
             Self::Lookahead => "Lookahead",
             Self::Backjump => "Backjump",
             Self::Nogood => "Nogood",
+            Self::NogoodCapacity => "Nogood cap",
             Self::Activity => "Activity",
             Self::Seed => "Seed",
             Self::MaxPopulation => "Max pop",
@@ -147,6 +150,7 @@ impl ConfigField {
                 | Self::DiagonalWidth
                 | Self::Seed
                 | Self::MaxPopulation
+                | Self::NogoodCapacity
                 | Self::ExportResults
         )
     }
@@ -177,7 +181,12 @@ impl ConfigField {
     pub const fn is_experimental(self) -> bool {
         matches!(
             self,
-            Self::PhaseSaving | Self::Lookahead | Self::Backjump | Self::Nogood | Self::Activity
+            Self::PhaseSaving
+                | Self::Lookahead
+                | Self::Backjump
+                | Self::Nogood
+                | Self::NogoodCapacity
+                | Self::Activity
         )
     }
 }
@@ -252,6 +261,9 @@ impl ConfigState {
             ConfigField::Lookahead => cfg.lookahead.to_string(),
             ConfigField::Backjump => cfg.backjump.to_string(),
             ConfigField::Nogood => cfg.nogood.to_string(),
+            ConfigField::NogoodCapacity => {
+                cfg.nogood_capacity.map_or(String::new(), |c| c.to_string())
+            }
             ConfigField::Activity => cfg.activity.to_string(),
             ConfigField::Seed => cfg.seed.map_or(String::new(), |s| s.to_string()),
             ConfigField::MaxPopulation => {
@@ -349,6 +361,21 @@ impl ConfigState {
                         return;
                     };
                     self.working_config.max_population = Some(v);
+                }
+            }
+            ConfigField::NogoodCapacity => {
+                if self.edit_buffer.is_empty() {
+                    self.working_config.nogood_capacity = None;
+                } else {
+                    let Ok(v) = self.edit_buffer.parse::<usize>() else {
+                        self.error = Some("nogood capacity must be a positive integer".to_string());
+                        return;
+                    };
+                    if v == 0 {
+                        self.error = Some("nogood capacity must be a positive integer".to_string());
+                        return;
+                    }
+                    self.working_config.nogood_capacity = Some(v);
                 }
             }
             ConfigField::ExportResults => {
@@ -1792,8 +1819,12 @@ mod tests {
             position(ConfigField::Backjump) + 1
         );
         assert_eq!(
-            position(ConfigField::Activity),
+            position(ConfigField::NogoodCapacity),
             position(ConfigField::Nogood) + 1
+        );
+        assert_eq!(
+            position(ConfigField::Activity),
+            position(ConfigField::NogoodCapacity) + 1
         );
         // The group sits at the end of the form, right before the buttons, so
         // no other field can be mistaken for part of it.
@@ -1820,10 +1851,12 @@ mod tests {
                 position(ConfigField::Lookahead),
                 position(ConfigField::Backjump),
                 position(ConfigField::Nogood),
+                position(ConfigField::NogoodCapacity),
                 position(ConfigField::Activity),
             )
         };
-        let (export, phase_saving, lookahead, backjump, nogood, activity) = field_positions;
+        let (export, phase_saving, lookahead, backjump, nogood, nogood_capacity, activity) =
+            field_positions;
 
         // The caption (a blank line plus the title) is inserted between them:
         // two extra lines plus the field's own line.
@@ -1834,7 +1867,8 @@ mod tests {
         assert_eq!(before[lookahead], before[phase_saving] + 1);
         assert_eq!(before[backjump], before[lookahead] + 1);
         assert_eq!(before[nogood], before[backjump] + 1);
-        assert_eq!(before[activity], before[nogood] + 1);
+        assert_eq!(before[nogood_capacity], before[nogood] + 1);
+        assert_eq!(before[activity], before[nogood_capacity] + 1);
 
         // No caption appears when the experimental fields are removed.
         if let Some(state) = app.config_state.as_mut() {

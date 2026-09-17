@@ -12,10 +12,11 @@ and what remains worth exploring.
 
 ## Current Status
 
-The public configuration is defined by `Config` in `lib/src/config.rs`. The
-five experimental switches are available from the CLI as
-`--phase-saving`, `--lookahead`, `--backjump`, `--nogood`, and `--activity`;
-the TUI and egui frontends expose the same options.
+The public configuration is defined by `Config` in `lib/src/config.rs`. The six
+experimental switches are available from the CLI as
+`--phase-saving`, `--lookahead`, `--backjump`, `--nogood`,
+`--nogood-capacity`, and `--activity`; the TUI and egui frontends expose the
+same options.
 
 | Technique | Current status | Scope and important limits |
 | --- | --- | --- |
@@ -23,7 +24,7 @@ the TUI and egui frontends expose the same options.
 | Phase saving | Implemented, opt-in | Remembers the last real state of a cell and tries it first. Works with supported two-state and Generations rules. |
 | Lookahead | Implemented, opt-in | Probes both states of the next cell and chooses a polarity. Two-state rules only; it does not choose a different cell. |
 | Conflict analysis and backjumping | Implemented, opt-in | A 1-UIP-style analysis for local rule, symmetry, and learned-nogood conflicts. Two-state rules only. A protocol guard keeps enumeration free of repeated solutions. |
-| Exact-position nogood database | Implemented, opt-in | Learns from successful local conflict analysis and propagates learned forbidden patterns. It uses absolute cell indices, a 2,048-entry oldest-half-evicting database, and is valid only in the current `World`. Two-state rules only. Clause minimization was investigated and reverted after a negative performance result; allowing long learned clauses was later found to be a large win. |
+| Exact-position nogood database | Implemented, opt-in | Learns from successful local conflict analysis and propagates learned forbidden patterns. It uses absolute cell indices, an oldest-half-evicting database whose capacity scales with the world size (`max(2048, 4 * cells)` by default, or an explicit `Config::nogood_capacity`), and is valid only in the current `World`. Two-state rules only. Clause minimization was investigated and reverted after a negative performance result; allowing long learned clauses was later found to be a large win. |
 | VSIDS-style activity | Implemented, opt-in | Bumps the cells of recent conflicts and guesses the most active cell among a small window of the search-order chain. Changes the branching order only, so it works with both two-state and Generations rules. Not serialized. |
 | Translated or cross-size nogoods | Not implemented | The current database is not normalized to relative coordinates. |
 | Dynamic cell selection for lookahead | Not implemented | Lookahead only changes the state tried for the next cell. |
@@ -314,11 +315,11 @@ The current implementation deliberately uses absolute indices:
 The database is persistent only across backtracking inside one `World`. It
 does not persist across save/load or world growth.
 
-The current implementation constants are:
+The current implementation limits are:
 
 | Limit | Current value | Purpose |
 | --- | ---: | --- |
-| Database capacity | `1 << 11` entries | When full, the older half is evicted and the index is rebuilt. |
+| Database capacity | `max(2048, 4 * cells)` entries, or `Config::nogood_capacity` | When full, the older half is evicted and the index is rebuilt. |
 | Literals per nogood | `96` | Guards against pathological clause growth; the observed clauses stay below it. |
 | Candidates checked by one indexed query | `64` | Bounds work for a popular `(cell, state)` bucket. |
 
@@ -326,14 +327,59 @@ These are implementation limits, not correctness assumptions. Missing a
 candidate because of the query cap loses pruning but must not change the
 solution set.
 
-The counter maintenance walks the index bucket of every real assignment, so
-the capacity is kept around a few thousand entries. A capacity sweep selected
-the current `1 << 11` with simple oldest-half eviction. More elaborate
-activity/LBD-based eviction policies were slower and were dropped. A
-Minisat-style antecedent-cone minimization was also implemented and passed the
-differential correctness tests, but its per-conflict walk made both
-first-result and enumeration searches slower; the code was removed. The
-current implementation does not minimize learned nogoods.
+The counter maintenance walks the index bucket of every real assignment, so a
+database of a few thousand entries is cheap to maintain, and that is what an
+early capacity sweep on the small benchmark workloads selected. The sweep did
+not cover large worlds. On a large world the search can learn tens of
+millions of clauses: with a fixed `1 << 11` entries the database only
+remembers the last few thousand search steps, and the same local patterns are
+learned, used once or twice, and evicted over and over. The learned
+information then does not reduce the step count at all, while every eviction
+and every bucket walk still costs time.
+
+The default capacity therefore scales with the number of cells in the world,
+including the padding ring: `NogoodDb::with_world_size` uses
+`max(DEFAULT_CAPACITY, ADAPTIVE_CAPACITY_FACTOR * world_size)` with
+`ADAPTIVE_CAPACITY_FACTOR = 4`. This keeps the average index bucket roughly
+constant as the world grows, because the number of distinct literals grows
+with the number of cells too, while letting learned patterns live long enough
+to be reused. `Config::nogood_capacity` overrides the automatic choice.
+Eviction is still the simple oldest-half policy; activity/LBD-based eviction
+policies were slower on the small workloads and were dropped, and a
+Minisat-style antecedent-cone minimization was implemented, passed the
+differential correctness tests, and was removed because its per-conflict walk
+made both first-result and enumeration searches slower. The current
+implementation does not minimize learned nogoods.
+
+The capacity effect was measured on 2026-09-18 with a release build on the
+same machine as the benchmark snapshot below, single runs, the default
+`new_state`, and the command
+`factoriosrc-tui new --no-tui --format json -r B3/S23 100 10 4 -x 1 --nogood
+--nogood-capacity N`:
+
+| Capacity | Steps | Wall time |
+| ---: | ---: | ---: |
+| 2,048 (old fixed default) | 233,591,288 | 2,018 s |
+| 16,384 | 24,790,612 | 355 s |
+| 19,584 (automatic default, padded cells) | 26,178,710 | 390 s |
+| 32,768 | 16,045,721 | 315 s |
+| 65,536 | 14,943,369 | 442 s |
+
+The plain search finds the same first solution in 235,633,435 steps and 49 s,
+so the old default made `--nogood` 41 times slower without reducing the step
+count; the automatic default cuts the steps by 9.0 times and the wall time by
+5.2 times, and an explicit larger capacity cuts the steps by 14.6 times. The
+step count keeps falling with the capacity while the wall time has its
+optimum near 32,768 entries, because a larger database makes every assignment
+walk longer index buckets.
+
+On the smaller benchmark worlds the scaled capacity is close to the old
+default: `B3/S23 26 8 4 -y 1 -n a` has 1,120 cells and uses 4,480 entries
+(509,110 steps / 2.73 s at 2,048; 476,438 steps / 3.06 s at 4,480), and
+`B2n3/S23-q 30 9 4 -x 1 -n a` has 1,408 cells and uses 5,632 entries
+(2,387,731 steps / 14.77 s at 2,048; 2,161,350 steps / 16.84 s at 5,632).
+The scaled default trades a small wall-time cost on those cases for a large
+improvement on large worlds.
 
 The length bound and the hot paths were revised together after the benchmark
 sweep:
@@ -716,23 +762,26 @@ condition, and result.
 This is the latest recorded snapshot, measured on 2026-09-15 with a release
 build, single runs, and a 60-second per-cell timeout (120 seconds for the
 listed combinations). The `--activity` column was measured on 2026-09-16 on
-the same machine and with the same protocol. The `--nogood` column uses the
-current `1 << 11`-entry database with the 96-literal bound; for enumeration,
-the value is the time to the 10th solution with `--no-stop`. Replace this
-table on a future rerun instead of appending another historical table.
+the same machine and with the same protocol. The `--nogood` column was
+re-measured on 2026-09-18 on the same machine after the database capacity
+became adaptive (`max(2048, 4 * cells)` entries, 96-literal bound); for
+enumeration, the value is the time to the 10th solution with `--no-stop`.
+Replace this table on a future rerun instead of appending another historical
+table.
 
 | Case | Plain | `--phase-saving` | `--lookahead` | `--backjump` | `--nogood` | `--activity` |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `B3/S23 26 8 4 -y 1 -n a` | 1.227 s | 3.752 s | 5.665 s | 36.538 s | 2.690 s | 1.520 s |
-| `B3/S23 64 64 1 -n a` | >60 s | 1.854 s | 0.049 s | 0.026 s | 0.014 s | 0.026 s |
+| `B3/S23 26 8 4 -y 1 -n a` | 1.227 s | 3.752 s | 5.665 s | 36.538 s | 3.053 s | 1.520 s |
+| `B3/S23 64 64 1 -n a` | >60 s | 1.854 s | 0.049 s | 0.026 s | 0.006 s | 0.026 s |
 | `3457/357/5 20 16 7 -x 3 -s D2- -n a` | 2.269 s | 3.208 s | N/A | N/A | N/A | 2.523 s |
 | `R3,C2,S2,B3,N+ 50 10 4 -x 2 -s D2- -n a` | >60 s | 13.622 s | 30.922 s | >60 s | >60 s | ~60 s |
-| `B2n3/S23-q 30 9 4 -x 1 -n a` | 4.154 s | 3.498 s | N/A | >60 s | 14.728 s | 2.685 s |
-| `B3/S23 20 20 2 -n r --seed 1 --no-stop` to 10th solution | 5.716 s | N/A | N/A | N/A | 0.114 s | 2.114 s |
+| `B2n3/S23-q 30 9 4 -x 1 -n a` | 4.154 s | 3.498 s | N/A | >60 s | 16.404 s | 2.685 s |
+| `B3/S23 20 20 2 -n r --seed 1 --no-stop` to 10th solution | 5.716 s | N/A | N/A | N/A | 0.090 s | 2.114 s |
 
 On the deep `26 8 4` case the combined options `--nogood --phase-saving` and
-`--nogood --lookahead` take 9.189 s and 8.180 s, while `--backjump
---phase-saving` still exceeds 120 seconds. The factorio `--activity` run
+`--nogood --lookahead` take 3.450 s and 9.240 s with the adaptive capacity
+(9.189 s and 8.180 s with the old fixed 2,048-entry database), while
+`--backjump --phase-saving` still exceeds 120 seconds. The factorio `--activity` run
 finishes just under the timeout (about 59.7 s) and is recorded as `~60 s`. The
 enumeration guard makes solution counts match the plain search; `B3/S23 5 5 2`
 reports 26 solutions with backjumping and nogood.
@@ -741,7 +790,9 @@ reports 26 solutions with backjumping and nogood.
 
 This second snapshot was measured on 2026-09-17 on the same machine, with the
 usage instrumentation of `World::search_steps()`, `NogoodStats`, and
-`World::nogood_top()` added to the working tree. The commands are
+`World::nogood_top()` added to the working tree. The `--nogood` column and its
+database statistics below were re-measured on 2026-09-18 after the adaptive
+capacity became the default. The commands are
 `factoriosrc-tui new --no-tui --format json [-–backjump|--nogood] ...` in a
 release build; `--nogood` also prints the database statistics. These are single
 runs, but the step counts of the fixed-`--new-state` searches are
@@ -750,11 +801,11 @@ of two between runs on the loaded machine, so they are not tabulated here).
 
 | Case | Plain steps | `--backjump` steps | `--nogood` steps |
 | --- | ---: | ---: | ---: |
-| `B3/S23 26 8 4 -y 1 -n a` | 6,627,619 | 13,606,085 | 509,110 |
+| `B3/S23 26 8 4 -y 1 -n a` | 6,627,619 | 13,606,085 | 476,438 |
 | `B3/S23 64 64 1 -n a` | >100 s | 2,912 | 2,007 |
-| `B2n3/S23-q 30 9 4 -x 1 -n a` | 17,226,567 | >100 s | 2,387,731 |
+| `B2n3/S23-q 30 9 4 -x 1 -n a` | 17,226,567 | >100 s | 2,161,350 |
 | `B3/S23 16 6 3 -y 1 -n a` | 23,237 | 18,619 | 9,283 |
-| `B3/S23 17 12 3 -y 1 -s D2\| -n a` | 321,038 | 346,485 | 61,117 |
+| `B3/S23 17 12 3 -y 1 -s D2\| -n a` | 321,038 | 346,485 | 57,550 |
 | `B3/S23 6 6 2 -n a --no-stop` (exhaustion) | 60,501 | 53,128 | 21,990 |
 | `B3/S23 5 5 2 -n a --no-stop` (exhaustion) | 4,649 | 4,506 | 2,722 |
 
@@ -771,25 +822,25 @@ mostly short-lived:
 
 | Case | Learned | Used (distinct) | Fired | Full matches | Evicted | Reductions | Avg len |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `B3/S23 26 8 4 -y 1` | 213,267 | 105,222 (49%) | 494,840 | 4,927 | 211,968 | 207 | 31.9 |
+| `B3/S23 26 8 4 -y 1` | 201,275 | 99,468 (49%) | 526,966 | 5,369 | 197,120 | 88 | 32.6 |
 | `B3/S23 64 64 1` | 101 | 36 (36%) | 77 | 0 | 0 | 0 | 11.9 |
-| `B2n3/S23-q 30 9 4 -x 1` | 1,019,402 | 479,654 (47%) | 2,075,331 | 17,957 | 1,017,856 | 994 | 36.0 |
+| `B2n3/S23-q 30 9 4 -x 1` | 930,038 | 437,064 (47%) | 2,165,836 | 19,402 | 926,464 | 329 | 36.9 |
 | `B3/S23 16 6 3 -y 1` | 4,161 | 1,438 (35%) | 3,543 | 35 | 3,072 | 3 | 21.1 |
-| `B3/S23 17 12 3 -y 1 -s D2\|` | 25,469 | 12,165 (48%) | 49,941 | 311 | 23,552 | 23 | 36.4 |
+| `B3/S23 17 12 3 -y 1 -s D2\|` | 23,996 | 11,517 (48%) | 51,077 | 322 | 22,344 | 14 | 36.8 |
 | `B3/S23 6 6 2 --no-stop` | 8,643 | 3,614 (42%) | 19,301 | 224 | 7,168 | 7 | 17.5 |
 
-The live database is bounded at `1 << 11` entries, so on the deep cases only
-about 1,000–2,000 entries exist at once and roughly 99% of everything learned
-is eventually evicted; `used_learned` and the all-time `HALL_OF_FAME` record
-are what make the usage numbers meaningful after those reductions. The
+The live database is bounded by the adaptive capacity, so on the deep cases
+only a few thousand entries exist at once and roughly 98% of everything
+learned is eventually evicted; `used_learned` and the all-time `HALL_OF_FAME`
+record are what make the usage numbers meaningful after those reductions. The
 guess-time `hits` and `queries` counters stay at zero on these first-result
 runs: the pruning comes from propagation-level `fired` and from `full_matches`,
 not from the `completed()` query. The length histogram of the deep case is
-broad (mode 12 literals, mean 31.9, a tail to the 96-literal bound, and a
+broad (mode 12 literals, mean 32.6, a tail to the 96-literal bound, and a
 secondary bump around 64–67), while the all-time most-used entries are short:
-the top entries have 3–19 literals and 170–232 uses each, and the three
-shortest are 3-literal clauses. Short learned clauses are rare but fire far
-more often than the long ones that dominate the histogram.
+the top entries have 3–18 literals and 220–386 uses each, and three of them
+are 3-literal clauses. Short learned clauses are rare but fire far more often
+than the long ones that dominate the histogram.
 
 ## Comparison with Logic Life Search (LLS)
 
