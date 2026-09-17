@@ -84,8 +84,18 @@ const MAX_QUERY_CANDIDATES: usize = 64;
 /// lengths.
 const MAX_NOGOOD_LITERALS: usize = 96;
 
+/// The number of evicted nogoods kept for the all-time usage report.
+///
+/// The main database evicts its older half when it reaches capacity, so the
+/// most-used entries of a long search are usually gone from it. This small
+/// secondary list remembers the most-used evicted entries (with their final
+/// use counts) so that [`NogoodDb::top_entries`] can report the all-time
+/// most-used patterns. It is diagnostic state only: it is never queried for
+/// propagation and never affects the search.
+const HALL_OF_FAME: usize = 64;
+
 /// Statistics of the nogood database.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NogoodStats {
     /// The number of nogoods that have been stored.
     pub learned: u64,
@@ -140,6 +150,54 @@ pub struct NogoodStats {
     /// workloads: the long clauses of the conflict analysis are useful, and
     /// rejecting them was a major source of lost pruning.
     pub rejected_long: u64,
+
+    /// The number of distinct learned nogoods that have been used at least
+    /// once, either by firing during propagation or by blocking a guess or a
+    /// chronological flip.
+    ///
+    /// Unlike [`fired`](NogoodStats::fired) and [`hits`](NogoodStats::hits),
+    /// which count events, this counts entries. It is cumulative: an entry is
+    /// counted once, when it is first used, and is not forgotten when the
+    /// database later evicts it.
+    pub used_learned: u64,
+
+    /// The number of times a learned nogood was fully matched by the current
+    /// assignment and queued as a conflict.
+    ///
+    /// This is a conflict detection rather than a unit propagation: see
+    /// [`fired`](NogoodStats::fired).
+    pub full_matches: u64,
+
+    /// A histogram of the lengths of the learned nogoods, in literals.
+    ///
+    /// `length_histogram[n]` is the number of stored nogoods that were
+    /// learned with exactly `n` literals. Index `0` is unused, and clauses
+    /// longer than [`MAX_NOGOOD_LITERALS`](self::MAX_NOGOOD_LITERALS) are
+    /// counted in [`rejected_long`](NogoodStats::rejected_long) instead. The
+    /// histogram is cumulative over the whole search, like
+    /// [`learned`](NogoodStats::learned).
+    pub length_histogram: [u64; MAX_NOGOOD_LITERALS + 1],
+}
+
+// `Default` is implemented by hand because `[u64; N]` only implements
+// `Default` for small `N`, and the histogram has one bin per literal count.
+impl Default for NogoodStats {
+    fn default() -> Self {
+        Self {
+            learned: 0,
+            hits: 0,
+            fired: 0,
+            evicted: 0,
+            reductions: 0,
+            queries: 0,
+            capped_queries: 0,
+            literals_total: 0,
+            rejected_long: 0,
+            used_learned: 0,
+            full_matches: 0,
+            length_histogram: [0; MAX_NOGOOD_LITERALS + 1],
+        }
+    }
 }
 
 /// A learned nogood: an assignment of states to cells that cannot be part of
@@ -189,6 +247,23 @@ pub struct NogoodDb {
     ///   full-match check of [`on_set`](NogoodDb::on_set).
     remaining: Vec<u32>,
 
+    /// How many times each entry has been used, indexed by entry id.
+    ///
+    /// An entry is used when it fires during propagation or when it blocks a
+    /// guess or a chronological flip. The counts are parallel to
+    /// [`entries`](NogoodDb::entries) and are drained together with them on a
+    /// reduction; the cumulative [`used_learned`](NogoodStats::used_learned)
+    /// counter in the statistics is not.
+    uses: Vec<u32>,
+
+    /// The most-used entries that have been evicted, in descending use order.
+    ///
+    /// This is a bounded diagnostic record, not part of the live database: it
+    /// is never indexed and never queried during propagation. It exists so
+    /// that [`top_entries`](NogoodDb::top_entries) can report the all-time
+    /// most-used patterns even after a reduction. See [`HALL_OF_FAME`].
+    hall_of_fame: Vec<(u32, Nogood)>,
+
     /// For each literal, the ids of the nogoods containing it.
     index: LiteralMap,
 
@@ -220,6 +295,8 @@ impl NogoodDb {
         Self {
             entries: Vec::new(),
             remaining: Vec::new(),
+            uses: Vec::new(),
+            hall_of_fame: Vec::new(),
             index: LiteralMap::default(),
             hashes: LiteralSet::default(),
             capacity,
@@ -281,6 +358,7 @@ impl NogoodDb {
 
         self.stats.learned += 1;
         self.stats.literals_total += literals.len() as u64;
+        self.stats.length_histogram[literals.len()] += 1;
 
         let id = self.entries.len() as u32;
         for &(cell, state) in literals.iter() {
@@ -306,6 +384,7 @@ impl NogoodDb {
         debug_assert!(matched <= literals.len() as u32);
 
         self.remaining.push(literals.len() as u32 - matched);
+        self.uses.push(0);
         self.entries.push(Nogood { literals });
 
         if self.entries.len() >= self.capacity {
@@ -325,9 +404,16 @@ impl NogoodDb {
         self.stats.evicted += keep as u64;
         self.stats.reductions += 1;
 
+        // Record the most-used evicted entries before dropping them, so that
+        // `top_entries` can report all-time usage across reductions.
+        let evicted_entries = self.entries.drain(..keep).collect::<Vec<_>>();
+        let evicted_uses = self.uses.drain(..keep).collect::<Vec<_>>();
+        for (entry, uses) in evicted_entries.into_iter().zip(evicted_uses) {
+            self.remember_hall(uses, entry);
+        }
+
         // The ids in the index are positions in `entries`, so they all shift
         // when the older half is drained; rebuild the index from scratch.
-        self.entries.drain(..keep);
         self.remaining.drain(..keep);
         self.index.clear();
         self.hashes.clear();
@@ -373,6 +459,12 @@ impl NogoodDb {
                 *remaining -= 1;
                 if *remaining == 0 {
                     full_match = Some(id);
+                    self.stats.full_matches += 1;
+                    let uses = &mut self.uses[id as usize];
+                    if *uses == 0 {
+                        self.stats.used_learned += 1;
+                    }
+                    *uses = uses.saturating_add(1);
                 } else if *remaining == 1 {
                     out.push(id);
                 }
@@ -516,14 +608,18 @@ impl NogoodDb {
             });
 
             if complete {
-                return Some(
-                    entry
-                        .literals
-                        .iter()
-                        .copied()
-                        .filter(|&(c, s)| c != cell || s != state)
-                        .collect(),
-                );
+                let literals = entry
+                    .literals
+                    .iter()
+                    .copied()
+                    .filter(|&(c, s)| c != cell || s != state)
+                    .collect();
+                let uses = &mut self.uses[id as usize];
+                if *uses == 0 {
+                    self.stats.used_learned += 1;
+                }
+                *uses = uses.saturating_add(1);
+                return Some(literals);
             }
         }
 
@@ -535,9 +631,69 @@ impl NogoodDb {
         self.stats.hits += 1;
     }
 
-    /// Record that a nogood fired during propagation.
-    pub(crate) const fn note_fired(&mut self) {
+    /// Record that the nogood with the given id fired during propagation.
+    pub(crate) fn note_fired(&mut self, id: u32) {
         self.stats.fired += 1;
+        let uses = &mut self.uses[id as usize];
+        if *uses == 0 {
+            self.stats.used_learned += 1;
+        }
+        *uses = uses.saturating_add(1);
+    }
+
+    /// The number of currently stored entries that have been used at least
+    /// once.
+    #[inline]
+    pub fn used_entries(&self) -> usize {
+        self.uses.iter().filter(|&&uses| uses > 0).count()
+    }
+
+    /// Remember an evicted entry in the all-time usage record.
+    ///
+    /// The entry is inserted into [`hall_of_fame`](NogoodDb::hall_of_fame) in
+    /// descending use order and the list is truncated to [`HALL_OF_FAME`].
+    /// Unused entries are skipped, since they can never make the list.
+    fn remember_hall(&mut self, uses: u32, entry: Nogood) {
+        if uses == 0 || HALL_OF_FAME == 0 {
+            return;
+        }
+        let position = self
+            .hall_of_fame
+            .iter()
+            .position(|&(hall_uses, _)| hall_uses < uses)
+            .unwrap_or(self.hall_of_fame.len());
+        if position >= HALL_OF_FAME {
+            return;
+        }
+        self.hall_of_fame.insert(position, (uses, entry));
+        self.hall_of_fame.truncate(HALL_OF_FAME);
+    }
+
+    /// The `n` entries with the highest all-time use count, ordered by
+    /// descending use count, together with their use counts.
+    ///
+    /// This merges the live entries with the evicted entries remembered in
+    /// the all-time record (see [`HALL_OF_FAME`]), so it is not limited to
+    /// the current database. Ties keep the live entries first, in insertion
+    /// order. Entries that have never been used are not returned.
+    pub fn top_entries(&self, n: usize) -> Vec<(u32, &[(u32, CellState)])> {
+        let mut top = (0..self.entries.len() as u32)
+            .filter(|&id| self.uses[id as usize] > 0)
+            .map(|id| {
+                (
+                    self.uses[id as usize],
+                    &self.entries[id as usize].literals[..],
+                )
+            })
+            .collect::<Vec<_>>();
+        top.extend(
+            self.hall_of_fame
+                .iter()
+                .map(|(uses, entry)| (*uses, &entry.literals[..])),
+        );
+        top.sort_by_key(|&(uses, _)| std::cmp::Reverse(uses));
+        top.truncate(n);
+        top
     }
 
     /// Clear the database, keeping the statistics.
@@ -548,6 +704,8 @@ impl NogoodDb {
     pub fn clear(&mut self) {
         self.entries.clear();
         self.remaining.clear();
+        self.uses.clear();
+        self.hall_of_fame.clear();
         self.index.clear();
         self.hashes.clear();
     }
@@ -673,6 +831,95 @@ mod test {
         db.learn(vec![(1, D)].into_boxed_slice(), &mut none);
         assert!(db.is_empty());
         assert!(!db.blocks(1, D, |_| None));
+    }
+
+    #[test]
+    fn stats_track_lengths_and_uses() {
+        let mut db = NogoodDb::with_default_capacity();
+        let mut none = |_| None;
+        db.learn(vec![(1, D), (2, A)].into_boxed_slice(), &mut none);
+        db.learn(vec![(3, D), (4, A), (5, D)].into_boxed_slice(), &mut none);
+
+        assert_eq!(db.stats().length_histogram[2], 1);
+        assert_eq!(db.stats().length_histogram[3], 1);
+        assert_eq!(db.stats().used_learned, 0);
+        assert_eq!(db.used_entries(), 0);
+
+        // A completion query uses the first entry.
+        assert!(db.blocks(2, A, |c| (c == 1).then_some(D)));
+        assert_eq!(db.stats().used_learned, 1);
+        assert_eq!(db.used_entries(), 1);
+
+        // Firing the second entry uses it too.
+        let mut candidates = Vec::new();
+        db.on_set(3, D, &mut candidates);
+        db.on_set(5, D, &mut candidates);
+        let mut state_of = |c: u32| match c {
+            3 => Some(D),
+            5 => Some(D),
+            _ => None,
+        };
+        for id in candidates {
+            if db.fire_candidate(id, &mut state_of).is_some() {
+                db.note_fired(id);
+            }
+        }
+        assert_eq!(db.stats().fired, 1);
+        assert_eq!(db.stats().used_learned, 2);
+        assert_eq!(db.used_entries(), 2);
+
+        // Both entries were used once; ties keep insertion order.
+        let top = db.top_entries(2);
+        assert_eq!(top.len(), 2);
+        assert_eq!(top[0].0, 1);
+        assert_eq!(top[0].1, &[(1, D), (2, A)]);
+        assert_eq!(top[1].0, 1);
+        assert_eq!(top[1].1, &[(3, D), (4, A), (5, D)]);
+    }
+
+    #[test]
+    fn top_entries_remembers_evicted_entries() {
+        let mut db = NogoodDb::new(4);
+        let mut none = |_| None;
+        db.learn(vec![(0, D), (100, A)].into_boxed_slice(), &mut none);
+
+        // Use the first entry five times.
+        for _ in 0..5 {
+            let mut candidates = Vec::new();
+            db.on_set(100, A, &mut candidates);
+            for id in candidates {
+                let mut state_of = |c: u32| (c == 100).then_some(A);
+                if db.fire_candidate(id, &mut state_of).is_some() {
+                    db.note_fired(id);
+                }
+            }
+            db.on_unset(100, A);
+        }
+
+        // Force reductions that evict the used entry.
+        for c in 1..12u32 {
+            db.learn(vec![(c, D), (c + 100, A)].into_boxed_slice(), &mut none);
+        }
+        assert!(db.stats().reductions > 0);
+
+        // The evicted entry is still the all-time most used.
+        let top = db.top_entries(1);
+        assert_eq!(top.len(), 1);
+        assert_eq!(top[0].0, 5);
+        assert_eq!(top[0].1, &[(0, D), (100, A)]);
+    }
+
+    #[test]
+    fn full_match_counts_as_a_use() {
+        let mut db = db_with_entries(&[&[(0, D), (1, A), (2, D)]]);
+        let mut candidates = Vec::new();
+        db.on_set(0, D, &mut candidates);
+        db.on_set(2, D, &mut candidates);
+        assert_eq!(db.stats().full_matches, 0);
+
+        assert_eq!(db.on_set(1, A, &mut candidates), Some(0));
+        assert_eq!(db.stats().full_matches, 1);
+        assert_eq!(db.stats().used_learned, 1);
     }
 
     #[test]

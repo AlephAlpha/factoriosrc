@@ -22,6 +22,20 @@ use strum::Display;
 /// The third coordinate is the generation of the cell.
 pub type Coord = (i32, i32, i32);
 
+/// A stored nogood and how often it has been used, for diagnostics.
+///
+/// See [`World::nogood_top`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NogoodTop {
+    /// The number of times the entry fired during propagation or blocked a
+    /// guess or a chronological flip since it was learned.
+    pub uses: u32,
+
+    /// The literals of the nogood: the coordinates of the cells and the state
+    /// that each cell must take for the nogood to be violated.
+    pub literals: Vec<(Coord, CellState)>,
+}
+
 /// The number of unknown cells after the search-order cursor that
 /// activity-based branching may choose from.
 ///
@@ -343,6 +357,17 @@ pub struct World {
 
     /// The search status.
     pub(crate) status: Status,
+
+    /// The total number of search steps performed by
+    /// [`search`](World::search) on this world.
+    ///
+    /// One step is one call to the internal `step`: a propagation round
+    /// followed by either a guess, a conflict, or a backtrack. This is a
+    /// finer-grained work counter than [`cells_checked`](World::cells_checked),
+    /// which is the current stack depth. The counter accumulates across calls
+    /// to [`search`](World::search), so it measures the work to the current
+    /// point, not only the last call.
+    pub(crate) search_steps: u64,
 }
 
 impl Drop for World {
@@ -441,6 +466,7 @@ impl World {
             nogood_scratch: Vec::new(),
             pending_nogood_confl: None,
             status: Status::NotStarted,
+            search_steps: 0,
         };
         world.init(&rule_symmetry)?;
 
@@ -1346,12 +1372,70 @@ impl World {
         self.stack.len()
     }
 
+    /// Get the total number of search steps performed so far.
+    ///
+    /// This counts the calls to the internal search step across all calls to
+    /// [`search`](World::search): a propagation round followed by a guess, a
+    /// conflict, or a backtrack. It is a work counter for comparing search
+    /// configurations, unlike [`cells_checked`](World::cells_checked), which
+    /// is the current stack depth.
+    #[inline]
+    pub const fn search_steps(&self) -> u64 {
+        self.search_steps
+    }
+
     /// Get the statistics of the nogood database.
     ///
     /// Return [`None`] if [`Config::nogood`](Config::nogood) is disabled.
     #[inline]
     pub fn nogood_stats(&self) -> Option<&crate::nogood::NogoodStats> {
         self.config.nogood.then(|| self.nogood_db.stats())
+    }
+
+    /// Get the most-used stored nogoods, for diagnostics.
+    ///
+    /// Return at most `n` entries ordered by descending use count. Entries
+    /// that have never been used are not returned, and entries evicted by a
+    /// database reduction are not retained, so this reports the current
+    /// database rather than every entry ever learned.
+    ///
+    /// The result is empty if [`Config::nogood`](Config::nogood) is disabled.
+    pub fn nogood_top(&self, n: usize) -> Vec<NogoodTop> {
+        if !self.config.nogood {
+            return Vec::new();
+        }
+        self.nogood_db
+            .top_entries(n)
+            .into_iter()
+            .map(|(uses, literals)| NogoodTop {
+                uses,
+                literals: literals
+                    .iter()
+                    .map(|&(index, state)| (self.index_to_coord(index), state))
+                    .collect(),
+            })
+            .collect()
+    }
+
+    /// Convert a cell index into the cell's coordinates.
+    ///
+    /// This is the inverse of the index computed by
+    /// [`get_cell_by_coord_ptr`](World::get_cell_by_coord_ptr), exposed for
+    /// diagnostics such as [`nogood_top`](World::nogood_top). The result is
+    /// the raw grid coordinate, including the `radius`-wide padding, and is
+    /// not canonicalized.
+    #[inline]
+    pub const fn index_to_coord(&self, index: u32) -> Coord {
+        let p = self.config.period as i32;
+        let w = self.config.width as i32 + 2 * self.rule.radius as i32;
+        let index = index as i32;
+        let t = index % p;
+        let rest = index / p;
+        (
+            rest % w - self.rule.radius as i32,
+            rest / w - self.rule.radius as i32,
+            t,
+        )
     }
 
     /// Get the search status.

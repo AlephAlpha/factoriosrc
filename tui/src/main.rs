@@ -40,6 +40,29 @@ fn run_no_tui(
             OutputFormat::Json => {
                 let rle = solved.then(|| world.rle(generation, true));
                 let nogood = world.nogood_stats().map(|stats| {
+                    let length_histogram = stats
+                        .length_histogram
+                        .iter()
+                        .enumerate()
+                        .filter(|&(_, &count)| count > 0)
+                        .map(|(length, &count)| serde_json::json!([length, count]))
+                        .collect::<Vec<_>>();
+                    let top = world
+                        .nogood_top(16)
+                        .into_iter()
+                        .map(|entry| {
+                            serde_json::json!({
+                                "uses": entry.uses,
+                                "literals": entry
+                                    .literals
+                                    .iter()
+                                    .map(|&((x, y, t), state)| {
+                                        serde_json::json!([x, y, t, state.number()])
+                                    })
+                                    .collect::<Vec<_>>(),
+                            })
+                        })
+                        .collect::<Vec<_>>();
                     serde_json::json!({
                         "learned": stats.learned,
                         "hits": stats.hits,
@@ -50,6 +73,10 @@ fn run_no_tui(
                         "capped_queries": stats.capped_queries,
                         "literals_total": stats.literals_total,
                         "rejected_long": stats.rejected_long,
+                        "used_learned": stats.used_learned,
+                        "full_matches": stats.full_matches,
+                        "length_histogram": length_histogram,
+                        "top": top,
                     })
                 });
                 let output = serde_json::json!({
@@ -57,6 +84,7 @@ fn run_no_tui(
                     "generation": generation,
                     "population": world.population(generation),
                     "elapsed_secs": start.elapsed().as_secs_f64(),
+                    "steps": world.search_steps(),
                     "cells_checked": world.cells_checked(),
                     "nogood": nogood,
                     "rle": rle,
@@ -67,8 +95,9 @@ fn run_no_tui(
                 let elapsed = start.elapsed();
                 let pop = world.population(generation);
                 let cells = world.cells_checked();
+                let steps = world.search_steps();
                 println!(
-                    "Status: {:?} | Gen: {generation} | Pop: {pop} | Cells: {cells} | Time: {elapsed:.2?}",
+                    "Status: {:?} | Gen: {generation} | Pop: {pop} | Steps: {steps} | Cells: {cells} | Time: {elapsed:.2?}",
                     status,
                 );
                 if solved {

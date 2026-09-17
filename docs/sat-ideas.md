@@ -358,10 +358,13 @@ the clause literals cost more than the incremental counters, even though the
 counters touch more entries per assignment.
 
 `NogoodStats` retains the useful instrumentation from these experiments:
-`queries`, `capped_queries`, `literals_total`, and `rejected_long`, in addition
-to learning, firing, hit, and eviction counts. `World::nogood_stats()` exposes
-the counters in non-TUI JSON output. Non-TUI `--no-stop` also supports measuring
-the time to a later solution.
+`queries`, `capped_queries`, `literals_total`, `rejected_long`, `used_learned`,
+`full_matches`, and `length_histogram`, in addition to learning, firing, hit,
+and eviction counts. The database also keeps a bounded all-time record of the
+most-used evicted entries, exposed with their coordinates by
+`World::nogood_top()`. `World::nogood_stats()` and `World::search_steps()`
+expose the counters in non-TUI JSON output. Non-TUI `--no-stop` also supports
+measuring the time to a later solution.
 
 ### Propagation-level firing
 
@@ -389,6 +392,103 @@ If a forced assignment's clause antecedent becomes stale, conflict analysis
 does not use it and falls back to chronological backtracking. This preserves
 soundness when cells are later popped and assigned again.
 
+### Usage instrumentation
+
+The statistics separate the ways a learned entry can affect the search, so that
+"how much of what was learned was useful" can be read off a run:
+
+- `learned` counts the entries ever stored, `literals_total` and
+  `length_histogram` describe their lengths in literals, and `rejected_long`
+  counts the clauses refused by the length or repeated-cell guard.
+- `used_learned` counts the distinct entries that fired or blocked at least
+  once. It is cumulative and survives eviction, unlike `fired` and `hits`,
+  which count events rather than entries.
+- `fired` counts unit propagation on a learned nogood, `full_matches` counts a
+  full match detected by `on_set()`, and `hits` counts a completed guess or
+  chronological flip found by the `completed()` query.
+- `evicted` and `reductions` show the churn of the bounded database. Because
+  the live database is small, most learned entries are eventually evicted, so
+  `NogoodDb::top_entries()` also remembers the most-used evicted entries in
+  `HALL_OF_FAME`, and `World::nogood_top(n)` reports the all-time most-used
+  patterns as `NogoodTop` values with `(x, y, t, state)` coordinates.
+
+`World::search_steps()` is a configuration-independent work counter: the number
+of internal search steps (a propagation round followed by a guess, a conflict,
+or a backtrack) accumulated across `search()` calls. It is a better comparison
+metric than `cells_checked()`, which is only the current stack depth.
+
+The instrumentation is diagnostic and does not change the search: the same
+`--nogood` runs produce the same solutions, the same `cells_checked()`, and the
+same `search_steps()` with and without it. Its cost is O(1) per learned entry,
+per firing, and per reduction. An interleaved A/B of the instrumented and
+pre-instrumentation release builds on the development machine showed no
+consistent difference (the 95% confidence interval of the paired wall-time
+difference over 20 pairs included zero); the added work is estimated below 0.5%
+of the runtime, while the wall-time noise of that machine is about an order of
+magnitude larger. The instrumentation is therefore kept.
+
+### Worked example: a trailing-boundary nogood
+
+The all-time most-used entries of the deep `B3/S23 26 8 4 -y 1 -n a` run are
+short clauses on the trailing boundary row `y = 0`. The second-ranked entry,
+
+    (11, 0, 3) = Alive, (12, 0, 0) = Dead, (13, 0, 0) = Alive,
+
+is an instance of a general two-step boundary lemma, and it can be derived by
+hand without any SAT machinery. The derivation is a useful check on what the
+database actually stores.
+
+Setup. The configuration has `dx = 0`, `dy = 1`, so `World::canonicalize_coord()`
+maps a generation-3 cell to generation 0 one row higher:
+
+    successor(x, y, 3) = (x, y + 1, 0).
+
+The cells with `y = -1` are padding and are fixed to the dead background. The
+successor of the padding cell `(x, -1, 3)` is therefore the real cell
+`(x, 0, 0)`.
+
+Boundary lemma. For an interior `x`,
+
+    (x+1, 0, 0) = Alive  iff  (x, 0, 3), (x+1, 0, 3), (x+2, 0, 3) are all Alive.
+
+Proof. `(x+1, 0, 0)` is the successor of the dead padding cell `P =
+(x+1, -1, 3)`. Of the eight neighbours of `P`, the `y = -2` cells are outside
+the allocated world and the `y = -1` cells are padding; all are dead. The only
+possibly-live neighbours are `(x, 0, 3)`, `(x+1, 0, 3)`, and `(x+2, 0, 3)`.
+Because `P` is dead, `B3/S23` makes its successor alive exactly when `P` has
+three live neighbours, i.e. when all three of those cells are alive. QED.
+
+Derivation. Suppose all three literals of the learned entry hold:
+`(11,0,3)=A`, `(13,0,0)=A`, `(12,0,0)=D`. Apply the lemma to the padding cell
+`(13, -1, 3)`, whose successor is `(13,0,0)`: since that successor is alive, its
+neighbours `(12,0,3)`, `(13,0,3)`, and `(14,0,3)` are all alive. Then the padding
+cell `(12, -1, 3)`, whose successor is `(12,0,0)`, has the live neighbours
+`(11,0,3)` (given), `(12,0,3)`, and `(13,0,3)`, so by the lemma its successor
+`(12,0,0)` is alive — contradicting `(12,0,0)=D`. Hence the entry is a valid
+nogood. In CDCL terms, the analysis resolved the two padding descriptors into
+the implication `(11,0,3) ∧ (13,0,0) → (12,0,0)`, took `(12,0,0)` as the 1-UIP,
+and stored its negation.
+
+The lemma instantiated at `x = 10, 11, 12` appears at the top of the usage list
+as separate absolute entries. The database does not normalize by translation, so
+each instance is learned and stored independently.
+
+The entry is not an artifact of the conflict analysis: the found 26×8 solution
+satisfies the lemma. Evolving generation 0 gives
+`gen3 row 0 = ooo.......oo............o.` and
+`gen0 row 0 = .o........................`; for example `(1,0,0)` is alive because
+`(0,0,3)`, `(1,0,3)`, and `(2,0,3)` are all alive. The forbidden pattern itself
+does not occur in the solution (the solution has `(13,0,0) = Dead`), which is
+why the entry prunes partial assignments rather than excluding the answer.
+
+All five highest-use entries of this run touch row `y = 0` and the last
+generation `t = 3` (the one that wraps around to generation 0), and none touches
+row `y = 7`. This is not a coincidence:
+the trailing padding row feeds row 0 across the period boundary, so the
+strongest boundary lemmas are anchored there. The consequence for
+relative-coordinate learning is discussed under
+["Validity boundary for future translated nogoods"](#validity-boundary-for-future-translated-nogoods).
+
 ### Validity boundary for future translated nogoods
 
 Relative-coordinate or cross-size learning is not implemented. Any future
@@ -405,6 +505,27 @@ under translation or resizing, including:
 It must also define how rule configuration, transformation, and pattern
 symmetry participate in the identity of a reusable entry. The current exact
 position database intentionally makes none of these claims.
+
+The worked example above shows the boundary issue in a structured form. The
+most-used entries of the deep benchmark are horizontal translations of one
+lemma, anchored at the trailing row `y = 0`, where the padding row feeds
+generation 0 across the period boundary. Such an entry is invariant under a
+horizontal translation as long as the translation keeps the whole literal set
+inside the interior, but it is not invariant under a vertical translation:
+moving it away from `y = 0` replaces the padding neighbours of the anchor with
+ordinary cells, and moving it toward the padding changes the neighbour set. A
+future translated database therefore needs at least the distance (and, for
+`dx != 0` or diagonal drift, the direction) to the nearest padding row or column
+in the identity of an entry, or it must refuse to translate entries that touch a
+boundary at all. The same reasoning applies to the `x` padding columns and to
+the diagonal-width boundary.
+
+The `t` coordinate needs a similar decision. The learned boundary entries live
+at `t = 3` and `t = 0`, so translating them vertically by one row is equivalent
+to rotating the generations by one step, which changes which generation is
+anchored as generation 0 and therefore interacts with the front optimization.
+Generation rotation is a re-encoding of the same pattern, not a free reuse, so
+the current exact-position design correctly treats it as distinct.
 
 ### Correctness status
 
@@ -509,6 +630,29 @@ precomputation is too large; an on-demand check with a bounded cache is a
 possible experiment. Generations' deterministic dying chains could also be
 compressed as a preprocessing step, but the state asymmetry must be preserved.
 
+The boundary lemma in the worked example is a concrete instance: it composes the
+descriptors of two adjacent padding cells into a fact that neither descriptor
+implies alone. The current search only discovers such facts through conflict
+analysis; a bounded pair-check could derive them directly.
+
+### Boundary lemmas by world enlargement instead of learning
+
+The boundary nogood of the worked example exists only because `factoriosrc`
+encodes the temporal wrap-around implicitly: the padding row `y = -1` is not a
+search cell, so the relation between generation 3 and generation 0 on row 0 is
+invisible to a single descriptor check and must be rediscovered by conflict
+analysis.
+
+A direct alternative is to enlarge the search world by one ring and add the
+surrounding cells as known-dead cells. Then `(x+1, -1, 3)` becomes an explicit
+cell, and the ordinary descriptor propagation already derives the contradiction
+without conflict analysis or a nogood database. This is not a SAT technique. It
+trades a larger search for a cheaper per-conflict mechanism, and it may be worth
+measuring whether the extra ring costs less than the learning it replaces on
+boundary-heavy searches. The same construction could seed the database with the
+boundary lemmas analytically instead of learning them, which would give the
+pruning without the database churn.
+
 ### Boolean or multi-valued learning for Generations
 
 Possible approaches include learning only in the dead/alive base layer,
@@ -592,6 +736,60 @@ On the deep `26 8 4` case the combined options `--nogood --phase-saving` and
 finishes just under the timeout (about 59.7 s) and is recorded as `~60 s`. The
 enumeration guard makes solution counts match the plain search; `B3/S23 5 5 2`
 reports 26 solutions with backjumping and nogood.
+
+### Search-step and nogood-usage snapshot
+
+This second snapshot was measured on 2026-09-17 on the same machine, with the
+usage instrumentation of `World::search_steps()`, `NogoodStats`, and
+`World::nogood_top()` added to the working tree. The commands are
+`factoriosrc-tui new --no-tui --format json [-–backjump|--nogood] ...` in a
+release build; `--nogood` also prints the database statistics. These are single
+runs, but the step counts of the fixed-`--new-state` searches are
+deterministic, so only the wall times are noisy (they varied by up to a factor
+of two between runs on the loaded machine, so they are not tabulated here).
+
+| Case | Plain steps | `--backjump` steps | `--nogood` steps |
+| --- | ---: | ---: | ---: |
+| `B3/S23 26 8 4 -y 1 -n a` | 6,627,619 | 13,606,085 | 509,110 |
+| `B3/S23 64 64 1 -n a` | >100 s | 2,912 | 2,007 |
+| `B2n3/S23-q 30 9 4 -x 1 -n a` | 17,226,567 | >100 s | 2,387,731 |
+| `B3/S23 16 6 3 -y 1 -n a` | 23,237 | 18,619 | 9,283 |
+| `B3/S23 17 12 3 -y 1 -s D2\| -n a` | 321,038 | 346,485 | 61,117 |
+| `B3/S23 6 6 2 -n a --no-stop` (exhaustion) | 60,501 | 53,128 | 21,990 |
+| `B3/S23 5 5 2 -n a --no-stop` (exhaustion) | 4,649 | 4,506 | 2,722 |
+
+The `--backjump` column confirms the known limitation: without the persistent
+database, the analysis discards its clauses at every backtrack, and the deep
+`26 8 4` case takes about twice as many steps as plain chronological search.
+`--nogood` cuts the steps by an order of magnitude on the deep and INT cases
+and by a smaller factor elsewhere. On `B2n3/S23-q 30 9 4` the smaller step
+count still costs more wall time than plain because the database churns
+heavily, which is the regime the status table warns about.
+
+The database statistics of the same runs show that learning is useful but
+mostly short-lived:
+
+| Case | Learned | Used (distinct) | Fired | Full matches | Evicted | Reductions | Avg len |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `B3/S23 26 8 4 -y 1` | 213,267 | 105,222 (49%) | 494,840 | 4,927 | 211,968 | 207 | 31.9 |
+| `B3/S23 64 64 1` | 101 | 36 (36%) | 77 | 0 | 0 | 0 | 11.9 |
+| `B2n3/S23-q 30 9 4 -x 1` | 1,019,402 | 479,654 (47%) | 2,075,331 | 17,957 | 1,017,856 | 994 | 36.0 |
+| `B3/S23 16 6 3 -y 1` | 4,161 | 1,438 (35%) | 3,543 | 35 | 3,072 | 3 | 21.1 |
+| `B3/S23 17 12 3 -y 1 -s D2\|` | 25,469 | 12,165 (48%) | 49,941 | 311 | 23,552 | 23 | 36.4 |
+| `B3/S23 6 6 2 --no-stop` | 8,643 | 3,614 (42%) | 19,301 | 224 | 7,168 | 7 | 17.5 |
+
+The live database is bounded at `1 << 11` entries, so on the deep cases only
+about 1,000–2,000 entries exist at once and roughly 99% of everything learned
+is eventually evicted; `used_learned` and the all-time `HALL_OF_FAME` record
+are what make the usage numbers meaningful after those reductions. The
+guess-time `hits` and `queries` counters stay at zero on these first-result
+runs: the pruning comes from propagation-level `fired` and from `full_matches`,
+not from the `completed()` query. The length histogram of the deep case is
+broad (mode 12 literals, mean 31.9, a tail to the 96-literal bound, and a
+secondary bump around 64–67), while the all-time most-used entries are short:
+the top entries have 3–19 literals and 170–232 uses each, and the three
+shortest are 3-literal clauses. Short learned clauses are rare but fire far
+more often than the long ones that dominate the histogram.
 
 ## Comparison with Logic Life Search (LLS)
 

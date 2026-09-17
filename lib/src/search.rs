@@ -924,7 +924,7 @@ impl World {
                 continue;
             };
 
-            self.nogood_db.note_fired();
+            self.nogood_db.note_fired(id);
 
             let clause = self
                 .nogood_db
@@ -1554,6 +1554,7 @@ impl World {
             }
 
             steps += 1;
+            self.search_steps += 1;
         }
 
         self.status = status;
