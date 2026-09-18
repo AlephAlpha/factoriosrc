@@ -25,6 +25,7 @@ same options.
 | Lookahead | Implemented, opt-in | Probes both states of the next cell and chooses a polarity. Two-state rules only; it does not choose a different cell. |
 | Conflict analysis and backjumping | Implemented, opt-in | A 1-UIP-style analysis for local rule, symmetry, and learned-nogood conflicts. Two-state rules only. A protocol guard keeps enumeration free of repeated solutions. |
 | Exact-position nogood database | Implemented, opt-in | Learns from successful local conflict analysis and propagates learned forbidden patterns. It uses absolute cell indices, an oldest-half-evicting database whose capacity scales with the world size (`max(2048, 4 * cells)` by default, or an explicit `Config::nogood_capacity`), and is valid only in the current `World`. Two-state rules only. Clause minimization was investigated and reverted after a negative performance result; allowing long learned clauses was later found to be a large win. |
+| Quality-based nogood eviction or dynamic capacity | Not implemented | The live database still evicts the older half by insertion order, ignoring use counts, length, and recency, and the capacity is fixed by the world size. See [Eviction policy and capacity selection](#eviction-policy-and-capacity-selection). |
 | VSIDS-style activity | Implemented, opt-in | Bumps the cells of recent conflicts and guesses the most active cell among a small window of the search-order chain. Changes the branching order only, so it works with both two-state and Generations rules. Not serialized. |
 | Translated or cross-size nogoods | Not implemented | The current database is not normalized to relative coordinates. |
 | Dynamic cell selection for lookahead | Not implemented | Lookahead only changes the state tried for the next cell. |
@@ -349,7 +350,9 @@ policies were slower on the small workloads and were dropped, and a
 Minisat-style antecedent-cone minimization was implemented, passed the
 differential correctness tests, and was removed because its per-conflict walk
 made both first-result and enumeration searches slower. The current
-implementation does not minimize learned nogoods.
+implementation does not minimize learned nogoods. The eviction policy and the
+capacity formula are examined in
+[Eviction policy and capacity selection](#eviction-policy-and-capacity-selection).
 
 The capacity effect was measured on 2026-09-18 with a release build on the
 same machine as the benchmark snapshot below, single runs, the default
@@ -402,6 +405,123 @@ implemented and dropped. Under this search's chronological backtracking the
 watch lists thrash as cells are re-set and unset, so the per-event scans of
 the clause literals cost more than the incremental counters, even though the
 counters touch more entries per assignment.
+
+### Eviction policy and capacity selection
+
+This subsection records a research pass over the eviction policy. It is not an
+implemented experiment; the code still uses the oldest-half policy and the
+world-size capacity described above.
+
+`NogoodDb::reduce` evicts the *older half* of `NogoodDb::entries`
+unconditionally: it drains the first `entries.len() / 2` insertion-ordered
+entries without looking at `uses`, `remaining`, or the literal count. The
+`uses` array only feeds the diagnostic `HALL_OF_FAME` record, so an entry that
+fired many times can still be discarded while a never-used newer entry is
+kept.
+
+Unlike a CDCL solver, the database does not need to protect *locked* entries.
+A learned clause that is currently the reason of an assignment is stored as
+`Antecedent::Clause(Box<[(*const LifeCell, u32)]>)`, i.e. as cell pointers and
+the stack positions they held when the clause was recorded, not as a database
+id. `World::reason_literals` revalidates those positions and falls back to
+chronological backtracking when the reason is stale, so an entry can be evicted
+at any time without invalidating an in-flight deduction. The eviction policy
+therefore has more freedom than in a SAT solver.
+
+#### Capacity is a maintenance budget
+
+`NogoodDb::on_set` and `on_unset` walk the `(cell, state)` index bucket of
+every real assignment and update the `remaining` counter of every entry in it.
+For `entries` live entries of average length `avg_len` over a world of `size`
+cells (including the padding ring), the average bucket length is
+
+    avg_bucket ≈ entries * avg_len / (2 * size),
+
+because there are about `2 * size` distinct `(cell, state)` literals. Keeping
+the per-assignment work bounded therefore requires
+
+    entries ≤ 2 * size * avg_bucket / avg_len.
+
+Choosing `avg_bucket ≈ 2 * avg_len` gives `entries ≤ 4 * size`, which is
+exactly `ADAPTIVE_CAPACITY_FACTOR = 4`. The factor is a *maintenance budget*,
+not an estimate of how much knowledge is worth keeping. Any occurrence-list
+design has the same scaling — the watch lists of the two-watched-literal layer
+that was tried and dropped grow like `entries / size` too — so the
+per-assignment cost is linear in the database size at fixed world size. That is
+why the measured wall time has an optimum near 32,768 entries even while the
+step count keeps falling.
+
+The other half of the problem is the *retention need*: how long a learned
+pattern must stay in the database to be reused. It is governed by the reuse
+distance (the number of conflicts between two learnings of the same pattern),
+which grows with the world and with the length of the search, not by the world
+size alone. A more principled rule would be
+
+    capacity ≈ min(maintenance budget, retention need),
+
+with the retention need estimated online from reuse statistics. The current
+formula implements only the first term, with `4 * size` standing in for the
+second, and `DEFAULT_CAPACITY` as the floor for small worlds.
+
+#### What the reference solvers do
+
+The reference implementations consulted for this note (MiniSat, Glucose, and
+Kissat) all rank entries by a quality measure instead of age:
+
+| Solver | Reduce trigger | Eviction ranking | Protected entries |
+| --- | --- | --- | --- |
+| MiniSat (`Solver::reduceDB`, `reduceDB_lt`) | `learnts.size() - nAssigns() >= max_learnts`; `max_learnts` starts at `nClauses()/3` and grows geometrically (`learntsize_inc = 1.1`, `learntsize_adjust_inc = 1.5`) | clause activity, decayed by `clause_decay = 0.999` | binary clauses and locked clauses |
+| Glucose (`Solver::reduceDB`, `reduceDB_lt`) | `firstReduceDB = 2000` conflicts, then every `nbclausesbeforereduce` conflicts, incremented by `incReduceDB`/`specialIncReduceDB` | LBD first, then activity; roughly half removed | binary clauses, `LBD <= 2`, and the best 10% by activity; the `chanseok` mode keeps all clauses with `LBD <= coLBDBound` |
+| Kissat (`kissat_reduce`, `collect_reducibles`, `compute_tier_limits`) | conflict interval updated with `UPDATE_CONFLICT_LIMIT(reduce, ..., SQRT)` | smaller `size`, then smaller `glue` (LBD) | locked (`reason`) clauses, recently used `glue <= tier1`, very recently used `glue <= tier2` |
+
+Two Kissat details are directly relevant. A clause's `used` field is set to
+`MAX_USED` whenever the clause is used as a reason in analysis
+(`mark_clause_as_used`) and is decremented by one at every reduce
+(`collect_reducibles`), so it is a *recency* counter rather than a cumulative
+use count. The `tier1`/`tier2` glue limits are recomputed from the observed
+glue-usage distribution (`tier1relative = 50%`, `tier2relative = 90%`), so the
+"good glue" threshold adapts to the instance, and the deleted fraction grows
+with the number of reductions from about `reducelow = 50%` to
+`reducehigh = 90%`.
+
+`NogoodDb::uses` is cumulative and is never decayed, so it is not directly the
+Kissat `used` counter. The database statistics show that the most-used learned
+entries are short (3–18 literals, 220–386 uses, three of them 3-literal
+clauses) while the length histogram is dominated by long clauses (mean 32.6 on
+the deep benchmark), so a policy that protects short or recently-used entries
+is the most direct candidate.
+
+#### Candidate directions
+
+None of these is implemented. They are ordered by how much they change the
+per-assignment hot path.
+
+1. **Protected short-clause tier.** Keep the shortest entries (for example
+   `literals.len() <= 4`, or a `uses`-ranked top fraction) in a reserved share
+   of the capacity and evict only from the rest. The capacity is unchanged, so
+   the bucket length and the per-assignment cost stay where the capacity sweep
+   put them.
+2. **Recency-based eviction.** Give each entry a decayed use counter in the
+   style of the Kissat `used` field and evict the lowest counters instead of
+   the oldest half. The extra sort happens at reduce time, which is dominated
+   by the index rebuild.
+3. **Dynamic capacity.** Grow the capacity with reductions or search length,
+   subject to the maintenance budget above, instead of fixing it to the world
+   size. This changes the hot path and needs its own measurements.
+4. **Glue/LBD analogue.** `World::analyze` knows the decision level of every
+   literal of the learned clause, so the number of distinct levels is a natural
+   analogue of LBD. Ranking by it, and keeping low-glue entries permanently as
+   Glucose does, is the closest match to the reference solvers, but it needs a
+   new per-entry field and a promotion rule.
+
+The activity/LBD-based eviction mentioned above was tried and was slower on the
+small workloads, before the capacity became adaptive. Those workloads are
+exactly the ones whose automatic capacity is close to the old fixed default, so
+whether a cheaper tiered policy pays off on the large worlds, where the
+adaptive capacity made the database large enough to matter, is an open
+measurement question. Any change must keep the differential solution-set and
+solution-count tests of the nogood section, and must be measured on both the
+small and the large benchmark worlds.
 
 `NogoodStats` retains the useful instrumentation from these experiments:
 `queries`, `capped_queries`, `literals_total`, `rejected_long`, `used_learned`,
