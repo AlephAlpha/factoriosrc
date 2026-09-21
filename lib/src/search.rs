@@ -1327,6 +1327,12 @@ impl World {
     /// analysis falls back before popping — in which case the new entry
     /// starts fully matched; the chronological backtracking that follows
     /// unsets the cell and brings the matched counter back in sync.
+    ///
+    /// The LBD analogue of the entry is `1 +` the number of distinct decision
+    /// levels of the clause literals. The levels are all below the current
+    /// level (conflict analysis resolves current-level literals away), so the
+    /// 1-UIP carries the only current-level literal; the LBD is diagnostic
+    /// state for now, see [`NogoodStats`](crate::NogoodStats).
     fn learn_analysis_nogood(
         &mut self,
         uip: *const LifeCell,
@@ -1345,13 +1351,23 @@ impl World {
             }
         }
 
+        // Safety: the clause cells are in the same world as `self`.
+        self.lbd_scratch.clear();
+        for &lit in clause.iter() {
+            let level = unsafe { self.cell_level[self.cell_index(lit)] };
+            self.lbd_scratch.push(level);
+        }
+        self.lbd_scratch.sort_unstable();
+        self.lbd_scratch.dedup();
+        let lbd = (self.lbd_scratch.len() + 1) as u8;
+
         // Read the cell states through a copy of the cells pointer, so that
         // the callback does not borrow `self` while the database (a field of
         // `self`) is borrowed mutably.
         let cells = self.cells_ptr as *const LifeCell;
         let mut state_of = |i: u32| unsafe { (*cells.add(i as usize)).state() };
         self.nogood_db
-            .learn(literals.into_boxed_slice(), &mut state_of);
+            .learn(literals.into_boxed_slice(), lbd, &mut state_of);
     }
 
     /// Collect the known cells in the neighborhood descriptor of a cell.

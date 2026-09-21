@@ -24,8 +24,8 @@ same options.
 | Phase saving | Implemented, opt-in | Remembers the last real state of a cell and tries it first. Works with supported two-state and Generations rules. |
 | Lookahead | Implemented, opt-in | Probes both states of the next cell and chooses a polarity. Two-state rules only; it does not choose a different cell. |
 | Conflict analysis and backjumping | Implemented, opt-in | A 1-UIP-style analysis for local rule, symmetry, and learned-nogood conflicts. Two-state rules only. A protocol guard keeps enumeration free of repeated solutions. |
-| Exact-position nogood database | Implemented, opt-in | Learns from successful local conflict analysis and propagates learned forbidden patterns. It uses absolute cell indices, an oldest-half-evicting database whose capacity scales with the world size (`max(2048, 4 * cells)` by default, or an explicit `Config::nogood_capacity`), and is valid only in the current `World`. Two-state rules only. Clause minimization was investigated and reverted after a negative performance result; allowing long learned clauses was later found to be a large win. |
-| Quality-based nogood eviction or dynamic capacity | Not implemented | The live database still evicts the older half by insertion order, ignoring use counts, length, and recency, and the capacity is fixed by the world size. See [Eviction policy and capacity selection](#eviction-policy-and-capacity-selection). |
+| Exact-position nogood database | Implemented, opt-in | Learns from successful local conflict analysis and propagates learned forbidden patterns. It uses absolute cell indices, a recency-ranked database whose capacity scales with the world size (`max(2048, 4 * cells)` by default, or an explicit `Config::nogood_capacity`), and is valid only in the current `World`. Two-state rules only. Clause minimization was investigated and reverted after a negative performance result; allowing long learned clauses was later found to be a large win. |
+| Quality-based nogood eviction or dynamic capacity | Recency eviction implemented; quality tiers and dynamic capacity not implemented | `NogoodDb::reduce` evicts the worst half by last-use epoch, then by fewest uses, at the world-size capacity. A short or low-LBD protected tier and dynamic capacity remain unmeasured candidates. `NogoodStats` and `NogoodDb` record the first-use delay, the quality of learned and used entries, the evicted-use breakdown, and relearnings after eviction; the measurements are in [Measured retention snapshot](#measured-retention-snapshot-2026-09-20) and [Recency eviction A/B](#recency-eviction-ab-2026-09-20). See [Eviction policy and capacity selection](#eviction-policy-and-capacity-selection). |
 | VSIDS-style activity | Implemented, opt-in | Bumps the cells of recent conflicts and guesses the most active cell among a small window of the search-order chain. Changes the branching order only, so it works with both two-state and Generations rules. Not serialized. |
 | Translated or cross-size nogoods | Not implemented | The current database is not normalized to relative coordinates. |
 | Dynamic cell selection for lookahead | Not implemented | Lookahead only changes the state tried for the next cell. |
@@ -320,7 +320,7 @@ The current implementation limits are:
 
 | Limit | Current value | Purpose |
 | --- | ---: | --- |
-| Database capacity | `max(2048, 4 * cells)` entries, or `Config::nogood_capacity` | When full, the older half is evicted and the index is rebuilt. |
+| Database capacity | `max(2048, 4 * cells)` entries, or `Config::nogood_capacity` | When full, the worst half by the recency ranking is evicted and the index is rebuilt. |
 | Literals per nogood | `96` | Guards against pathological clause growth; the observed clauses stay below it. |
 | Candidates checked by one indexed query | `64` | Bounds work for a popular `(cell, state)` bucket. |
 
@@ -345,14 +345,15 @@ including the padding ring: `NogoodDb::with_world_size` uses
 constant as the world grows, because the number of distinct literals grows
 with the number of cells too, while letting learned patterns live long enough
 to be reused. `Config::nogood_capacity` overrides the automatic choice.
-Eviction is still the simple oldest-half policy; activity/LBD-based eviction
-policies were slower on the small workloads and were dropped, and a
+Eviction uses the recency ranking described in
+[Eviction policy and capacity selection](#eviction-policy-and-capacity-selection);
+the older simple oldest-half policy and the earlier activity/LBD-based
+experiments are recorded there. An activity/LBD-based eviction was slower on
+the small workloads before the capacity became adaptive and was dropped, and a
 Minisat-style antecedent-cone minimization was implemented, passed the
 differential correctness tests, and was removed because its per-conflict walk
 made both first-result and enumeration searches slower. The current
-implementation does not minimize learned nogoods. The eviction policy and the
-capacity formula are examined in
-[Eviction policy and capacity selection](#eviction-policy-and-capacity-selection).
+implementation does not minimize learned nogoods.
 
 The capacity effect was measured on 2026-09-18 with a release build on the
 same machine as the benchmark snapshot below, single runs, the default
@@ -408,16 +409,36 @@ counters touch more entries per assignment.
 
 ### Eviction policy and capacity selection
 
-This subsection records a research pass over the eviction policy. It is not an
-implemented experiment; the code still uses the oldest-half policy and the
-world-size capacity described above.
+This subsection records the research pass over the eviction policy and the
+resulting implementation. The capacity is still the world-size budget
+described below; `NogoodDb::reduce` now evicts the worst half by a recency
+ranking instead of the older half by insertion order.
 
-`NogoodDb::reduce` evicts the *older half* of `NogoodDb::entries`
-unconditionally: it drains the first `entries.len() / 2` insertion-ordered
-entries without looking at `uses`, `remaining`, or the literal count. The
-`uses` array only feeds the diagnostic `HALL_OF_FAME` record, so an entry that
-fired many times can still be discarded while a never-used newer entry is
-kept.
+#### The implemented recency eviction
+
+`NogoodDb::reduce` ranks every live entry by
+
+1. the database reduction epoch of its last use, where a fresh entry counts as
+   used at its learning epoch (`NogoodDb::last_used_epoch`),
+2. then by fewer cumulative `uses` first, and
+3. then by older id.
+
+The worst `entries.len() / 2` entries are evicted with
+`select_nth_unstable_by_key`; the id makes the sort key a total order, so the
+selected set is deterministic and the selection is linear in the database size
+before the index rebuild. An entry that fired during the current reduction
+interval survives, an entry that has not fired since is evicted, and a fresh
+entry gets one full interval to prove itself — the same grace period the
+oldest-half policy gave to the newest half. This is the Kissat `used`
+semantics adapted to the CA database. The capacity formula is unchanged, so
+the comparison isolates the eviction policy.
+
+The earlier design and its rationale are kept below as the research record.
+`NogoodDb::reduce` used to evict the *older half* of `NogoodDb::entries`
+unconditionally: it drained the first `entries.len() / 2` insertion-ordered
+entries without looking at `uses`, `remaining`, or the literal count, so an
+entry that fired many times could be discarded while a never-used newer entry
+was kept.
 
 Unlike a CDCL solver, the database does not need to protect *locked* entries.
 A learned clause that is currently the reason of an assignment is stored as
@@ -493,8 +514,9 @@ is the most direct candidate.
 
 #### Candidate directions
 
-None of these is implemented. They are ordered by how much they change the
-per-assignment hot path.
+This research list is kept as written. Only the recency policy (2) is
+implemented; the rest are not. The directions are ordered by how much they
+change the per-assignment hot path.
 
 1. **Protected short-clause tier.** Keep the shortest entries (for example
    `literals.len() <= 4`, or a `uses`-ranked top fraction) in a reserved share
@@ -504,7 +526,8 @@ per-assignment hot path.
 2. **Recency-based eviction.** Give each entry a decayed use counter in the
    style of the Kissat `used` field and evict the lowest counters instead of
    the oldest half. The extra sort happens at reduce time, which is dominated
-   by the index rebuild.
+   by the index rebuild. Implemented with the reduction epoch of the last use
+   as the counter; see [Recency eviction A/B](#recency-eviction-ab-2026-09-20).
 3. **Dynamic capacity.** Grow the capacity with reductions or search length,
    subject to the maintenance budget above, instead of fixing it to the world
    size. This changes the hot path and needs its own measurements.
@@ -514,23 +537,154 @@ per-assignment hot path.
    Glucose does, is the closest match to the reference solvers, but it needs a
    new per-entry field and a promotion rule.
 
-The activity/LBD-based eviction mentioned above was tried and was slower on the
-small workloads, before the capacity became adaptive. Those workloads are
-exactly the ones whose automatic capacity is close to the old fixed default, so
-whether a cheaper tiered policy pays off on the large worlds, where the
-adaptive capacity made the database large enough to matter, is an open
-measurement question. Any change must keep the differential solution-set and
-solution-count tests of the nogood section, and must be measured on both the
-small and the large benchmark worlds.
+#### Instrumentation for the retention question
+
+None of the candidate policies can be chosen from the existing counters alone.
+The database therefore records additional diagnostic state, all O(1) per
+learned entry, per use, and per reduction:
+
+- `NogoodStats::lbd_histogram` and `NogoodStats::used_lbd_histogram` are the
+  distributions of the LBD analogue at learn time and at first use.
+  `World::learn_analysis_nogood` computes the LBD from `World::cell_level` and
+  passes it to `NogoodDb::learn`, which stores it in the private `Nogood`
+  entry; it is diagnostic and never used by propagation or eviction.
+- `NogoodStats::used_length_histogram` is the length distribution at first
+  use, the right comparison for `length_histogram`: the raw use counts of the
+  all-time record are biased toward short entries, which are one literal short
+  of a match far more often, so only the learned-versus-used distributions
+  separate "useful" from "frequently triggerable".
+- `NogoodStats::reuse_distance_histogram` is the distribution of the number of
+  database reductions between learning an entry and its first use
+  (`NogoodDb::learned_epoch` against `NogoodStats::reductions`), binned by
+  powers of two. Together with `evicted_unused` it estimates the retention
+  need: how long an entry must survive to be reused at all.
+- `NogoodStats::evicted_unused` and `NogoodStats::evicted_uses_total` separate
+  the evicted entries that never pruned anything from the proven propagation
+  work that a reduction throws away.
+- `NogoodStats::relearned_evicted` counts the exact literal sets that were
+  evicted and later learned again. `NogoodDb` remembers recently evicted
+  hashes in a bounded set (`EVICTED_MEMORY_FACTOR` times the capacity, capped
+  by `EVICTED_MEMORY_LIMIT`); `evicted_memory_flushes` counts how often the
+  bound was hit, so the counter is a documented lower bound on the churn.
+- `NogoodStats::fire_attempts` counts `NogoodDb::fire_candidate` evaluations,
+  so `fired / fire_attempts` is the hit rate of propagation-level firing.
+- `NogoodStats::learned_ready` counts entries that already started fully
+  matched, the chronological-fallback case of the conflict analysis.
+
+`NogoodDb` also keeps `last_used_epoch` per entry, updated in the single
+`NogoodDb::note_entry_used` path that maintains `uses`, `used_learned`, the
+first-use histograms, and the reuse distance. It is the primary ranking key of
+the implemented recency eviction.
+
+#### Measured retention snapshot (2026-09-20)
+
+The counters above were measured on 2026-09-20 on the same development machine
+as the benchmark snapshots below, with a release build, single runs per
+command, and the first solution as the stopping condition (the instrumented
+working tree is commit `31a6183` plus the uncommitted instrumentation diff).
+The no-error runs use the default `new_state`; the `-n a` cases are marked.
+The step counts are deterministic and reproduce the earlier snapshots exactly
+(for example, the deep case is 26,178,710 steps at the automatic capacity
+both before and after the new counters), which confirms that the
+instrumentation does not change the search. Commands:
+
+- `factoriosrc-tui new --no-tui --format json -r B3/S23 100 10 4 -x 1 --nogood`
+  (automatic capacity, 19,584 entries) and the same with
+  `--nogood-capacity 32768`;
+- `factoriosrc-tui new --no-tui --format json -r B2n3/S23-q 30 9 4 -x 1 -n a --nogood`;
+- `factoriosrc-tui new --no-tui --format json -r B3/S23 26 8 4 -y 1 -n a --nogood`.
+
+| Case (capacity) | Steps | Wall | Learned | Used | Evicted unused | Relearned after eviction | First use in interval 0 / 1 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `B3/S23 100 10 4 -x 1` (19,584) | 26,178,710 | 401 s | 10,348,205 | 50.2% | 49.8% | 1.12% | 5,020,853 / 174,362 |
+| `B3/S23 100 10 4 -x 1` (32,768) | 16,045,721 | 314 s | 6,376,268 | 50.0% | 49.9% | 1.04% | 3,090,421 / 95,474 |
+| `B2n3/S23-q 30 9 4 -x 1 -n a` (5,632) | 2,161,350 | 17 s | 930,038 | 47.0% | 53.0% | 1.02% | 413,795 / 23,051 |
+| `B3/S23 26 8 4 -y 1 -n a` (4,480) | 476,438 | 3 s | 201,275 | 49.4% | 50.6% | 1.24% | 93,967 / 5,455 |
+
+*Used* and *Relearned after eviction* are shares of `learned`; *Evicted unused*
+is the share of evicted entries that had never been used
+(`evicted_unused / evicted`). *First use in interval 0 / 1* is the two
+non-empty bins of `reuse_distance_histogram`; every other bin is zero.
+
+The measurements answer the question the candidate list could not:
+
+- The first use of an entry always happens in the reduction interval in which
+  it was learned (about 97% of used entries) or in the immediately following
+  one; no entry is first used later. The previous oldest-half policy already
+  gave every entry enough life to be tried at least once, so an entry's
+  *first* use did not need a new protection rule. The lifetime after the
+  first use is what the policy controls.
+- About half of the learned entries are never used before they are evicted:
+  each reduction discards roughly half dead weight and half entries that had
+  been doing work. There is real space to reclaim.
+- `evicted_uses_total` is within a few percent of `fired + full_matches` on
+  every case, so the database eventually evicts essentially all of the
+  entries that were propagating, because `reduce` ignores `uses` and
+  `last_used_epoch`. Exact-set relearning after eviction is about 1%, so the
+  loss is not mainly re-derivation of the same absolute pattern; it is the
+  replacement of the working set by fresh, half-unused entries.
+- Quality predicts whether an entry is used at all, monotonically. On the
+  deep automatic-capacity run, the share of learned entries that were used at
+  least once falls from 95.0% at 1–8 literals to 17.5% at 65–96 literals, and
+  from 73.4% at LBD 1–4 to 14.9% at LBD 25+. This is a first-use probability
+  under a fixed, capacity-limited lifetime, not a measured step-count
+  benefit; the length-bound sweep above remains the evidence that long
+  clauses still carry pruning power.
+
+#### Recency eviction A/B (2026-09-20)
+
+The recency eviction replaced the oldest-half selection and was compared
+against it on the same machine, release build, single runs, first solution
+unless noted. The only difference between the two binaries is
+`NogoodDb::reduce`. Commands are those of the retention snapshot above, plus
+the exhaustive runs
+`factoriosrc-tui new --no-tui --format json -r B3/S23 W W 2 -n a --no-stop --nogood`
+for `W` in 5, 6, and 7.
+
+| Case | Old steps | New steps | Change | Old wall | New wall |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `B3/S23 100 10 4 -x 1` (19,584, first solution) | 26,178,710 | 20,286,918 | −22.5% | 401 s | 308 s |
+| `B3/S23 100 10 4 -x 1` (32,768, first solution) | 16,045,721 | 16,773,101 | +4.5% | 314 s | 329 s |
+| `B2n3/S23-q 30 9 4 -x 1 -n a` (5,632, first solution) | 2,161,350 | 2,061,555 | −4.6% | 17.3 s | 16.6 s |
+| `B3/S23 26 8 4 -y 1 -n a` (4,480, first solution) | 476,438 | 442,437 | −7.1% | ~3 s | ~3 s |
+| `B3/S23 64 64 1 -n a` (first solution) | 2,007 | 2,007 | 0 | 0.005 s | 0.007 s |
+| `B3/S23 20 20 2 -n r --seed 1 --no-stop` (10th solution) | 16,612 | 20,097 | +21.0% | 0.100 s | 0.104 s |
+| `B3/S23 6 6 2 -n a --no-stop` (exhaustion, 86 solutions) | 21,990 | 18,846 | −14.3% | — | — |
+| `B3/S23 7 7 2 -n a --no-stop` (exhaustion, 9,538 solutions) | 823,888 | 653,103 | −20.7% | — | — |
+
+The exhaustive rows are the strongest evidence: they count the work of
+enumerating every solution, so they cannot be explained by a lucky traversal
+path, and the solution counts are identical. The first-result deep case
+improves at the automatic capacity while the explicit 32,768 override
+regresses slightly; at that size the oldest-half policy's longer retention of
+rare, cold entries is worth more than the extra lifetime of the hot ones, and
+the automatic capacity is the default. At the default 19,584 entries the new
+policy reaches the wall time of the old policy at 32,768 (308 s against 314 s)
+with the smaller per-assignment cost. The `20 20 2 --seed 1` row regresses by
+21% in steps, but it is one seed of a tiny absolute cost (0.1 s to the tenth
+solution). The recency eviction therefore replaces the oldest-half policy as
+the default. A short or low-LBD protected tier remains the follow-up
+candidate, and dynamic capacity remains the least attractive direction
+because it raises the per-assignment cost that the capacity formula
+deliberately bounds.
+
+An earlier activity/LBD-based eviction was tried before the capacity became
+adaptive and was slower on the small workloads. Those workloads are not the
+same regime: the recency policy above was measured after the capacity became
+adaptive, it only changes which half is evicted, and it is a net win on the
+exhaustive metrics. Any further change to the ranking (for example a low-LBD
+tier) must keep the differential solution-set and solution-count tests and be
+measured on both the small and the large benchmark worlds.
 
 `NogoodStats` retains the useful instrumentation from these experiments:
 `queries`, `capped_queries`, `literals_total`, `rejected_long`, `used_learned`,
-`full_matches`, and `length_histogram`, in addition to learning, firing, hit,
-and eviction counts. The database also keeps a bounded all-time record of the
-most-used evicted entries, exposed with their coordinates by
-`World::nogood_top()`. `World::nogood_stats()` and `World::search_steps()`
-expose the counters in non-TUI JSON output. Non-TUI `--no-stop` also supports
-measuring the time to a later solution.
+`full_matches`, the histograms and eviction counters described above, in
+addition to learning, firing, hit, and eviction counts. The database also
+keeps a bounded all-time record of the most-used evicted entries, exposed with
+their coordinates by `World::nogood_top()`. `World::nogood_stats()` and
+`World::search_steps()` expose the counters in non-TUI JSON output, including
+the new histograms. Non-TUI `--no-stop` also supports measuring the time to a
+later solution.
 
 ### Propagation-level firing
 
@@ -577,6 +731,14 @@ The statistics separate the ways a learned entry can affect the search, so that
   `NogoodDb::top_entries()` also remembers the most-used evicted entries in
   `HALL_OF_FAME`, and `World::nogood_top(n)` reports the all-time most-used
   patterns as `NogoodTop` values with `(x, y, t, state)` coordinates.
+- `lbd_histogram`, `used_length_histogram`, `used_lbd_histogram`, and
+  `reuse_distance_histogram` describe the quality of what is learned and what
+  is actually used, and how long an entry must live to be used at all; see
+  [Instrumentation for the retention question](#instrumentation-for-the-retention-question).
+- `evicted_unused`, `evicted_uses_total`, `relearned_evicted`,
+  `evicted_memory_flushes`, `fire_attempts`, and `learned_ready` quantify the
+  cost of the eviction policy and the effectiveness of propagation-level
+  firing.
 
 `World::search_steps()` is a configuration-independent work counter: the number
 of internal search steps (a propagation round followed by a guess, a conflict,
@@ -591,7 +753,11 @@ pre-instrumentation release builds on the development machine showed no
 consistent difference (the 95% confidence interval of the paired wall-time
 difference over 20 pairs included zero); the added work is estimated below 0.5%
 of the runtime, while the wall-time noise of that machine is about an order of
-magnitude larger. The instrumentation is therefore kept.
+magnitude larger. The instrumentation is therefore kept. That A/B predates the
+retention counters; the LBD is computed once per learned clause from the
+analysis data, the first-use histograms are updated once per entry, and the
+recently-evicted hashes are inserted at a reduction that already hashes every
+kept entry, so the additions stay on the same events rather than adding scans.
 
 ### Worked example: a trailing-boundary nogood
 
@@ -885,9 +1051,11 @@ listed combinations). The `--activity` column was measured on 2026-09-16 on
 the same machine and with the same protocol. The `--nogood` column was
 re-measured on 2026-09-18 on the same machine after the database capacity
 became adaptive (`max(2048, 4 * cells)` entries, 96-literal bound); for
-enumeration, the value is the time to the 10th solution with `--no-stop`.
-Replace this table on a future rerun instead of appending another historical
-table.
+enumeration, the value is the time to the 10th solution with `--no-stop`. That
+column predates the recency eviction; the re-measured rows are in
+[Recency eviction A/B](#recency-eviction-ab-2026-09-20), and the whole column
+needs a rerun. Replace this table on a future rerun instead of appending
+another historical table.
 
 | Case | Plain | `--phase-saving` | `--lookahead` | `--backjump` | `--nogood` | `--activity` |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -912,7 +1080,8 @@ This second snapshot was measured on 2026-09-17 on the same machine, with the
 usage instrumentation of `World::search_steps()`, `NogoodStats`, and
 `World::nogood_top()` added to the working tree. The `--nogood` column and its
 database statistics below were re-measured on 2026-09-18 after the adaptive
-capacity became the default. The commands are
+capacity became the default, and they also predate the recency eviction; see
+[Recency eviction A/B](#recency-eviction-ab-2026-09-20). The commands are
 `factoriosrc-tui new --no-tui --format json [-–backjump|--nogood] ...` in a
 release build; `--nogood` also prints the database statistics. These are single
 runs, but the step counts of the fixed-`--new-state` searches are

@@ -40,13 +40,14 @@ fn run_no_tui(
             OutputFormat::Json => {
                 let rle = solved.then(|| world.rle(generation, true));
                 let nogood = world.nogood_stats().map(|stats| {
-                    let length_histogram = stats
-                        .length_histogram
-                        .iter()
-                        .enumerate()
-                        .filter(|&(_, &count)| count > 0)
-                        .map(|(length, &count)| serde_json::json!([length, count]))
-                        .collect::<Vec<_>>();
+                    let histogram = |values: &[u64]| {
+                        values
+                            .iter()
+                            .enumerate()
+                            .filter(|&(_, &count)| count > 0)
+                            .map(|(index, &count)| serde_json::json!([index, count]))
+                            .collect::<Vec<_>>()
+                    };
                     let top = world
                         .nogood_top(16)
                         .into_iter()
@@ -75,7 +76,17 @@ fn run_no_tui(
                         "rejected_long": stats.rejected_long,
                         "used_learned": stats.used_learned,
                         "full_matches": stats.full_matches,
-                        "length_histogram": length_histogram,
+                        "length_histogram": histogram(&stats.length_histogram),
+                        "lbd_histogram": histogram(&stats.lbd_histogram),
+                        "used_length_histogram": histogram(&stats.used_length_histogram),
+                        "used_lbd_histogram": histogram(&stats.used_lbd_histogram),
+                        "reuse_distance_histogram": histogram(&stats.reuse_distance_histogram),
+                        "evicted_unused": stats.evicted_unused,
+                        "evicted_uses_total": stats.evicted_uses_total,
+                        "relearned_evicted": stats.relearned_evicted,
+                        "evicted_memory_flushes": stats.evicted_memory_flushes,
+                        "fire_attempts": stats.fire_attempts,
+                        "learned_ready": stats.learned_ready,
                         "top": top,
                     })
                 });

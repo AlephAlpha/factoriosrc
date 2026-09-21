@@ -348,6 +348,12 @@ pub struct World {
     /// [`set_cell`](World::set_cell).
     pub(crate) nogood_scratch: Vec<u32>,
 
+    /// A scratch buffer for computing the LBD of a learned clause: the
+    /// distinct decision levels of its literals.
+    ///
+    /// It is always empty between calls to `learn_analysis_nogood`.
+    pub(crate) lbd_scratch: Vec<u32>,
+
     /// A fully matched nogood that has not been reported as a conflict yet.
     ///
     /// This is set by [`set_cell`](World::set_cell) when every literal of a
@@ -465,6 +471,7 @@ impl World {
                 NogoodDb::new(0)
             },
             nogood_scratch: Vec::new(),
+            lbd_scratch: Vec::new(),
             pending_nogood_confl: None,
             status: Status::NotStarted,
             search_steps: 0,
@@ -1393,12 +1400,13 @@ impl World {
         self.config.nogood.then(|| self.nogood_db.stats())
     }
 
-    /// Get the most-used stored nogoods, for diagnostics.
+    /// Get the most-used learned nogoods, for diagnostics.
     ///
     /// Return at most `n` entries ordered by descending use count. Entries
-    /// that have never been used are not returned, and entries evicted by a
-    /// database reduction are not retained, so this reports the current
-    /// database rather than every entry ever learned.
+    /// that have never been used are not returned. This merges the live
+    /// database with the bounded all-time record of the most-used evicted
+    /// entries, so an entry that was evicted after heavy use can still be
+    /// reported; entries that never made that record are not retained.
     ///
     /// The result is empty if [`Config::nogood`](Config::nogood) is disabled.
     pub fn nogood_top(&self, n: usize) -> Vec<NogoodTop> {
