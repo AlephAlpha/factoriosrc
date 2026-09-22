@@ -815,6 +815,19 @@ impl App {
                                 });
                                 ui.end_row();
 
+                                ui.label("nogood guard")
+                                    .on_hover_text(ConfigHelpField::NogoodGuard.short_help());
+                                if ui.checkbox(&mut config.nogood_guard, "").changed()
+                                    && config.nogood_guard
+                                {
+                                    // The guard enables the nogood database in
+                                    // `Config::check`, and the database enables
+                                    // backjumping; keep the form in sync.
+                                    config.nogood = true;
+                                    config.backjump = true;
+                                }
+                                ui.end_row();
+
                                 ui.label("activity")
                                     .on_hover_text(ConfigHelpField::Activity.short_help());
                                 ui.checkbox(&mut config.activity, "");

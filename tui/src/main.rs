@@ -87,9 +87,11 @@ fn run_no_tui(
                         "evicted_memory_flushes": stats.evicted_memory_flushes,
                         "fire_attempts": stats.fire_attempts,
                         "learned_ready": stats.learned_ready,
+                        "bucket_updates": stats.bucket_updates,
                         "top": top,
                     })
                 });
+                let search = world.search_stats();
                 let output = serde_json::json!({
                     "status": status.to_string(),
                     "generation": generation,
@@ -97,6 +99,22 @@ fn run_no_tui(
                     "elapsed_secs": start.elapsed().as_secs_f64(),
                     "steps": world.search_steps(),
                     "cells_checked": world.cells_checked(),
+                    "search_stats": {
+                        "steps": search.steps,
+                        "guesses": search.guesses,
+                        "cell_sets": search.cell_sets,
+                        "cell_unsets": search.cell_unsets,
+                        "check_affected_calls": search.check_affected_calls,
+                        "descriptor_checks": search.descriptor_checks,
+                        "backtracks": search.backtracks,
+                        "analyses": search.analyses,
+                        "analysis_resolutions": search.analysis_resolutions,
+                        "analysis_literals": search.analysis_literals,
+                        "analysis_scanned": search.analysis_scanned,
+                        "queued_cells": search.queued_cells,
+                        "guard_suspensions": search.guard_suspensions,
+                        "guard_resumes": search.guard_resumes,
+                    },
                     "nogood": nogood,
                     "rle": rle,
                 });

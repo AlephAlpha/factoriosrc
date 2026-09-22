@@ -27,4 +27,4 @@ pub use export::{DEFAULT_EXPORT_TEMPLATE, ExportError, ExportFields, Template, T
 pub use help::{ConfigHelpField, SearchControlHelpField};
 pub use nogood::{NogoodDb, NogoodStats};
 pub use rule::{CellState, RuleTable};
-pub use world::{Coord, Status, World};
+pub use world::{Coord, SearchStats, Status, World};

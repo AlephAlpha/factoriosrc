@@ -39,6 +39,8 @@ pub enum ConfigHelpField {
     Nogood,
     /// The nogood-capacity field.
     NogoodCapacity,
+    /// The nogood-guard field.
+    NogoodGuard,
     /// The activity field.
     Activity,
     /// The random-seed field.
@@ -72,6 +74,7 @@ impl ConfigHelpField {
             Self::Backjump,
             Self::Nogood,
             Self::NogoodCapacity,
+            Self::NogoodGuard,
             Self::Activity,
             Self::Seed,
             Self::KnownCells,
@@ -91,6 +94,7 @@ impl ConfigHelpField {
                 | Self::Backjump
                 | Self::Nogood
                 | Self::NogoodCapacity
+                | Self::NogoodGuard
                 | Self::Activity
         )
     }
@@ -115,6 +119,7 @@ impl ConfigHelpField {
             Self::Backjump => "Backjump",
             Self::Nogood => "Nogood",
             Self::NogoodCapacity => "Nogood capacity",
+            Self::NogoodGuard => "Nogood guard",
             Self::Activity => "Activity",
             Self::Seed => "Seed",
             Self::KnownCells => "Known cells",
@@ -159,6 +164,9 @@ impl ConfigHelpField {
             Self::NogoodCapacity => {
                 "Experimental: maximal number of learned patterns kept by the nogood database. Empty chooses a capacity scaled to the world size (4 entries per cell)."
             }
+            Self::NogoodGuard => {
+                "Experimental: bound the work of the nogood database and conflict analysis per search step, suspending and re-probing them when the work exceeds the budget. Enables Nogood. Only for 2-state rules."
+            }
             Self::Activity => {
                 "Experimental: favor cells that were recently involved in a conflict when guessing. Changes the branching order only."
             }
@@ -190,6 +198,7 @@ impl ConfigHelpField {
             Self::Backjump => "backjump",
             Self::Nogood => "nogood",
             Self::NogoodCapacity => "nogood_capacity",
+            Self::NogoodGuard => "nogood_guard",
             Self::Activity => "activity",
             Self::Seed => "seed",
             Self::KnownCells => "known_cells",
@@ -332,7 +341,7 @@ mod tests {
         let fields: Vec<_> = ConfigHelpField::iter().collect();
         assert!(fields.contains(&ConfigHelpField::RuleString));
         assert!(fields.contains(&ConfigHelpField::KnownCells));
-        assert_eq!(fields.len(), 21);
+        assert_eq!(fields.len(), 22);
     }
 
     #[test]
@@ -348,6 +357,7 @@ mod tests {
                 ConfigHelpField::Backjump,
                 ConfigHelpField::Nogood,
                 ConfigHelpField::NogoodCapacity,
+                ConfigHelpField::NogoodGuard,
                 ConfigHelpField::Activity,
             ]
         );

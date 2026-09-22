@@ -64,6 +64,7 @@ pub enum ConfigField {
     Backjump,
     Nogood,
     NogoodCapacity,
+    NogoodGuard,
     Activity,
     Seed,
     MaxPopulation,
@@ -102,6 +103,7 @@ impl ConfigField {
             Self::Backjump,
             Self::Nogood,
             Self::NogoodCapacity,
+            Self::NogoodGuard,
             Self::Activity,
             Self::Apply,
             Self::Cancel,
@@ -126,6 +128,7 @@ impl ConfigField {
             Self::Backjump => "Backjump",
             Self::Nogood => "Nogood",
             Self::NogoodCapacity => "Nogood cap",
+            Self::NogoodGuard => "Nogood guard",
             Self::Activity => "Activity",
             Self::Seed => "Seed",
             Self::MaxPopulation => "Max pop",
@@ -186,6 +189,7 @@ impl ConfigField {
                 | Self::Backjump
                 | Self::Nogood
                 | Self::NogoodCapacity
+                | Self::NogoodGuard
                 | Self::Activity
         )
     }
@@ -264,6 +268,7 @@ impl ConfigState {
             ConfigField::NogoodCapacity => {
                 cfg.nogood_capacity.map_or(String::new(), |c| c.to_string())
             }
+            ConfigField::NogoodGuard => cfg.nogood_guard.to_string(),
             ConfigField::Activity => cfg.activity.to_string(),
             ConfigField::Seed => cfg.seed.map_or(String::new(), |s| s.to_string()),
             ConfigField::MaxPopulation => {
@@ -477,6 +482,16 @@ impl ConfigState {
                 // The nogood database enables backjumping in `Config::check`;
                 // keep the form in sync when it is toggled on.
                 if self.working_config.nogood {
+                    self.working_config.backjump = true;
+                }
+            }
+            ConfigField::NogoodGuard => {
+                self.working_config.nogood_guard = !self.working_config.nogood_guard;
+                // The guard enables the nogood database in `Config::check`,
+                // and the database enables backjumping; keep the form in sync
+                // when it is toggled on.
+                if self.working_config.nogood_guard {
+                    self.working_config.nogood = true;
                     self.working_config.backjump = true;
                 }
             }
@@ -1823,8 +1838,12 @@ mod tests {
             position(ConfigField::Nogood) + 1
         );
         assert_eq!(
-            position(ConfigField::Activity),
+            position(ConfigField::NogoodGuard),
             position(ConfigField::NogoodCapacity) + 1
+        );
+        assert_eq!(
+            position(ConfigField::Activity),
+            position(ConfigField::NogoodGuard) + 1
         );
         // The group sits at the end of the form, right before the buttons, so
         // no other field can be mistaken for part of it.
@@ -1852,11 +1871,20 @@ mod tests {
                 position(ConfigField::Backjump),
                 position(ConfigField::Nogood),
                 position(ConfigField::NogoodCapacity),
+                position(ConfigField::NogoodGuard),
                 position(ConfigField::Activity),
             )
         };
-        let (export, phase_saving, lookahead, backjump, nogood, nogood_capacity, activity) =
-            field_positions;
+        let (
+            export,
+            phase_saving,
+            lookahead,
+            backjump,
+            nogood,
+            nogood_capacity,
+            nogood_guard,
+            activity,
+        ) = field_positions;
 
         // The caption (a blank line plus the title) is inserted between them:
         // two extra lines plus the field's own line.
@@ -1868,7 +1896,8 @@ mod tests {
         assert_eq!(before[backjump], before[lookahead] + 1);
         assert_eq!(before[nogood], before[backjump] + 1);
         assert_eq!(before[nogood_capacity], before[nogood] + 1);
-        assert_eq!(before[activity], before[nogood_capacity] + 1);
+        assert_eq!(before[nogood_guard], before[nogood_capacity] + 1);
+        assert_eq!(before[activity], before[nogood_guard] + 1);
 
         // No caption appears when the experimental fields are removed.
         if let Some(state) = app.config_state.as_mut() {

@@ -145,6 +145,176 @@ pub enum Confl {
     Global,
 }
 
+/// Work counters of the search, for cost profiling and diagnostics.
+///
+/// The counters are diagnostic: they never affect the search, and they are
+/// accumulated across calls to [`search`](World::search). They are not
+/// serialized, like the other heuristic state.
+///
+/// The counters are coarse operation counts rather than times. They exist so
+/// that the relative cost of the experimental machinery (conflict analysis,
+/// nogood maintenance) and the baseline propagation can be compared on a
+/// workload, and so that a cost guard can bound the machinery from inside the
+/// search.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SearchStats {
+    /// The number of internal search steps.
+    ///
+    /// One step is one call to the internal `step`: a propagation round
+    /// followed by either a guess, a conflict, or a backtrack. This is the
+    /// same counter as [`World::search_steps`], and it is a finer-grained
+    /// work measure than [`cells_checked`](World::cells_checked), which is
+    /// only the current stack depth.
+    pub steps: u64,
+
+    /// The number of cells assigned by a guess, excluding lookahead probes.
+    pub guesses: u64,
+
+    /// The number of cells assigned, including known cells and probes.
+    pub cell_sets: u64,
+
+    /// The number of cells unset.
+    pub cell_unsets: u64,
+
+    /// The number of cells processed by `check_affected`, the per-cell step
+    /// of a propagation round.
+    ///
+    /// A cell is processed once per propagation round that covers its stack
+    /// position, so this counts the work of the propagation queue, including
+    /// the cells that are re-checked after a backjump.
+    pub check_affected_calls: u64,
+
+    /// The number of neighborhood descriptors checked.
+    ///
+    /// Each processed cell checks the descriptors of itself, its predecessor,
+    /// and its neighbors, so this is the dominant baseline propagation work.
+    pub descriptor_checks: u64,
+
+    /// The number of chronological backtracks.
+    pub backtracks: u64,
+
+    /// The number of conflicts that entered the conflict analysis.
+    pub analyses: u64,
+
+    /// The number of literals resolved during conflict analysis.
+    pub analysis_resolutions: u64,
+
+    /// The number of antecedent literals recovered during conflict analysis.
+    pub analysis_literals: u64,
+
+    /// The number of neighborhood cells scanned to recover those literals.
+    ///
+    /// A descriptor antecedent scans the whole neighborhood of its source
+    /// cell, so this is the work measure of the conflict analysis itself,
+    /// independent of how many literals it finds.
+    pub analysis_scanned: u64,
+
+    /// The number of queued cells at the start of each propagation round,
+    /// summed over the rounds.
+    ///
+    /// This is the size of the suffix of the stack that a propagation round
+    /// processes. A backjump can leave the queue position far below the top
+    /// of the stack, which makes this the work measure that catches the
+    /// expensive re-checks after a deep backjump.
+    pub queued_cells: u64,
+
+    /// The number of times the cost guard suspended the machinery.
+    pub guard_suspensions: u64,
+
+    /// The number of times the cost guard re-enabled the machinery.
+    pub guard_resumes: u64,
+}
+
+/// The number of search steps between cost-guard budget evaluations.
+///
+/// The interval is short so that a re-probe of a suspended machinery costs
+/// only a few hundred expensive steps; the budget is checked cumulatively, so
+/// a pathological regime suspends again almost immediately.
+const GUARD_INTERVAL: u64 = 1024;
+
+/// The base suspension length of the cost guard, in search steps.
+///
+/// A suspended machinery is re-probed after this many steps, doubled for
+/// each consecutive suspension; see [`Guard`].
+const GUARD_SUSPENSION: u64 = 1 << 18;
+
+/// The machinery work budget per search step.
+///
+/// The machinery work counts the propagation re-checks after a backjump
+/// ([`SearchStats::queued_cells`]), the descriptor cells scanned by conflict
+/// analysis ([`SearchStats::analysis_scanned`]), and the index bucket updates
+/// of the nogood database (`NogoodStats::bucket_updates`). The plain search
+/// does about one queued cell per step, so a budget of a few hundred
+/// operations per step is well above the baseline but far below the
+/// pathological regimes: about 1,100 on the deep Life benchmark and 34,000 on
+/// the factorio rule.
+const GUARD_BUDGET: u64 = 512;
+
+/// The maximal backoff exponent of the cost guard.
+///
+/// After a suspension, the machinery is re-probed after `suspension << n`
+/// steps, where `n` is the number of consecutive suspensions, capped at this
+/// value.
+pub const GUARD_MAX_BACKOFF: u32 = 6;
+
+/// The cost guard of the experimental machinery.
+///
+/// The guard bounds the work that conflict analysis and the nogood database
+/// spend relative to the search itself. It measures the machinery work over
+/// the last [`GUARD_INTERVAL`] search steps and suspends the machinery when
+/// the work exceeds [`GUARD_BUDGET`] per step, so a regime where the
+/// machinery does not pay off falls back to the plain chronological search
+/// instead of running much slower. Suspended machinery is re-probed after an
+/// exponentially growing cooldown, so the guard can re-enable it when the
+/// regime changes.
+///
+/// The guard is opt-in via
+/// [`Config::nogood_guard`](crate::Config::nogood_guard); without it the
+/// machinery always stays active.
+///
+/// The budget is checked frequently and cumulatively rather than at the end
+/// of a long window: the pathological regimes spend hundreds of machinery
+/// operations per step, so a long probe would itself be the cost the guard
+/// is meant to bound. A search that finishes before the first evaluation
+/// keeps the full machinery.
+///
+/// The guard is deterministic: its decisions depend only on the work
+/// counters, not on wall time. It is heuristic state and is not serialized.
+#[derive(Debug, Clone, Copy)]
+pub struct Guard {
+    /// Whether the machinery is currently active.
+    pub(crate) active: bool,
+    /// The search step of the last budget evaluation.
+    pub(crate) check_step: u64,
+    /// The machinery work at the last budget evaluation.
+    pub(crate) check_work: u64,
+    /// The search step at which a suspended machinery may be re-probed.
+    pub(crate) resume_step: u64,
+    /// The number of consecutive suspensions, used for the backoff.
+    pub(crate) suspensions: u32,
+    /// The machinery work budget per search step.
+    pub(crate) budget: u64,
+    /// The number of search steps between budget evaluations.
+    pub(crate) interval: u64,
+    /// The base suspension length, in search steps.
+    pub(crate) suspension: u64,
+}
+
+impl Default for Guard {
+    fn default() -> Self {
+        Self {
+            active: true,
+            check_step: 0,
+            check_work: 0,
+            resume_step: 0,
+            suspensions: 0,
+            budget: GUARD_BUDGET,
+            interval: GUARD_INTERVAL,
+            suspension: GUARD_SUSPENSION,
+        }
+    }
+}
+
 /// The main struct of the search algorithm.
 ///
 /// # Example
@@ -364,16 +534,17 @@ pub struct World {
     /// The search status.
     pub(crate) status: Status,
 
-    /// The total number of search steps performed by
-    /// [`search`](World::search) on this world.
+    /// The work counters of the search; see [`SearchStats`].
     ///
-    /// One step is one call to the internal `step`: a propagation round
-    /// followed by either a guess, a conflict, or a backtrack. This is a
-    /// finer-grained work counter than [`cells_checked`](World::cells_checked),
-    /// which is the current stack depth. The counter accumulates across calls
-    /// to [`search`](World::search), so it measures the work to the current
-    /// point, not only the last call.
-    pub(crate) search_steps: u64,
+    /// The counters accumulate across calls to [`search`](World::search) and
+    /// are diagnostic: they never affect the search and are not serialized.
+    pub(crate) search_stats: SearchStats,
+
+    /// The cost guard of the experimental machinery; see [`Guard`].
+    ///
+    /// The guard is heuristic state: it is not serialized, and a loaded world
+    /// starts with the machinery active.
+    pub(crate) guard: Guard,
 }
 
 impl Drop for World {
@@ -474,7 +645,8 @@ impl World {
             lbd_scratch: Vec::new(),
             pending_nogood_confl: None,
             status: Status::NotStarted,
-            search_steps: 0,
+            search_stats: SearchStats::default(),
+            guard: Guard::default(),
         };
         world.init(&rule_symmetry)?;
 
@@ -1083,6 +1255,7 @@ impl World {
         decision: bool,
     ) {
         debug_assert!(cell.state().is_none());
+        self.search_stats.cell_sets += 1;
         cell.state.set(Some(state));
 
         // Update the neighborhood descriptor of the cell, its neighbors and predecessor.
@@ -1172,7 +1345,7 @@ impl World {
         // The assignments of a lookahead probe are temporary, so the probes
         // do not touch the counters; this keeps them in sync with the real
         // trail.
-        if self.config.nogood && !self.in_probe {
+        if self.config.nogood && !self.in_probe && self.guard.active {
             let index = unsafe { self.cell_index(cell) } as u32;
             unsafe { self.nogood_after_set(index, state) };
         }
@@ -1252,6 +1425,7 @@ impl World {
     /// Otherwise the behavior is undefined.
     pub(crate) unsafe fn unset_cell(&mut self, cell: &LifeCell) {
         debug_assert!(cell.state().is_some());
+        self.search_stats.cell_unsets += 1;
         let state = cell.state().unwrap();
         cell.state.set(None);
 
@@ -1296,7 +1470,7 @@ impl World {
 
         // Update the matched-literal counters of the nogood database. As in
         // [`set_cell`](World::set_cell), lookahead probes do not touch them.
-        if self.config.nogood && !self.in_probe {
+        if self.config.nogood && !self.in_probe && self.guard.active {
             let index = unsafe { self.cell_index(cell) } as u32;
             self.nogood_db.on_unset(index, state);
         }
@@ -1389,7 +1563,17 @@ impl World {
     /// is the current stack depth.
     #[inline]
     pub const fn search_steps(&self) -> u64 {
-        self.search_steps
+        self.search_stats.steps
+    }
+
+    /// Get the work counters of the search.
+    ///
+    /// The counters are diagnostic and never affect the search; see
+    /// [`SearchStats`]. They accumulate across calls to
+    /// [`search`](World::search) and are not serialized.
+    #[inline]
+    pub const fn search_stats(&self) -> &SearchStats {
+        &self.search_stats
     }
 
     /// Get the statistics of the nogood database.
@@ -3268,6 +3452,61 @@ mod test {
         let stats = world.nogood_stats().expect("nogood is enabled");
         assert!(stats.learned > 0, "no nogoods were learned");
         assert!(stats.fired > 0, "no nogood ever fired during propagation");
+    }
+
+    #[test]
+    fn test_guard_suspension_preserves_solutions() {
+        // Enumerate with the guard enabled and a tiny budget, so that the
+        // machinery is suspended and re-probed many times; the solution set
+        // must match the search with the machinery always active.
+        fn guarded_solution_set(config: &Config) -> (std::collections::BTreeSet<String>, u64, u64) {
+            let mut world = World::new(config.clone()).unwrap();
+            world.guard.budget = 0;
+            world.guard.interval = 1;
+            world.guard.suspension = 4;
+            let mut set = std::collections::BTreeSet::new();
+            while world.search(None) == Status::Solved {
+                set.insert(world.rle(0, true));
+            }
+            (
+                set,
+                world.search_stats().guard_suspensions,
+                world.search_stats().guard_resumes,
+            )
+        }
+
+        let mut total_resumes = 0;
+        for config in [
+            Config::new("B3/S23", 3, 3, 2),
+            Config::new("B3/S23", 4, 4, 2),
+            Config::new("B2a/S12", 3, 3, 1),
+            Config::new("B026/S1", 3, 3, 2),
+            Config::new("R3,C2,S2,B3,N+", 3, 3, 1).with_symmetry(Symmetry::D2H),
+        ] {
+            let config = config.with_nogood_guard();
+            let (guarded, suspensions, resumes) = guarded_solution_set(&config);
+            total_resumes += resumes;
+            assert!(suspensions > 0, "the guard never suspended for {config:?}");
+            assert_eq!(
+                solution_set(&config),
+                guarded,
+                "the cost guard changes the solution set for {config:?}"
+            );
+        }
+        assert!(total_resumes > 0, "the guard never resumed");
+    }
+
+    #[test]
+    fn test_guard_disabled_by_default() {
+        // With the opt-in flag off, the guard never suspends, even with a
+        // forced zero budget: the machinery always stays active.
+        let mut world = World::new(Config::new("B3/S23", 4, 4, 2).with_nogood()).unwrap();
+        world.guard.budget = 0;
+        world.guard.interval = 1;
+        world.guard.suspension = 4;
+        while world.search(None) == Status::Solved {}
+        assert_eq!(world.search_stats().guard_suspensions, 0);
+        assert_eq!(world.search_stats().guard_resumes, 0);
     }
 
     #[test]

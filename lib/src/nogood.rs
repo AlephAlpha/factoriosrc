@@ -312,6 +312,17 @@ pub struct NogoodStats {
     /// blocked counts as an attempt but not as a firing.
     pub fire_attempts: u64,
 
+    /// The number of index bucket entries visited by the incremental counter
+    /// maintenance of [`on_set`](NogoodDb::on_set) and
+    /// [`on_unset`](NogoodDb::on_unset).
+    ///
+    /// Every real cell assignment walks the bucket of its `(cell, state)`
+    /// literal and updates one counter per entry, so this is the dominant
+    /// maintenance cost of the database. It grows with the database size and
+    /// the average clause length, and it is the work measure a capacity
+    /// policy should bound.
+    pub bucket_updates: u64,
+
     /// The number of stored entries that were already fully matched by the
     /// current partial assignment when they were learned.
     ///
@@ -348,6 +359,7 @@ impl Default for NogoodStats {
             evicted_memory_flushes: 0,
             fire_attempts: 0,
             learned_ready: 0,
+            bucket_updates: 0,
         }
     }
 }
@@ -460,6 +472,16 @@ pub struct NogoodDb {
     /// Zero disables the database entirely: nothing is learned or queried.
     capacity: usize,
 
+    /// Whether the database is currently active.
+    ///
+    /// A suspended database keeps its entries and statistics but does not
+    /// learn, does not update the unmatched-literal counters, and does not
+    /// answer queries. The cost guard of the search suspends it when the
+    /// maintenance work per search step exceeds its budget, and
+    /// [`resync`](NogoodDb::resync) rebuilds the counters before it is
+    /// re-enabled.
+    active: bool,
+
     /// The statistics of the database.
     stats: NogoodStats,
 }
@@ -487,6 +509,7 @@ impl NogoodDb {
             index: LiteralMap::default(),
             hashes: LiteralSet::default(),
             capacity,
+            active: true,
             stats: NogoodStats::default(),
         }
     }
@@ -515,6 +538,48 @@ impl NogoodDb {
         self.capacity > 0
     }
 
+    /// Whether the database is currently active.
+    ///
+    /// A suspended database keeps its entries but does not learn, does not
+    /// maintain the counters, and does not answer queries; see
+    /// [`set_active`](NogoodDb::set_active).
+    #[inline]
+    pub const fn is_active(&self) -> bool {
+        self.active
+    }
+
+    /// Suspend or re-enable the database.
+    ///
+    /// The cost guard of the search suspends the database when the
+    /// maintenance work per search step exceeds its budget. While the
+    /// database is suspended, the unmatched-literal counters are not
+    /// updated, so [`resync`](NogoodDb::resync) must be called before it is
+    /// re-enabled.
+    #[inline]
+    pub(crate) const fn set_active(&mut self, active: bool) {
+        self.active = active;
+    }
+
+    /// Rebuild the unmatched-literal counters from the world state.
+    ///
+    /// This is called when the database is re-enabled after a suspension:
+    /// the counters were not maintained while it was suspended, so they must
+    /// be recomputed before propagation resumes. The entries, the index, the
+    /// epoch arrays, and the statistics are unchanged.
+    pub(crate) fn resync<F>(&mut self, state_of: &mut F)
+    where
+        F: FnMut(u32) -> Option<CellState>,
+    {
+        for (id, entry) in self.entries.iter().enumerate() {
+            let matched = entry
+                .literals
+                .iter()
+                .filter(|&&(cell, state)| state_of(cell) == Some(state))
+                .count() as u32;
+            self.remaining[id] = entry.literals.len() as u32 - matched;
+        }
+    }
+
     /// Learn a nogood.
     ///
     /// The literals are (cell index, state) pairs. The literals are stored
@@ -534,7 +599,7 @@ impl NogoodDb {
     where
         F: FnMut(u32) -> Option<CellState>,
     {
-        if !self.is_enabled() {
+        if !self.is_enabled() || !self.active {
             return;
         }
 
@@ -739,9 +804,14 @@ impl NogoodDb {
     /// The ids are read from the index while only the `remaining` field is
     /// mutated, which is sound because the two fields never alias.
     pub fn on_set(&mut self, cell: u32, state: CellState, out: &mut Vec<u32>) -> Option<u32> {
+        if !self.active {
+            return None;
+        }
+
         let mut full_match = None;
 
         if let Some(ids) = self.index.get(&literal_key(cell, state)) {
+            self.stats.bucket_updates += ids.len() as u64;
             for &id in ids.iter() {
                 let remaining = &mut self.remaining[id as usize];
                 debug_assert!(*remaining > 0);
@@ -767,7 +837,12 @@ impl NogoodDb {
 
     /// Update the counters when a cell is unset from a state.
     pub fn on_unset(&mut self, cell: u32, state: CellState) {
+        if !self.active {
+            return;
+        }
+
         if let Some(ids) = self.index.get(&literal_key(cell, state)) {
+            self.stats.bucket_updates += ids.len() as u64;
             for &id in ids.iter() {
                 let remaining = &mut self.remaining[id as usize];
                 debug_assert!(*remaining < self.entries[id as usize].literals.len() as u32);
@@ -788,6 +863,10 @@ impl NogoodDb {
     where
         F: FnMut(u32) -> Option<CellState>,
     {
+        if !self.active {
+            return None;
+        }
+
         self.stats.fire_attempts += 1;
 
         if *self.remaining.get(id as usize)? != 1 {
@@ -830,6 +909,10 @@ impl NogoodDb {
     where
         F: FnMut(u32) -> Option<CellState>,
     {
+        if !self.active {
+            return false;
+        }
+
         self.entries.get(id as usize).is_some_and(|entry| {
             entry
                 .literals
@@ -888,6 +971,10 @@ impl NogoodDb {
     where
         F: FnMut(u32) -> Option<CellState>,
     {
+        if !self.active {
+            return None;
+        }
+
         let ids = self.index.get(&literal_key(cell, state))?;
 
         self.stats.queries += 1;
@@ -1030,6 +1117,7 @@ impl NogoodDb {
         self.hall_of_fame.clear();
         self.index.clear();
         self.hashes.clear();
+        self.active = true;
     }
 
     /// The number of stored nogoods.

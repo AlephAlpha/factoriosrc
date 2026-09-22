@@ -363,6 +363,27 @@ pub struct Config {
     #[cfg_attr(feature = "serde", serde(default))]
     pub nogood_capacity: Option<usize>,
 
+    /// Whether to bound the work of the nogood database and conflict
+    /// analysis at run time.
+    ///
+    /// When this is `true`, the search measures the machinery work per search
+    /// step: the propagation re-checks after a backjump, the descriptor cells
+    /// scanned by conflict analysis, and the index bucket updates of the
+    /// nogood database. When the work exceeds an internal budget, the
+    /// machinery is suspended — conflicts backtrack chronologically and the
+    /// database neither propagates nor learns — and re-probed after an
+    /// exponentially growing cooldown. This keeps a regime where the
+    /// machinery does not pay off from running much slower than the plain
+    /// search, at the cost of giving up the pruning it would provide.
+    ///
+    /// This enables [`nogood`](Config::nogood) implicitly, and therefore
+    /// [`backjump`](Config::backjump) as well, and is restricted to 2-state
+    /// rules like they are. The guard is deterministic and is not serialized.
+    /// The default is `false`; without it the machinery always stays active.
+    #[cfg_attr(feature = "clap", arg(long, help_heading = "Experimental"))]
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub nogood_guard: bool,
+
     /// Whether to choose the next cell to guess by its conflict activity.
     ///
     /// When this is `true`, the search remembers how often each cell took part
@@ -441,6 +462,7 @@ impl Config {
             backjump: false,
             nogood: false,
             nogood_capacity: None,
+            nogood_guard: false,
             activity: false,
             seed: None,
             known_cells: Vec::new(),
@@ -560,6 +582,18 @@ impl Config {
     #[must_use]
     pub const fn with_nogood_capacity(mut self, capacity: usize) -> Self {
         self.nogood_capacity = Some(capacity);
+        self
+    }
+
+    /// Enable the run-time cost guard of the nogood machinery.
+    ///
+    /// This enables [`nogood`](Config::nogood) implicitly.
+    ///
+    /// See [`nogood_guard`](Config::nogood_guard) for more details.
+    #[inline]
+    #[must_use]
+    pub const fn with_nogood_guard(mut self) -> Self {
+        self.nogood_guard = true;
         self
     }
 
@@ -691,6 +725,13 @@ impl Config {
     pub fn check(&mut self) -> Result<(), ConfigError> {
         let rule = self.parse_rule()?;
         check_rule_symmetry(&rule, self.symmetry, self.transformation)?;
+
+        // The cost guard bounds the machinery of the nogood database and the
+        // conflict analysis, so it enables the database implicitly and shares
+        // its restrictions.
+        if self.nogood_guard {
+            self.nogood = true;
+        }
 
         // The nogood database builds on the conflict analysis of backjumping,
         // so it is restricted to the same rules and enables it implicitly.
@@ -985,6 +1026,20 @@ mod tests {
         assert!(matches!(
             check_rule_symmetry(&only_nw, Symmetry::C1, Transformation::S0),
             Err(ConfigError::TransformationIncompatibleWithRule)
+        ));
+    }
+
+    #[test]
+    fn test_nogood_guard_enables_nogood_and_backjump() {
+        let mut config = Config::new("B3/S23", 3, 3, 1).with_nogood_guard();
+        config.check().unwrap();
+        assert!(config.nogood, "the guard enables the nogood database");
+        assert!(config.backjump, "the nogood database enables backjumping");
+
+        // The guard shares the nogood restrictions.
+        assert!(matches!(
+            Config::new("B3/S23/3", 3, 3, 1).with_nogood_guard().check(),
+            Err(ConfigError::NogoodUnsupported)
         ));
     }
 

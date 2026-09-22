@@ -12,11 +12,11 @@ and what remains worth exploring.
 
 ## Current Status
 
-The public configuration is defined by `Config` in `lib/src/config.rs`. The six
-experimental switches are available from the CLI as
+The public configuration is defined by `Config` in `lib/src/config.rs`. The
+seven experimental switches are available from the CLI as
 `--phase-saving`, `--lookahead`, `--backjump`, `--nogood`,
-`--nogood-capacity`, and `--activity`; the TUI and egui frontends expose the
-same options.
+`--nogood-capacity`, `--nogood-guard`, and `--activity`; the TUI and egui
+frontends expose the same options.
 
 | Technique | Current status | Scope and important limits |
 | --- | --- | --- |
@@ -26,16 +26,18 @@ same options.
 | Conflict analysis and backjumping | Implemented, opt-in | A 1-UIP-style analysis for local rule, symmetry, and learned-nogood conflicts. Two-state rules only. A protocol guard keeps enumeration free of repeated solutions. |
 | Exact-position nogood database | Implemented, opt-in | Learns from successful local conflict analysis and propagates learned forbidden patterns. It uses absolute cell indices, a recency-ranked database whose capacity scales with the world size (`max(2048, 4 * cells)` by default, or an explicit `Config::nogood_capacity`), and is valid only in the current `World`. Two-state rules only. Clause minimization was investigated and reverted after a negative performance result; allowing long learned clauses was later found to be a large win. |
 | Quality-based nogood eviction or dynamic capacity | Recency eviction implemented; quality tiers and dynamic capacity not implemented | `NogoodDb::reduce` evicts the worst half by last-use epoch, then by fewest uses, at the world-size capacity. A short or low-LBD protected tier and dynamic capacity remain unmeasured candidates. `NogoodStats` and `NogoodDb` record the first-use delay, the quality of learned and used entries, the evicted-use breakdown, and relearnings after eviction; the measurements are in [Measured retention snapshot](#measured-retention-snapshot-2026-09-20) and [Recency eviction A/B](#recency-eviction-ab-2026-09-20). See [Eviction policy and capacity selection](#eviction-policy-and-capacity-selection). |
+| Machinery cost guard | Implemented, opt-in (`--nogood-guard`) | Bounds the work of conflict analysis and nogood maintenance per search step; suspends them when the work exceeds the budget and re-probes with backoff, so a regime where the machinery does not pay off falls back to the plain search. Enables `--nogood` (and therefore `--backjump`) implicitly. Deterministic and not serialized. Off by default during the experimental phase, so that it does not mask `--nogood` optimizations. See [Cost Guard for the Experimental Machinery](#cost-guard-for-the-experimental-machinery). |
 | VSIDS-style activity | Implemented, opt-in | Bumps the cells of recent conflicts and guesses the most active cell among a small window of the search-order chain. Changes the branching order only, so it works with both two-state and Generations rules. Not serialized. |
 | Translated or cross-size nogoods | Not implemented | The current database is not normalized to relative coordinates. |
 | Dynamic cell selection for lookahead | Not implemented | Lookahead only changes the state tried for the next cell. |
 | Restarts, component caching, and CNF encoding | Not implemented | These remain possible future experiments, not current search modes. |
 
-`--nogood` enables `backjump` implicitly in `Config::check()`. `lookahead`,
-`backjump`, and `nogood` are rejected for Generations rules because their
-current reasoning is defined only for the two-state layer. Phase saving and
-activity have no such restriction: activity only reorders the branching cell,
-which is meaningful for every rule family.
+`--nogood` enables `backjump` implicitly in `Config::check()`, and
+`--nogood-guard` enables `nogood` (and therefore `backjump`) implicitly.
+`lookahead`, `backjump`, and `nogood` are rejected for Generations rules
+because their current reasoning is defined only for the two-state layer.
+Phase saving and activity have no such restriction: activity only reorders
+the branching cell, which is meaningful for every rule family.
 
 The status terms in this document have a precise meaning:
 
@@ -281,15 +283,18 @@ backjumping, including:
 - `reduce_max_population`;
 - the backjump trail metadata invariant, including the flip-carrier lockstep;
 - the enumeration protocol: solution counts must match the plain search
-  (`B3/S23 3 3 2` reports one solution with backjumping or nogood); and
-- combinations with lookahead and the nogood database.
+  (`B3/S23 3 3 2` reports one solution with backjumping or nogood);
+- combinations with lookahead and the nogood database; and
+- suspension and resumption of the whole machinery by the cost guard with a
+  forced zero budget.
 
 The comparison oracle is both the set and the number of serialized solutions.
 These tests establish the behavior of the checked configurations; they are not
 an exhaustive configuration matrix and they do not establish a performance
 improvement. Backjumping remains opt-in because conflict analysis can cost
 more than chronological search when learned information is not retained across
-backtracking.
+backtracking. The [cost guard](#cost-guard-for-the-experimental-machinery)
+bounds that cost at run time.
 
 ## Exact-Position Nogood Learning
 
@@ -736,9 +741,18 @@ The statistics separate the ways a learned entry can affect the search, so that
   is actually used, and how long an entry must live to be used at all; see
   [Instrumentation for the retention question](#instrumentation-for-the-retention-question).
 - `evicted_unused`, `evicted_uses_total`, `relearned_evicted`,
-  `evicted_memory_flushes`, `fire_attempts`, and `learned_ready` quantify the
-  cost of the eviction policy and the effectiveness of propagation-level
-  firing.
+  `evicted_memory_flushes`, `fire_attempts`, `learned_ready`, and
+  `bucket_updates` quantify the cost of the eviction policy, the maintenance
+  work of the counters, and the effectiveness of propagation-level firing.
+
+`World::search_stats()` reports the search work counters separately from the
+database statistics: `steps`, `guesses`, `cell_sets`, `cell_unsets`,
+`check_affected_calls`, `descriptor_checks`, `backtracks`, `analyses`,
+`analysis_resolutions`, `analysis_literals`, `analysis_scanned`,
+`queued_cells`, and the guard counters `guard_suspensions` and
+`guard_resumes`. They are the basis of the
+[cost guard](#cost-guard-for-the-experimental-machinery) and are included in
+the non-TUI JSON output.
 
 `World::search_steps()` is a configuration-independent work counter: the number
 of internal search steps (a propagation round followed by a guess, a conflict,
@@ -868,6 +882,156 @@ max-population, `reduce_max_population`, save/load, world growth, and feature
 combinations. These tests establish the checked configurations, not the
 performance of the database or the safety of a future translated mode.
 
+## Cost Guard for the Experimental Machinery
+
+Conflict analysis, the backjump re-check, and the nogood database are
+experimental machinery whose cost is not bounded by the search itself. On
+some rules the machinery costs far more than the pruning it provides, and
+without a bound the feature can be orders of magnitude slower than the plain
+search. This section records the measured cost profile and the guard that
+bounds it.
+
+### Measured cost profile
+
+`SearchStats` counts the search work: the queued cells of each propagation
+round (`queued_cells`), the descriptors checked (`descriptor_checks`), and the
+work of conflict analysis (`analyses`, `analysis_resolutions`,
+`analysis_scanned`). `NogoodStats::bucket_updates` counts the index bucket
+entries visited by the incremental counter maintenance. Profiling with `perf`
+on the factorio rule (`R3,C2,S2,B3,N+`, radius 3) showed:
+
+- the plain search processes one queued cell per step;
+- with `--backjump`, the re-check after a backjump restarts the propagation
+  queue far below the top of the stack, and the search processes about 1,200
+  to 1,700 queued cells per step (about 22,000 descriptor checks per step
+  against 137 in the plain search);
+- with `--nogood` and chronological backtracking, about 93% of the time is
+  `NogoodDb::on_set`/`on_unset`, because the capacity formula makes the
+  average index bucket grow with the average clause length, and the factorio
+  rule learns long clauses;
+- conflict analysis itself is below 2% of the work in both cases, so it is
+  not the cost driver.
+
+The machinery work measure (`queued_cells + analysis_scanned +
+bucket_updates`) on the ungated `--nogood` is about 26,000 operations per
+step over the first million steps of the factorio rule (1,664 queued cells,
+184 scanned, 24,245 bucket updates) and grows to about 34,000 as the database
+fills. The deep Life benchmark (`B3/S23 100 10 4 -x 1`) has the same shape:
+about 473 queued cells, 73 scanned descriptor cells, and 16,500 bucket
+updates per step, about 17,000 machinery operations in total, against 40
+descriptor checks per step in the plain search. The 64x64 period-1 case is
+the opposite regime: 137 machinery operations per step in total, and it
+finishes in 2,007 steps.
+
+### The guard
+
+`World` keeps a `Guard` (in `lib/src/world.rs`) that bounds the machinery work
+`queued_cells + analysis_scanned + bucket_updates` per search step. Every
+`GUARD_INTERVAL` (1,024) steps it compares the work of the last interval with
+`GUARD_BUDGET` (512) per step; when the work exceeds the budget, the guard
+suspends the machinery:
+
+- conflicts are handled by chronological backtracking instead of
+  `World::analyze`, so no new clauses are learned;
+- the nogood database is set inactive (`NogoodDb::set_active`), so it neither
+  propagates nor maintains its counters, and a pending nogood conflict is
+  dropped.
+
+The suspension lasts `GUARD_SUSPENSION` (2^18) steps, doubled for each
+consecutive suspension up to `GUARD_MAX_BACKOFF` (6) and decayed after a
+clean interval; a suspended machinery is re-probed after the cooldown. On
+resume, `NogoodDb::resync` rebuilds the unmatched-literal counters from the
+world state, because they were not maintained while the database was
+inactive.
+
+The guard is deterministic (its decisions depend only on the work counters,
+not on wall time) and it is heuristic state: it is not serialized, and a
+loaded world starts with the machinery active. It is opt-in via
+`Config::nogood_guard` (`--nogood-guard`), which enables the nogood database
+and therefore backjumping; without the flag the machinery always stays active
+and `--nogood` alone behaves exactly as it did before the guard was
+introduced. Short searches that finish before the first evaluation keep the
+full machinery, which preserves the 64x64 win. A budget of 512 separates the
+measured regimes: the 64x64 period-1 search does about 137 machinery
+operations per step and keeps the machinery, while the deep benchmark (about
+17,000, dominated by bucket maintenance) and the factorio rule (about 26,000
+to 34,000) suspend it.
+
+`World::search_stats()` exposes the guard counters (`guard_suspensions`,
+`guard_resumes`) together with the work counters, and the non-TUI JSON output
+includes them.
+
+#### Parameter selection
+
+The constants are calibrated on the measured workloads, not derived from
+first principles:
+
+- `GUARD_BUDGET = 512` machinery operations per step is a policy threshold
+  between the cheap regime (64x64: about 137 operations per step) and the
+  expensive ones (deep: about 17,000; factorio: about 26,000 to 34,000). The
+  plain search does 40 to 140 descriptor checks per step, so the budget lets
+  the machinery run while its work stays of the same order as the baseline
+  propagation. It is a coarse cost proxy, not a wall-time estimate.
+- `GUARD_INTERVAL = 1024` steps is the evaluation granularity. It averages
+  out single-step noise (one deep backjump can be arbitrarily expensive) and
+  bounds a re-probe of suspended machinery to about a thousand expensive
+  steps, so a probe cannot become the cost the guard is meant to bound. It
+  was 4096 initially; the shorter interval reduced the probe overhead
+  measurably on the small workloads.
+- `GUARD_SUSPENSION = 2^18` steps is the base suspension. The first
+  suspension is `2^18 << 1` steps, which is about 0.1 to 0.4 seconds of plain
+  search at the measured rates, so probes are a small fraction of the time;
+  the backoff doubles up to `2^18 << 6` steps so a persistently unprofitable
+  regime is probed rarely.
+
+The overspending test is absolute rather than relative to the plain search:
+every `GUARD_INTERVAL` steps, the guard compares the machinery work added
+since the last evaluation with `GUARD_BUDGET * interval`. A clean interval
+advances the baseline and decays the backoff, so the machinery is re-probed
+sooner once it has become cheap.
+
+### Measured effect (2026-09-22)
+
+Measured on the same development machine as the other snapshots, release
+build, single runs, first solution unless noted. The *no guard* column is
+`--nogood` alone with the recency eviction, i.e. the pre-guard behavior. The
+large factorio case is a 60-second sample because the plain search takes
+about 841 seconds and the point is the rate, not the solution.
+
+| Case | Plain | `--nogood --nogood-guard` | `--nogood` (no guard) |
+| --- | ---: | ---: | ---: |
+| `B3/S23 64 64 1 -n a` (first) | >90 s | 2,007 steps / 0.009 s | 2,007 / 0.007 s |
+| `B3/S23 100 10 4 -x 1` (first) | 235,633,435 / 50.2 s | 235,441,747 / 56.1 s | 20,286,918 / 308 s |
+| `R3,C2,S2,B3,N+ 100 17 3 -x 2 -s D2- -n a` (60 s sample) | 80,000,000 steps | 80,000,000 steps | 1,000,000 steps |
+| `R3,C2,S2,B3,N+ 20 8 4 -x 2 -s D2- -n a` (exhaustion) | 150,737 / 0.106 s | 150,121 / 0.122 s | 64,035 / 0.87 s |
+| `B3/S23 26 8 4 -y 1 -n a` (first) | 6,627,619 / 1.28 s | 5,238,929 / 1.22 s | 442,437 / 3.0 s |
+| `B2n3/S23-q 30 9 4 -x 1 -n a` (first) | 17,226,567 / 4.30 s | 17,184,405 / 4.80 s | 2,061,555 / 16.6 s |
+| `B3/S23 7 7 2 -n a --no-stop` (exhaustion, 9,538 solutions) | 3,539,579 / 0.64 s | 3,530,540 / 0.72 s | 653,103 / ~4 s |
+
+The guard removes the catastrophic regime: on the large factorio rule the
+search runs at the plain rate (about 1.27M steps per second) instead of about
+21k, and the deep benchmark finishes within 12% of the plain wall time
+instead of 6 times slower. The step reductions that `--nogood` produced on
+the deep, small, and INT benchmarks are mostly given up, because they were
+wall-time losses; the small case is even slightly faster than plain because
+the short active phase improves the traversal. The 64x64 win is preserved
+because that search finishes in 2,007 steps, before the first budget
+evaluation.
+
+The guard is opt-in, so the `--nogood` column of the [benchmark
+snapshot](#benchmark-snapshot) and the pre-guard numbers in the table above
+still describe the default behavior of `--nogood` alone; the guard only
+changes a run when `--nogood-guard` is passed.
+
+### Correctness status
+
+`test_guard_suspension_preserves_solutions` forces a zero budget so that the
+guard suspends and re-probes repeatedly, and checks that the solution sets
+match the search with the machinery always active; it enables the guard with
+`Config::nogood_guard`. `test_guard_disabled_by_default` checks that a zero
+budget does not suspend anything without the flag. The existing differential
+tests cover the same configurations with the guard off.
+
 ## Branching Heuristics
 
 ### Phase saving
@@ -967,24 +1131,6 @@ descriptors of two adjacent padding cells into a fact that neither descriptor
 implies alone. The current search only discovers such facts through conflict
 analysis; a bounded pair-check could derive them directly.
 
-### Boundary lemmas by world enlargement instead of learning
-
-The boundary nogood of the worked example exists only because `factoriosrc`
-encodes the temporal wrap-around implicitly: the padding row `y = -1` is not a
-search cell, so the relation between generation 3 and generation 0 on row 0 is
-invisible to a single descriptor check and must be rediscovered by conflict
-analysis.
-
-A direct alternative is to enlarge the search world by one ring and add the
-surrounding cells as known-dead cells. Then `(x+1, -1, 3)` becomes an explicit
-cell, and the ordinary descriptor propagation already derives the contradiction
-without conflict analysis or a nogood database. This is not a SAT technique. It
-trades a larger search for a cheaper per-conflict mechanism, and it may be worth
-measuring whether the extra ring costs less than the learning it replaces on
-boundary-heavy searches. The same construction could seed the database with the
-boundary lemmas analytically instead of learning them, which would give the
-pruning without the database churn.
-
 ### Boolean or multi-valued learning for Generations
 
 Possible approaches include learning only in the dead/alive base layer,
@@ -1052,10 +1198,11 @@ the same machine and with the same protocol. The `--nogood` column was
 re-measured on 2026-09-18 on the same machine after the database capacity
 became adaptive (`max(2048, 4 * cells)` entries, 96-literal bound); for
 enumeration, the value is the time to the 10th solution with `--no-stop`. That
-column predates the recency eviction; the re-measured rows are in
-[Recency eviction A/B](#recency-eviction-ab-2026-09-20), and the whole column
-needs a rerun. Replace this table on a future rerun instead of appending
-another historical table.
+column predates the recency eviction and the cost guard; the re-measured rows
+are in [Recency eviction A/B](#recency-eviction-ab-2026-09-20) and
+[Measured effect](#measured-effect-2026-09-22), and the whole column needs a
+rerun. Replace this table on a future rerun instead of appending another
+historical table.
 
 | Case | Plain | `--phase-saving` | `--lookahead` | `--backjump` | `--nogood` | `--activity` |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -1080,8 +1227,9 @@ This second snapshot was measured on 2026-09-17 on the same machine, with the
 usage instrumentation of `World::search_steps()`, `NogoodStats`, and
 `World::nogood_top()` added to the working tree. The `--nogood` column and its
 database statistics below were re-measured on 2026-09-18 after the adaptive
-capacity became the default, and they also predate the recency eviction; see
-[Recency eviction A/B](#recency-eviction-ab-2026-09-20). The commands are
+capacity became the default, and they also predate the recency eviction and
+the cost guard; see [Recency eviction A/B](#recency-eviction-ab-2026-09-20)
+and [Measured effect](#measured-effect-2026-09-22). The commands are
 `factoriosrc-tui new --no-tui --format json [-–backjump|--nogood] ...` in a
 release build; `--nogood` also prints the database statistics. These are single
 runs, but the step counts of the fixed-`--new-state` searches are

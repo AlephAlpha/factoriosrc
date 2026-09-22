@@ -34,6 +34,8 @@ impl World {
     /// Otherwise the behavior is undefined.
     #[inline(always)]
     unsafe fn check_descriptor(&mut self, cell: &LifeCell) -> Option<()> {
+        self.search_stats.descriptor_checks += 1;
+
         unsafe {
             // For a Generations rule, the exact states of the cell and its
             // successor matter, so a different check is needed.
@@ -446,6 +448,8 @@ impl World {
     /// Otherwise the behavior is undefined.
     #[inline]
     unsafe fn check_affected(&mut self, cell: &LifeCell) -> Result<(), Confl> {
+        self.search_stats.check_affected_calls += 1;
+
         unsafe {
             // A learned nogood is fully matched by the current partial
             // assignment: no solution can extend it. The flag is re-validated
@@ -538,6 +542,7 @@ impl World {
     /// since the beginning of the call, even if there are more cells to check.
     fn check_stack_with_cap(&mut self, cap: Option<usize>) -> Result<(), Confl> {
         let stack_len = self.stack.len();
+        self.search_stats.queued_cells += (self.stack.len() - self.stack_index) as u64;
 
         while self.stack_index < self.stack.len() {
             if cap.is_some_and(|cap| self.stack.len() - stack_len > cap) {
@@ -565,6 +570,8 @@ impl World {
     /// - If this goes back to the time before the search started, return [`NoSolution`](Status::NoSolution).
     /// - Otherwise, return [`Running`](Status::Running).
     fn backtrack(&mut self) -> Status {
+        self.search_stats.backtracks += 1;
+
         // With activity-based branching, a decision may be made on a cell that
         // is later in the chain than the earliest unknown cell, so the cells
         // before it can be set and unset during its subtree. The cursor must
@@ -629,7 +636,7 @@ impl World {
                             // The cell itself has been unset, so the query
                             // sees exactly the context that the flipped
                             // assignment would live in.
-                            if self.config.nogood {
+                            if self.config.nogood && self.guard.active {
                                 let index = self.cell_index(cell) as u32;
                                 // Read the cell states through a copy of the
                                 // cells pointer, so that the closure does not
@@ -738,6 +745,7 @@ impl World {
             if self.config.lookahead && !self.rule.is_generations() {
                 match self.probe(cell) {
                     Some(state) => {
+                        self.search_stats.guesses += 1;
                         self.set_cell(cell, state, Reason::Guessed, None, true);
                         return GuessResult::Guessed;
                     }
@@ -766,6 +774,7 @@ impl World {
                     }
                 }
             };
+            self.search_stats.guesses += 1;
             self.set_cell(cell, state, Reason::Guessed, None, true);
             GuessResult::Guessed
         }
@@ -951,11 +960,97 @@ impl World {
         }
     }
 
+    /// The machinery work counter of the cost guard.
+    ///
+    /// It sums the propagation re-checks after a backjump, the descriptor
+    /// cells scanned by conflict analysis, and the index bucket updates of
+    /// the nogood database: the work that exists only because the
+    /// experimental machinery is enabled.
+    #[inline]
+    const fn machinery_work(&self) -> u64 {
+        self.search_stats.queued_cells
+            + self.search_stats.analysis_scanned
+            + self.nogood_db.stats().bucket_updates
+    }
+
+    /// Evaluate the cost guard and suspend or resume the machinery.
+    ///
+    /// The guard is opt-in via [`Config::nogood_guard`](crate::Config::nogood_guard);
+    /// without it the machinery always stays active and this is a no-op. With
+    /// it, the guard measures the machinery work over the last
+    /// `GUARD_INTERVAL` search steps and suspends the machinery when the work
+    /// exceeds the budget; a suspended machinery is re-probed after an
+    /// exponentially growing cooldown.
+    fn guard_check(&mut self) {
+        if !self.config.nogood_guard {
+            return;
+        }
+
+        let steps = self.search_stats.steps;
+        if self.guard.active {
+            let interval = steps - self.guard.check_step;
+            if interval < self.guard.interval {
+                return;
+            }
+            let work = self.machinery_work() - self.guard.check_work;
+            if work > self.guard.budget.saturating_mul(interval) {
+                self.suspend_machinery();
+            } else {
+                // A clean interval decays the backoff, so the machinery is
+                // re-probed sooner when it has been cheap.
+                self.guard.suspensions = self.guard.suspensions.saturating_sub(1);
+                self.guard.check_step = steps;
+                self.guard.check_work = self.machinery_work();
+            }
+        } else if steps >= self.guard.resume_step {
+            self.resume_machinery();
+        }
+    }
+
+    /// Suspend the conflict analysis and the nogood database.
+    ///
+    /// The search then behaves like the plain chronological search: conflicts
+    /// backtrack without analysis, and the database neither propagates nor
+    /// learns. The database keeps its entries; its counters are rebuilt by
+    /// [`resume_machinery`](World::resume_machinery) before it is used again.
+    fn suspend_machinery(&mut self) {
+        self.guard.active = false;
+        self.guard.suspensions = self.guard.suspensions.saturating_add(1);
+        self.search_stats.guard_suspensions += 1;
+        let backoff = self.guard.suspensions.min(crate::world::GUARD_MAX_BACKOFF);
+        self.guard.resume_step = self
+            .search_stats
+            .steps
+            .saturating_add(self.guard.suspension << backoff);
+        self.pending_nogood_confl = None;
+        self.nogood_db.set_active(false);
+    }
+
+    /// Re-enable the machinery after a suspension.
+    ///
+    /// The nogood counters were not maintained while the database was
+    /// suspended, so they are rebuilt from the world state before propagation
+    /// resumes.
+    fn resume_machinery(&mut self) {
+        self.guard.active = true;
+        self.search_stats.guard_resumes += 1;
+        self.guard.check_step = self.search_stats.steps;
+        self.guard.check_work = self.machinery_work();
+        if self.config.nogood {
+            let cells = self.cells_ptr as *const LifeCell;
+            let mut state_of = |i: u32| unsafe { (*cells.add(i as usize)).state() };
+            self.nogood_db.resync(&mut state_of);
+        }
+        self.nogood_db.set_active(true);
+    }
+
     /// One step of the search.
     ///
     /// Check all cells in the stack that have not been checked yet,
     /// backtrack if a conflict is found, and make a guess if all cells are checked.
     fn step(&mut self) -> Status {
+        self.guard_check();
+
         match self.check_stack() {
             Ok(()) => {
                 // All cells have been checked.
@@ -976,7 +1071,7 @@ impl World {
             // otherwise the search backtracks chronologically.
             Err(confl) => match confl {
                 Confl::Rule(_) | Confl::Symmetry(_, _) | Confl::Nogood(_)
-                    if self.config.backjump =>
+                    if self.config.backjump && self.guard.active =>
                 {
                     self.analyze(confl)
                 }
@@ -1014,6 +1109,38 @@ impl World {
         }
     }
 
+    /// Update the lowest re-check position for a cell whose descriptor changed
+    /// when a popped cell was unset.
+    ///
+    /// Only a cell that remains set after the pops has an incremental check
+    /// that can become stale: a cell that is popped (its level is above the
+    /// backjump target) and a cell that is already unknown are both checked
+    /// when they are set again, and their stale (or initial) position must
+    /// not drag the re-check down to the bottom of the stack.
+    ///
+    /// # Safety
+    ///
+    /// The cell must be in the same world as `self`.
+    /// Otherwise the behavior is undefined.
+    unsafe fn note_affected(&self, cell: *const LifeCell, pop_target: u32, recheck: &mut usize) {
+        if cell.is_null() {
+            return;
+        }
+        unsafe {
+            if (*cell).state().is_none() {
+                return;
+            }
+        }
+        let index = unsafe { self.cell_index(cell) };
+        let pos = self.cell_pos[index] as usize;
+        if self.trail_meta[pos].level > pop_target {
+            return;
+        }
+        if pos < *recheck {
+            *recheck = pos;
+        }
+    }
+
     /// Analyze a local conflict and backjump to the decision that caused it.
     ///
     /// This is the CA analogue of CDCL conflict analysis. The conflicting
@@ -1032,6 +1159,7 @@ impl World {
     /// backtracks chronologically.
     fn analyze(&mut self, confl: Confl) -> Status {
         debug_assert!(self.config.backjump);
+        self.search_stats.analyses += 1;
 
         let current = self.current_level;
 
@@ -1083,10 +1211,12 @@ impl World {
         match confl {
             Confl::Rule(source) => unsafe {
                 self.descriptor_literals(&*source, std::ptr::null(), usize::MAX, &mut literals);
+                self.search_stats.analysis_scanned += (*source).neighborhood_len as u64 + 2;
             },
             Confl::Symmetry(cell, symmetry) => {
                 literals.push(cell);
                 literals.push(symmetry);
+                self.search_stats.analysis_scanned += 1;
             }
             Confl::Nogood(id) => unsafe {
                 // Every cell of the nogood holds its recorded state; those
@@ -1141,6 +1271,7 @@ impl World {
             // Resolve this literal: unmark it, and replace it by its antecedent.
             self.seen_stamp[index] = 0;
             seen_count -= 1;
+            self.search_stats.analysis_resolutions += 1;
 
             let antecedent = self.trail_meta[i].antecedent.clone();
             let ok = unsafe { self.reason_literals(lit, antecedent, i, &mut literals) };
@@ -1241,22 +1372,16 @@ impl World {
             unsafe {
                 let popped = &*cell;
                 // The popped cell updated the descriptors of its neighbors
-                // and its predecessor; re-check from the lowest one.
-                let mut affected = |c: *const LifeCell| {
-                    if !c.is_null() {
-                        let pos = self.cell_pos[self.cell_index(c)] as usize;
-                        if pos < recheck {
-                            recheck = pos;
-                        }
-                    }
-                };
-                affected(cell);
+                // and its predecessor; re-check from the lowest one. The
+                // popped cell itself still counts, since it is set until the
+                // `unset_cell` below.
+                self.note_affected(cell, pop_target, &mut recheck);
                 if let Some(pred) = popped.predecessor.as_ref() {
-                    affected(pred as *const LifeCell);
+                    self.note_affected(pred as *const LifeCell, pop_target, &mut recheck);
                 }
                 for i in 0..popped.neighborhood_len {
                     if let Some(neighbor) = popped.neighborhood[i].as_ref() {
-                        affected(neighbor as *const LifeCell);
+                        self.note_affected(neighbor as *const LifeCell, pop_target, &mut recheck);
                     }
                 }
                 self.pop_meta();
@@ -1451,14 +1576,22 @@ impl World {
     /// The cell and the antecedent must be in the same world as `self`.
     /// Otherwise the behavior is undefined.
     unsafe fn reason_literals(
-        &self,
+        &mut self,
         cell: *const LifeCell,
         antecedent: Option<Antecedent>,
         position: usize,
         literals: &mut Vec<*const LifeCell>,
     ) -> bool {
         literals.clear();
-        match antecedent {
+        let scanned = match &antecedent {
+            Some(Antecedent::Descriptor(source)) => unsafe {
+                (*(*source)).neighborhood_len as u64 + 2
+            },
+            Some(Antecedent::Symmetry(_)) => 1,
+            Some(Antecedent::Clause(clause)) => clause.len() as u64,
+            None => 0,
+        };
+        let result = match antecedent {
             Some(Antecedent::Descriptor(source)) => unsafe {
                 self.descriptor_literals(&*source, cell, position, literals);
                 true
@@ -1487,7 +1620,10 @@ impl World {
                 true
             }
             None => true,
-        }
+        };
+        self.search_stats.analysis_literals += literals.len() as u64;
+        self.search_stats.analysis_scanned += scanned;
+        result
     }
 
     /// When a pattern is found, check that its period is correct.
@@ -1570,7 +1706,7 @@ impl World {
             }
 
             steps += 1;
-            self.search_steps += 1;
+            self.search_stats.steps += 1;
         }
 
         self.status = status;
