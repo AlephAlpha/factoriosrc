@@ -27,3 +27,10 @@
 - egui runs the search on a background thread in `egui/src/search.rs`; keep TUI and egui start/pause/no-stop behavior aligned when changing search control flow.
 - TUI and egui save files are not interchangeable: TUI serializes `tui::App`, egui serializes `egui::search::Search`. The README also says save formats may change between versions.
 - `just gui` is the quickest GUI debug path because it sets `RUST_LOG=factoriosrc_egui=DEBUG`.
+
+## SAT Ideas Documentation
+- `docs/sat-ideas.md` is a concise note about current implementation, semantic limits, proposed work, and one canonical benchmark table. Treat code, especially `Config::check()`, as the source of truth.
+- Keep the status vocabulary precise: `Implemented` means code exists, `Tested` means repository tests cover the stated behavior, `Measured` means a reproducible benchmark result is recorded, and `Proposed` means no current code path exists.
+- Update the single benchmark table in place after a unified rerun. Do not append date-specific benchmark or profiling tables; record protocol and environment with the current table instead.
+- Keep external comparisons such as LLS as clearly labeled archived snapshots; do not mix them into the canonical factoriosrc table or append one row per rerun.
+- Use paths and symbol names rather than line numbers, keep SAT terminology tied to an actual factoriosrc mechanism, and update the status row and detailed section together.
