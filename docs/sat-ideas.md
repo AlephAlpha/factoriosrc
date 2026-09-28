@@ -303,7 +303,9 @@ The current implementation uses these limits:
 The capacity and query bounds may reduce pruning, but they must not change the
 solution set. The capacity is also a maintenance budget: every real assignment
 walks the relevant index bucket, so an unnecessarily large database can cost
-more time even when it lowers the search-step count.
+more time even when it lowers the search-step count. A capacity sweep over the
+canonical workloads, a size ladder, and the larger cases is recorded in
+[`docs/capacity-study.md`](capacity-study.md).
 
 `World::search_stats()`, `World::nogood_stats()`, `World::nogood_top()`, and
 `World::search_steps()` expose diagnostic counters. Non-TUI JSON output includes

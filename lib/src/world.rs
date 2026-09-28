@@ -1576,12 +1576,42 @@ impl World {
         &self.search_stats
     }
 
+    /// Get the number of cells in the world, including the padding ring.
+    ///
+    /// This is `(width + 2 * radius) * (height + 2 * radius) * period`. It is
+    /// the basis of the automatic nogood capacity choice; see
+    /// [`Config::nogood_capacity`].
+    #[inline]
+    pub const fn world_size(&self) -> usize {
+        self.size
+    }
+
     /// Get the statistics of the nogood database.
     ///
     /// Return [`None`] if [`Config::nogood`](Config::nogood) is disabled.
     #[inline]
     pub fn nogood_stats(&self) -> Option<&crate::nogood::NogoodStats> {
         self.config.nogood.then(|| self.nogood_db.stats())
+    }
+
+    /// Get the current capacity of the nogood database.
+    ///
+    /// This is the explicit [`Config::nogood_capacity`] if it was set, and
+    /// the automatic `max(2048, 4 * world_size)` otherwise. Return [`None`]
+    /// if [`Config::nogood`](Config::nogood) is disabled.
+    #[inline]
+    pub fn nogood_capacity(&self) -> Option<usize> {
+        self.config.nogood.then(|| self.nogood_db.capacity())
+    }
+
+    /// Get the number of entries currently stored in the nogood database.
+    ///
+    /// This is diagnostic: it shows how close a run is to the capacity, and
+    /// therefore whether the eviction policy is active at all. Return [`None`]
+    /// if [`Config::nogood`](Config::nogood) is disabled.
+    #[inline]
+    pub fn nogood_entries(&self) -> Option<usize> {
+        self.config.nogood.then(|| self.nogood_db.len())
     }
 
     /// Get the most-used learned nogoods, for diagnostics.

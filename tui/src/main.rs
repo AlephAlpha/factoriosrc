@@ -99,6 +99,9 @@ fn run_no_tui(
                     "elapsed_secs": start.elapsed().as_secs_f64(),
                     "steps": world.search_steps(),
                     "cells_checked": world.cells_checked(),
+                    "world_size": world.world_size(),
+                    "nogood_capacity": world.nogood_capacity(),
+                    "nogood_entries": world.nogood_entries(),
                     "search_stats": {
                         "steps": search.steps,
                         "guesses": search.guesses,
