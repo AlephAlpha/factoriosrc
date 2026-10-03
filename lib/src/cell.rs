@@ -38,8 +38,20 @@ pub enum Antecedent {
     /// positions. When a cell is set again later, the reason is stale and
     /// cannot be used in conflict analysis.
     ///
+    /// The literals are stored in the reason arena of the world
+    /// ([`World::reason_arena`](crate::World)), not inline: `start` and `len`
+    /// are a range into that arena. A reason is only alive while its trail
+    /// entry is, so the arena is compacted from the live trail entries when it
+    /// grows too much larger than them.
+    ///
     /// The cells must be in the same world as the deduced cell.
-    Clause(Box<[(*const LifeCell, u32)]>),
+    Clause {
+        /// The start of the literals in the reason arena.
+        start: u32,
+
+        /// The number of literals in the reason arena.
+        len: u32,
+    },
 }
 
 /// The reason why a cell is set to a state.

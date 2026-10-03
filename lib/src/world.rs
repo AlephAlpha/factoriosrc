@@ -257,6 +257,13 @@ const GUARD_BUDGET: u64 = 512;
 /// value.
 pub const GUARD_MAX_BACKOFF: u32 = 6;
 
+/// The absolute slack of the clause-reason arena before it is compacted.
+///
+/// The arena is compacted when it holds more than twice the live reasons plus
+/// this margin, so small searches never pay for a compaction and the memory
+/// stays proportional to the live trail.
+const REASON_ARENA_MARGIN: u64 = 1 << 12;
+
 /// The cost guard of the experimental machinery.
 ///
 /// The guard bounds the work that conflict analysis and the nogood database
@@ -524,6 +531,40 @@ pub struct World {
     /// It is always empty between calls to `learn_analysis_nogood`.
     pub(crate) lbd_scratch: Vec<u32>,
 
+    /// The literals of the [`Antecedent::Clause`] reasons of the trail.
+    ///
+    /// A learned-clause reason is a list of `(cell, stack position)` pairs.
+    /// Storing them inline in the trail entry would need a heap allocation for
+    /// every firing nogood and every learned unit, so the literals live in
+    /// this shared arena instead and [`Antecedent::Clause`] holds a range.
+    ///
+    /// The arena is append-only between compactions. Compaction copies the
+    /// ranges referenced by the live [`trail_meta`](World::trail_meta) entries
+    /// and remaps their starts, so the memory is bounded by the live reasons
+    /// plus a margin. See [`World::maybe_compact_reason_arena`].
+    ///
+    /// This is only populated when [`Config::backjump`](crate::Config::backjump)
+    /// is enabled, since clause reasons only exist there. It is not serialized.
+    pub(crate) reason_arena: Vec<(*const LifeCell, u32)>,
+
+    /// The number of literals of the live [`Antecedent::Clause`] reasons,
+    /// i.e. the part of [`reason_arena`](World::reason_arena) that the current
+    /// trail still references.
+    ///
+    /// This is maintained in lockstep with the trail by `set_cell` and
+    /// `pop_meta`, and is used by
+    /// [`maybe_compact_reason_arena`](World::maybe_compact_reason_arena) to
+    /// decide when the arena has accumulated too much garbage.
+    pub(crate) reason_arena_live: u64,
+
+    /// A scratch buffer for building the literals of an
+    /// [`Antecedent::Clause`].
+    ///
+    /// It is always empty between clause-reason pushes. It exists so that the
+    /// literals can be built without allocating, and so that the buffer and
+    /// the [`reason_arena`](World::reason_arena) can be borrowed disjointly.
+    pub(crate) clause_scratch: Vec<(*const LifeCell, u32)>,
+
     /// A fully matched nogood that has not been reported as a conflict yet.
     ///
     /// This is set by [`set_cell`](World::set_cell) when every literal of a
@@ -643,6 +684,9 @@ impl World {
             },
             nogood_scratch: Vec::new(),
             lbd_scratch: Vec::new(),
+            reason_arena: Vec::new(),
+            reason_arena_live: 0,
+            clause_scratch: Vec::new(),
             pending_nogood_confl: None,
             status: Status::NotStarted,
             search_stats: SearchStats::default(),
@@ -1363,6 +1407,9 @@ impl World {
         if self.config.backjump {
             let meta = self.trail_meta.pop().unwrap();
             debug_assert_eq!(meta.level, self.current_level);
+            if let Some(Antecedent::Clause { len, .. }) = meta.antecedent {
+                self.reason_arena_live -= u64::from(len);
+            }
             if meta.decision {
                 self.current_level -= 1;
             }
@@ -1380,6 +1427,56 @@ impl World {
     /// no flip carriers.
     pub(crate) fn deepest_flip_level(&self) -> u32 {
         self.flip_levels.last().copied().unwrap_or(0)
+    }
+
+    /// Append the literals of a clause reason to the reason arena.
+    ///
+    /// Return the [`Antecedent::Clause`] that references the appended range.
+    /// This is an associated function rather than a method, so that the caller
+    /// can build the literals in [`clause_scratch`](World::clause_scratch) and
+    /// pass a borrow of it together with a mutable borrow of the arena: the
+    /// two fields are disjoint.
+    #[inline]
+    pub(crate) fn push_clause_reason(
+        arena: &mut Vec<(*const LifeCell, u32)>,
+        live: &mut u64,
+        literals: &[(*const LifeCell, u32)],
+    ) -> Antecedent {
+        debug_assert!(arena.len() <= u32::MAX as usize);
+        let start = arena.len() as u32;
+        let len = literals.len() as u32;
+        arena.extend_from_slice(literals);
+        *live += u64::from(len);
+        Antecedent::Clause { start, len }
+    }
+
+    /// Compact the reason arena when it has accumulated much more than the
+    /// live reasons.
+    ///
+    /// The live [`trail_meta`](World::trail_meta) entries are the only owners
+    /// of clause reasons, so the arena can be rebuilt from them without
+    /// invalidating anything else. This is called when the search unwinds, so
+    /// that a long search with many clause firings does not keep the garbage
+    /// of every popped reason forever.
+    pub(crate) fn maybe_compact_reason_arena(&mut self) {
+        if self.reason_arena.len() as u64 <= 2 * self.reason_arena_live + REASON_ARENA_MARGIN {
+            return;
+        }
+
+        let old = std::mem::take(&mut self.reason_arena);
+        let mut new_arena = Vec::with_capacity(self.reason_arena_live as usize);
+        for meta in &mut self.trail_meta {
+            if let Some(Antecedent::Clause { start, len }) = &mut meta.antecedent {
+                let slice_start = *start as usize;
+                let slice_len = *len as usize;
+                debug_assert!(slice_start + slice_len <= old.len());
+                let new_start = new_arena.len() as u32;
+                new_arena.extend_from_slice(&old[slice_start..slice_start + slice_len]);
+                *start = new_start;
+            }
+        }
+        debug_assert_eq!(new_arena.len() as u64, self.reason_arena_live);
+        self.reason_arena = new_arena;
     }
 
     /// Bump the conflict activity of a cell.
@@ -3239,6 +3336,51 @@ mod test {
             deduced_with_antecedent > 0,
             "no deduction was recorded with an antecedent"
         );
+    }
+
+    #[test]
+    fn test_reason_arena_compaction_remaps_live_reasons() {
+        // A direct test of the clause-reason arena: the compaction copies the
+        // live reasons to the front of a fresh arena, remaps their ranges, and
+        // drops the garbage of popped reasons.
+        let mut world = World::new(Config::new("B3/S23", 3, 3, 2).with_backjump()).unwrap();
+        let cell_ptr = |world: &World, index: u32| unsafe { world.cell_by_index(index) };
+
+        let base = world.trail_meta.len();
+        let mut expected = Vec::new();
+        for i in 0..3u32 {
+            let literals = [(cell_ptr(&world, i), i), (cell_ptr(&world, i + 1), i + 10)];
+            let antecedent = World::push_clause_reason(
+                &mut world.reason_arena,
+                &mut world.reason_arena_live,
+                &literals,
+            );
+            expected.push(literals);
+            world.trail_meta.push(TrailMeta {
+                level: i + 1,
+                decision: false,
+                flip: false,
+                antecedent: Some(antecedent),
+            });
+        }
+
+        // Garbage that no trail entry references, large enough to trigger the
+        // compaction.
+        let garbage = vec![(cell_ptr(&world, 0), 0u32); 5000];
+        world.reason_arena.extend_from_slice(&garbage);
+
+        world.maybe_compact_reason_arena();
+
+        assert_eq!(world.reason_arena.len() as u64, world.reason_arena_live);
+        for (meta, literals) in world.trail_meta[base..].iter().zip(expected.iter()) {
+            let Some(Antecedent::Clause { start, len }) = meta.antecedent else {
+                panic!("the trail entry lost its clause reason");
+            };
+            assert_eq!(
+                &world.reason_arena[start as usize..(start + len) as usize],
+                &literals[..]
+            );
+        }
     }
 
     #[test]

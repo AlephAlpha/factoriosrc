@@ -210,7 +210,12 @@ The antecedent is one of:
 
 - `Descriptor(source)`, for a rule-table deduction;
 - `Symmetry(source)`, for a symmetry deduction; or
-- `Clause(literals)`, for a deduction made by a learned clause.
+- `Clause { start, len }`, for a deduction made by a learned clause.
+
+The literals of a clause antecedent live in a world-local reason arena that the
+live trail owns, not inline in the trail entry, so recording a firing or a
+learned unit does not allocate. The arena is compacted from the live trail
+entries when it has accumulated too much garbage.
 
 Descriptor antecedents are reconstructed when needed from the source descriptor.
 Only cells that were earlier on the trail than the deduction are included. This
@@ -285,6 +290,20 @@ not currently match. The index makes this incremental update possible.
 The propagation path is important: a nogood can be completed by deductions, not
 only by a final guess. A stale clause reason is ignored by conflict analysis and
 causes a chronological fallback.
+
+### Watched-Literal Propagation (Measured, Not Kept)
+
+A standard two-watched-literal variant of the database was implemented and
+measured with the release-build protocol of
+[`docs/capacity-study.md`](capacity-study.md). It cut the per-assignment
+maintenance sharply (on the `c1` row, from about `1.5e9` index bucket updates
+to about `6.5e7` watch visits), but two-watched-literal propagation does not
+re-propagate every unit after backtracking the way the per-literal counters do.
+The step counts rose from 442k to 855k on `c1`, from 2.06M to 3.72M on `c5`,
+and from 653k to 776k on `c7`, and the wall time rose on all three, so the
+counter scheme was kept. The variant was not kept in the repository; a future
+attempt would need an extra mechanism that restores counter-equivalent
+propagation before the maintenance saving can pay off.
 
 ### Capacity And Eviction
 

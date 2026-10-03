@@ -572,6 +572,11 @@ impl World {
     fn backtrack(&mut self) -> Status {
         self.search_stats.backtracks += 1;
 
+        // Rebuild the clause-reason arena if the unwind has left a lot of
+        // garbage in it. This is a no-op unless the arena outgrew the live
+        // reasons by the compaction margin.
+        self.maybe_compact_reason_arena();
+
         // With activity-based branching, a decision may be made on a cell that
         // is later in the chain than the earliest unknown cell, so the cells
         // before it can be set and unset during its subtree. The cursor must
@@ -935,25 +940,32 @@ impl World {
 
             self.nogood_db.note_fired(id);
 
-            let clause = self
-                .nogood_db
-                .entry_literals(id)
-                .iter()
-                .filter(|&&(i, _)| i != target)
-                .map(|&(i, s)| unsafe {
-                    let other = cells.add(i as usize);
-                    debug_assert_eq!((*other).state(), Some(s));
-                    (other, self.cell_pos[self.cell_index(other)])
-                })
-                .collect::<Box<[_]>>();
-
+            // Build the clause literals in the reusable scratch buffer, then
+            // append them to the reason arena. The scratch buffer and the
+            // arena are disjoint fields, so both can be borrowed at once, and
+            // neither step allocates.
             unsafe {
                 let target_cell = &*cells.add(target as usize);
+                self.clause_scratch.clear();
+                for &(i, s) in self.nogood_db.entry_literals(id) {
+                    if i != target {
+                        let other = cells.add(i as usize);
+                        debug_assert_eq!((*other).state(), Some(s));
+                        let pos = self.cell_pos[self.cell_index(other)];
+                        self.clause_scratch.push((other, pos));
+                    }
+                }
+                let antecedent = Self::push_clause_reason(
+                    &mut self.reason_arena,
+                    &mut self.reason_arena_live,
+                    &self.clause_scratch,
+                );
+
                 self.set_cell(
                     target_cell,
                     !blocked,
                     Reason::Deduced,
-                    Some(Antecedent::Clause(clause)),
+                    Some(antecedent),
                     false,
                 );
             }
@@ -1160,6 +1172,10 @@ impl World {
     fn analyze(&mut self, confl: Confl) -> Status {
         debug_assert!(self.config.backjump);
         self.search_stats.analyses += 1;
+
+        // The previous backtracks may have left garbage in the clause-reason
+        // arena; compact it before this analysis adds more reasons.
+        self.maybe_compact_reason_arena();
 
         let current = self.current_level;
 
@@ -1398,23 +1414,24 @@ impl World {
 
         // Record the learned clause: each literal with its current stack
         // position. The clause is valid while the cells stay at these
-        // positions, i.e. until the cells are set again.
-        let clause = clause
-            .into_iter()
-            .map(|cell| unsafe { (cell, self.cell_pos[self.cell_index(cell)]) })
-            .collect::<Box<[_]>>();
+        // positions, i.e. until the cells are set again. The literals are
+        // appended to the reason arena, so the reason costs no allocation.
+        self.clause_scratch.clear();
+        for &cell in &clause {
+            let pos = unsafe { self.cell_pos[self.cell_index(cell)] };
+            self.clause_scratch.push((cell, pos));
+        }
+        let antecedent = Self::push_clause_reason(
+            &mut self.reason_arena,
+            &mut self.reason_arena_live,
+            &self.clause_scratch,
+        );
 
         // Re-set the 1-UIP cell to the opposite state, justified by the
         // learned clause.
         unsafe {
             let uip = &*uip;
-            self.set_cell(
-                uip,
-                !state,
-                Reason::Deduced,
-                Some(Antecedent::Clause(clause)),
-                false,
-            );
+            self.set_cell(uip, !state, Reason::Deduced, Some(antecedent), false);
         }
 
         Status::Running
@@ -1588,7 +1605,7 @@ impl World {
                 (*(*source)).neighborhood_len as u64 + 2
             },
             Some(Antecedent::Symmetry(_)) => 1,
-            Some(Antecedent::Clause(clause)) => clause.len() as u64,
+            Some(Antecedent::Clause { len, .. }) => u64::from(*len),
             None => 0,
         };
         let result = match antecedent {
@@ -1606,8 +1623,9 @@ impl World {
                 }
                 true
             }
-            Some(Antecedent::Clause(clause)) => {
-                for &(cell, pos) in clause.iter() {
+            Some(Antecedent::Clause { start, len }) => {
+                let arena = &self.reason_arena[start as usize..(start + len) as usize];
+                for &(cell, pos) in arena {
                     unsafe {
                         if (*cell).state().is_none() || self.cell_pos[self.cell_index(cell)] != pos
                         {
