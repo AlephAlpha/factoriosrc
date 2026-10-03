@@ -83,6 +83,17 @@ const ADAPTIVE_CAPACITY_FACTOR: usize = 4;
 /// a correctness issue.
 const MAX_QUERY_CANDIDATES: usize = 64;
 
+/// The maximal number of index entries visited by a single query.
+///
+/// The completion filter of [`NogoodDb::completed`] reads one
+/// unmatched-literal counter per visited entry and only evaluates the entries
+/// that are at most one literal short of a match. Visiting an entry is much
+/// cheaper than evaluating it, so this bound is larger than
+/// [`MAX_QUERY_CANDIDATES`]; it only keeps a pathologically large bucket from
+/// dominating the search time. A missed completion is a lost pruning, never a
+/// correctness issue.
+const MAX_QUERY_VISITS: usize = 512;
+
 /// The maximal number of literals of a learned nogood.
 ///
 /// The learned clauses of the conflict analysis are often much longer than
@@ -175,14 +186,24 @@ pub struct NogoodStats {
     /// else.
     pub queries: u64,
 
-    /// The number of completion queries whose index bucket was larger than
-    /// [`MAX_QUERY_CANDIDATES`](self::MAX_QUERY_CANDIDATES).
+    /// The number of completion queries that stopped before examining their
+    /// whole index bucket.
     ///
-    /// A capped query examines only a prefix of its bucket, so it may miss a
-    /// matching entry; that is a lost pruning, never a correctness issue.
-    /// A high ratio means that the cap is binding and the bucket structure
-    /// needs attention.
+    /// A query visits at most [`MAX_QUERY_VISITS`](self::MAX_QUERY_VISITS)
+    /// entries and evaluates at most
+    /// [`MAX_QUERY_CANDIDATES`](self::MAX_QUERY_CANDIDATES) of them, so it may
+    /// miss a matching entry; that is a lost pruning, never a correctness
+    /// issue. A high ratio means that a bound is binding and the bucket
+    /// structure needs attention.
     pub capped_queries: u64,
+
+    /// The number of index entries skipped by the completion filter because
+    /// they were at least two literals short of a full match.
+    ///
+    /// The filter reads only the unmatched-literal counter of the entry, so
+    /// these entries are much cheaper to skip than to evaluate. This is a
+    /// diagnostic counter; it never affects the search.
+    pub filtered_candidates: u64,
 
     /// The total number of literals of the stored nogoods, counted at learn
     /// time.
@@ -344,6 +365,7 @@ impl Default for NogoodStats {
             reductions: 0,
             queries: 0,
             capped_queries: 0,
+            filtered_candidates: 0,
             literals_total: 0,
             rejected_long: 0,
             used_learned: 0,
@@ -928,6 +950,14 @@ impl NogoodDb {
     /// takes the queried state, and every other cell currently has exactly
     /// the recorded state, as determined by `state_of`.
     ///
+    /// The unmatched-literal counters of the database must be in sync with
+    /// `state_of`: every real assignment must have been reported through
+    /// [`on_set`](NogoodDb::on_set) or
+    /// [`on_unset`](NogoodDb::on_unset), as [`World`](crate::World) does. The
+    /// completion filter uses them to skip the entries that cannot be
+    /// completed, so a query with a stale counter can only miss a completion,
+    /// never invent one.
+    ///
     /// Return `true` if such a nogood exists, meaning that the guess cannot
     /// lead to a solution and should be replaced or backtracked from.
     pub fn blocks<F>(&mut self, cell: u32, state: CellState, mut state_of: F) -> bool
@@ -953,15 +983,22 @@ impl NogoodDb {
     /// currently have.
     ///
     /// See [`blocks`](NogoodDb::blocks) for the meaning of completion. This
-    /// is the read-only part of the query; it does not update the statistics.
+    /// is the read-only part of the query; it does not update the statistics
+    /// of the used entry.
     ///
     /// The candidates are checked without building anything; the literal
     /// vector is allocated only for the matching entry, since a popular
     /// anchor cell may share its index bucket with many nogoods.
     ///
+    /// An entry can only be completed by one assignment if it is at most one
+    /// literal short of a full match, so the unmatched-literal counter filters
+    /// the bucket before any literal is examined. The filter turns the old
+    /// candidate cap, which truncated popular buckets and lost pruning, into
+    /// a much weaker bound on the entries actually evaluated.
+    ///
     /// The query statistics are updated here: a query is counted when its
-    /// index bucket is non-empty, and separately when the bucket is larger
-    /// than the candidate cap.
+    /// index bucket is non-empty, and separately when a visit or evaluation
+    /// bound stopped the search early.
     pub(crate) fn completed<F>(
         &mut self,
         cell: u32,
@@ -978,12 +1015,29 @@ impl NogoodDb {
         let ids = self.index.get(&literal_key(cell, state))?;
 
         self.stats.queries += 1;
-        if ids.len() > MAX_QUERY_CANDIDATES {
-            self.stats.capped_queries += 1;
-        }
 
         let mut found = None;
-        for &id in ids.iter().take(MAX_QUERY_CANDIDATES) {
+        let mut evaluated = 0usize;
+        for (visited, &id) in ids.iter().enumerate() {
+            if visited >= MAX_QUERY_VISITS {
+                self.stats.capped_queries += 1;
+                break;
+            }
+
+            // A full match needs every literal but the queried one to hold, so
+            // an entry that is at least two literals short can be skipped by
+            // reading its counter alone.
+            if self.remaining[id as usize] > 1 {
+                self.stats.filtered_candidates += 1;
+                continue;
+            }
+
+            if evaluated >= MAX_QUERY_CANDIDATES {
+                self.stats.capped_queries += 1;
+                break;
+            }
+            evaluated += 1;
+
             let entry = &self.entries[id as usize];
 
             let complete = entry.literals.iter().all(|&(c, s)| {
@@ -1173,30 +1227,107 @@ mod test {
         db
     }
 
+    /// The current state of a test world: the cells that are set. A cell that
+    /// is not in the list is unknown.
+    type State = Vec<(u32, CellState)>;
+
+    /// A state callback for a test world.
+    fn state_of_assignments(
+        assignments: &[(u32, CellState)],
+    ) -> impl FnMut(u32) -> Option<CellState> + '_ {
+        move |cell: u32| {
+            assignments
+                .iter()
+                .find(|&&(assigned, _)| assigned == cell)
+                .map(|&(_, state)| state)
+        }
+    }
+
+    /// Set a cell of a test world, as `World::set_cell` would.
+    ///
+    /// This keeps the unmatched-literal counters of the database in sync, so
+    /// that the completion filter of [`NogoodDb::completed`] sees the same
+    /// state as the `state_of` callback.
+    fn set(db: &mut NogoodDb, state: &mut State, cell: u32, new_state: CellState) {
+        if let Some(entry) = state.iter_mut().find(|(assigned, _)| *assigned == cell) {
+            entry.1 = new_state;
+        } else {
+            state.push((cell, new_state));
+        }
+        let mut out = Vec::new();
+        db.on_set(cell, new_state, &mut out);
+    }
+
+    /// Unset a cell of a test world, as `World::unset_cell` would.
+    fn unset(db: &mut NogoodDb, state: &mut State, cell: u32) {
+        if let Some(position) = state.iter().position(|(assigned, _)| *assigned == cell) {
+            let (_, old_state) = state.remove(position);
+            db.on_unset(cell, old_state);
+        }
+    }
+
     #[test]
     fn blocks_when_all_literals_hold() {
         let mut db = db_with_entries(&[&[(10, D), (11, A), (12, D)]]);
+        let mut state = State::new();
+        set(&mut db, &mut state, 10, D);
+        set(&mut db, &mut state, 11, A);
 
         // Only the queried cell is missing.
-        assert!(db.blocks(12, D, |c| match c {
-            10 => Some(D),
-            11 => Some(A),
-            _ => None,
-        }));
+        assert!(db.blocks(12, D, state_of_assignments(&state)));
 
         // One other literal disagrees.
-        assert!(!db.blocks(12, D, |c| match c {
-            10 => Some(D),
-            11 => Some(D),
-            _ => None,
-        }));
+        unset(&mut db, &mut state, 11);
+        set(&mut db, &mut state, 11, D);
+        assert!(!db.blocks(12, D, state_of_assignments(&state)));
     }
 
     #[test]
     fn blocks_requires_exact_state() {
         let mut db = db_with_entries(&[&[(10, D), (11, A)]]);
-        assert!(!db.blocks(11, D, |_| None));
-        assert!(db.blocks(11, A, |c| (c == 10).then_some(D)));
+        let mut state = State::new();
+        set(&mut db, &mut state, 10, D);
+
+        assert!(!db.blocks(11, D, state_of_assignments(&state)));
+        assert!(db.blocks(11, A, state_of_assignments(&state)));
+    }
+
+    #[test]
+    fn completed_filter_skips_entries_that_are_two_literals_short() {
+        let mut db = NogoodDb::with_default_capacity();
+
+        // A hundred entries that stay two literals short of a match, followed
+        // by one that is one literal short and would be missed by the old
+        // 64-candidate cap.
+        for i in 0..100u32 {
+            learn(&mut db, &[(0, D), (100 + i, A)]);
+        }
+        learn(&mut db, &[(0, D), (1000, A)]);
+
+        // The real search maintains the counters through `on_set`; here cell
+        // 1000 is set to its recorded state while the fillers stay unknown.
+        let mut state = State::new();
+        set(&mut db, &mut state, 1000, A);
+
+        assert!(db.blocks(0, D, state_of_assignments(&state)));
+        assert_eq!(db.stats().filtered_candidates, 100);
+        assert_eq!(db.stats().capped_queries, 0);
+    }
+
+    #[test]
+    fn completed_visit_cap_bounds_the_bucket_scan() {
+        let mut db = NogoodDb::with_default_capacity();
+
+        for i in 0..(MAX_QUERY_VISITS + 1) as u32 {
+            learn(&mut db, &[(0, D), (1000 + i, A)]);
+        }
+        // The matching entry lies beyond the visit cap and is not found.
+        learn(&mut db, &[(0, D), (2000, A)]);
+        let mut out = Vec::new();
+        db.on_set(2000, A, &mut out);
+
+        assert!(!db.blocks(0, D, |c| (c == 2000).then_some(A)));
+        assert_eq!(db.stats().capped_queries, 1);
     }
 
     #[test]
@@ -1243,9 +1374,12 @@ mod test {
         assert!(!db.blocks(3, D, |_| Some(A)));
 
         // The kept entries still block when their other literal holds.
-        assert!(db.blocks(4, D, |c| (c == 104).then_some(A)));
+        let mut state = State::new();
+        set(&mut db, &mut state, 104, A);
+        assert!(db.blocks(4, D, state_of_assignments(&state)));
         assert!(!db.blocks(4, D, |_| None));
-        assert!(db.blocks(5, D, |c| (c == 105).then_some(A)));
+        set(&mut db, &mut state, 105, A);
+        assert!(db.blocks(5, D, state_of_assignments(&state)));
     }
 
     #[test]
@@ -1281,7 +1415,9 @@ mod test {
         assert_eq!(db.used_entries(), 0);
 
         // A completion query uses the first entry.
-        assert!(db.blocks(2, A, |c| (c == 1).then_some(D)));
+        let mut state = State::new();
+        set(&mut db, &mut state, 1, D);
+        assert!(db.blocks(2, A, state_of_assignments(&state)));
         assert_eq!(db.stats().used_learned, 1);
         assert_eq!(db.used_entries(), 1);
 
@@ -1471,12 +1607,14 @@ mod test {
         assert_eq!(db.stats().used_lbd_histogram[2], 0);
         assert_eq!(db.stats().used_length_histogram[2], 0);
 
-        assert!(db.blocks(2, A, |c| (c == 1).then_some(D)));
+        let mut state = State::new();
+        set(&mut db, &mut state, 1, D);
+        assert!(db.blocks(2, A, state_of_assignments(&state)));
         assert_eq!(db.stats().used_lbd_histogram[2], 1);
         assert_eq!(db.stats().used_length_histogram[2], 1);
 
         // A second use does not count twice.
-        assert!(db.blocks(2, A, |c| (c == 1).then_some(D)));
+        assert!(db.blocks(2, A, state_of_assignments(&state)));
         assert_eq!(db.stats().used_lbd_histogram[2], 1);
     }
 
@@ -1493,7 +1631,9 @@ mod test {
         assert_eq!(db.stats().reductions, 1);
 
         // The first use of the target happens one reduction after learning.
-        assert!(db.blocks(100, A, |c| (c == 0).then_some(D)));
+        let mut state = State::new();
+        set(&mut db, &mut state, 0, D);
+        assert!(db.blocks(100, A, state_of_assignments(&state)));
         assert_eq!(db.stats().reuse_distance_histogram[1], 1);
         assert_eq!(db.stats().reuse_distance_histogram[0], 0);
     }
@@ -1502,7 +1642,9 @@ mod test {
     fn reduce_records_evicted_use_counts() {
         let mut db = NogoodDb::new(4);
         learn(&mut db, &[(0, D), (100, A)]);
-        assert!(db.blocks(100, A, |c| (c == 0).then_some(D)));
+        let mut state = State::new();
+        set(&mut db, &mut state, 0, D);
+        assert!(db.blocks(100, A, state_of_assignments(&state)));
 
         // The first reduction evicts the never-used entries ...
         for c in 1..4u32 {
@@ -1525,7 +1667,9 @@ mod test {
     fn reduce_evicts_a_stale_used_entry_before_fresh_entries() {
         let mut db = NogoodDb::new(4);
         learn(&mut db, &[(0, D), (100, A)]);
-        assert!(db.blocks(100, A, |c| (c == 0).then_some(D)));
+        let mut state = State::new();
+        set(&mut db, &mut state, 0, D);
+        assert!(db.blocks(100, A, state_of_assignments(&state)));
         for c in 1..4u32 {
             learn(&mut db, &[(c, D), (c + 100, A)]);
         }
@@ -1539,8 +1683,10 @@ mod test {
         for c in 4..6u32 {
             learn(&mut db, &[(c, D), (c + 100, A)]);
         }
-        assert!(!db.blocks(100, A, |c| (c == 0).then_some(D)));
-        assert!(db.blocks(104, A, |c| (c == 4).then_some(D)));
+        assert!(!db.blocks(100, A, |_| None));
+        let mut state = State::new();
+        set(&mut db, &mut state, 4, D);
+        assert!(db.blocks(104, A, state_of_assignments(&state)));
     }
 
     #[test]

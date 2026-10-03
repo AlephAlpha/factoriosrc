@@ -283,7 +283,10 @@ not currently match. The index makes this incremental update possible.
   revalidating the match.
 - When chronological backtracking tries the opposite state of a two-state
   guess, an indexed completion query can skip a branch that would immediately
-  complete a nogood.
+  complete a nogood. The query reads the unmatched-literal counter of each
+  candidate and evaluates only the entries that are at most one literal short
+  of a match, so the candidate cap bounds the entries actually examined
+  instead of the whole bucket.
 - Lookahead probes do not update the database counters; their assignments and
   rollback are temporary.
 
@@ -291,7 +294,7 @@ The propagation path is important: a nogood can be completed by deductions, not
 only by a final guess. A stale clause reason is ignored by conflict analysis and
 causes a chronological fallback.
 
-### Watched-Literal Propagation (Measured, Not Kept)
+### Measured Alternatives (Not Kept)
 
 A standard two-watched-literal variant of the database was implemented and
 measured with the release-build protocol of
@@ -301,9 +304,18 @@ to about `6.5e7` watch visits), but two-watched-literal propagation does not
 re-propagate every unit after backtracking the way the per-literal counters do.
 The step counts rose from 442k to 855k on `c1`, from 2.06M to 3.72M on `c5`,
 and from 653k to 776k on `c7`, and the wall time rose on all three, so the
-counter scheme was kept. The variant was not kept in the repository; a future
-attempt would need an extra mechanism that restores counter-equivalent
-propagation before the maintenance saving can pay off.
+counter scheme was kept.
+
+A recursive clause-minimization pass shortened the learned clauses by only
+about 6% (the average length fell from 33.0 to 31.2 on `c1`) while the analysis
+cost grew about fivefold: `analysis_scanned` rose from 27.5M to 150M on `c1`
+and from 497M to 2.35B on `c1 --backjump`. The wall time rose 15-21% on `c1`,
+`c5`, and `c7`, so the pass was not kept.
+
+Ranking the eviction by LBD as a tie-break after recency and uses was also not
+kept: repeated release runs were consistently slower (about +3.2% on `c1`,
++1.1% on `c7`, and +1.2% on `c5`), even where it lowered the step count
+slightly. None of these variants is in the repository.
 
 ### Capacity And Eviction
 
@@ -314,7 +326,7 @@ The current implementation uses these limits:
 | Automatic capacity | `max(2048, 4 * world_size)`, including the padding ring. |
 | Explicit capacity | `Config::nogood_capacity` overrides the automatic value. |
 | Learned-entry length | Entries longer than 96 literals are rejected. |
-| Completion-query work | At most 64 indexed candidates are checked. |
+| Completion-query work | At most 512 index entries are visited, and at most 64 of the filtered candidates are evaluated. |
 | Reduction | When the capacity is reached, the worst half is evicted. |
 | Ranking | Older last-use epoch first, then fewer uses, then older entry id. |
 | LBD | Recorded for diagnostics, but not used for propagation or eviction. |

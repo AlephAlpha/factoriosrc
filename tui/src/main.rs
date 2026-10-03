@@ -72,6 +72,7 @@ fn run_no_tui(
                         "reductions": stats.reductions,
                         "queries": stats.queries,
                         "capped_queries": stats.capped_queries,
+                        "filtered_candidates": stats.filtered_candidates,
                         "literals_total": stats.literals_total,
                         "rejected_long": stats.rejected_long,
                         "used_learned": stats.used_learned,
