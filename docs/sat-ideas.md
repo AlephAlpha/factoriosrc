@@ -514,28 +514,56 @@ should only be changed after rerunning the complete external protocol.
 
 ## Canonical Benchmark Table
 
-This is the current unified benchmark, measured on 2026-09-23 with a release
-build (`cargo build --release`) at commit `3f63a21` on Linux x86-64 (24 cores,
-31 GiB RAM), single runs, a 60-second per-cell timeout, and the default
-`new_state` unless the case says otherwise. Cells report wall time from the
-program's `elapsed_secs`; `>60 s` means the cell hit the timeout; `N/A` means
-`Config::check()` rejects the option for that rule. Step counts are
-deterministic for fixed-seed runs and are available in the JSON output.
+This is the current unified benchmark. The single-option columns were measured
+on 2026-10-04 with a release build (`cargo build --release`) at commit
+`9cf18a3` on Linux x86-64 (24 cores, 31 GiB RAM), single runs, a 600-second
+per-cell timeout, and the default `new_state` unless the case says otherwise.
+The three combination columns were added on 2026-10-07 at the same commit and
+machine, with the same protocol and a sequential run per cell. Cells report
+wall time from the program's `elapsed_secs`; `>600 s` means the cell hit the
+timeout; `N/A` means `Config::check()` rejects the option for that rule. Step
+counts are deterministic for fixed-seed runs and are available in the JSON
+output.
 
 Fill future reruns in place; do not append a new date-specific table.
 
-| Case | Stopping condition | Plain | `--phase-saving` | `--lookahead` | `--backjump` | `--nogood` | `--nogood-guard` | `--activity` |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `B3/S23 26 8 4 -y 1 -n a` | First solution | 1.27 s | 3.92 s | 5.84 s | 39.1 s | 3.03 s | 1.22 s | 1.54 s |
-| `B3/S23 64 64 1 -n a` | First solution | >60 s | 1.98 s | 0.041 s | 0.020 s | 0.004 s | 0.006 s | 0.025 s |
-| `3457/357/5 20 16 7 -x 3 -s D2- -n a` | First solution | 2.35 s | 3.41 s | N/A | N/A | N/A | N/A | 2.59 s |
-| `R3,C2,S2,B3,N+ 50 10 4 -x 2 -s D2- -n a` | First solution | >60 s | 14.1 s | 31.8 s | >60 s | >60 s | >60 s | >60 s |
-| `B2n3/S23-q 30 9 4 -x 1 -n a` | First solution | 4.31 s | 3.66 s | 4.13 s | >60 s | 16.6 s | 4.80 s | 2.74 s |
-| `B3/S23 20 20 2 -n r --seed 1 --no-stop` | Through the 10th solution | 6.05 s | 0.94 s | >60 s | >60 s | 0.43 s | 15.0 s | 2.12 s |
-| `B3/S23 7 7 2 -n a --no-stop` | Exhaustion (9,537 solutions) | 0.66 s | 0.70 s | 1.01 s | 2.34 s | 3.53 s | 1.70 s | 0.68 s |
+| Case | Stopping condition | Plain | `--phase-saving` | `--lookahead` | `--backjump` | `--nogood` | `--nogood-guard` | `--activity` | `--phase-saving --activity` | `--activity --nogood` | `--phase-saving --nogood` |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `B3/S23 26 8 4 -y 1 -n a` | First solution | 1.25 s | 3.94 s | 6.05 s | 39.9 s | 2.93 s | 1.16 s | 1.52 s | 1.32 s | 3.50 s | 9.92 s |
+| `B3/S23 64 64 1 -n a` | First solution | >600 s | 1.98 s | 0.046 s | 0.016 s | 0.004 s | 0.007 s | 0.021 s | >600 s | 0.008 s | 0.008 s |
+| `3457/357/5 20 16 7 -x 3 -s D2- -n a` | First solution | 2.32 s | 3.37 s | N/A | N/A | N/A | N/A | 2.56 s | 3.96 s | N/A | N/A |
+| `R3,C2,S2,B3,N+ 50 10 4 -x 2 -s D2- -n a` | First solution | 71.3 s | 14.0 s | 31.7 s | >600 s | >600 s | 76.5 s | 60.8 s | 53.4 s | >600 s | 498 s |
+| `B2n3/S23-q 30 9 4 -x 1 -n a` | First solution | 4.26 s | 3.84 s | 4.16 s | 429 s | 16.4 s | 4.67 s | 2.73 s | 4.12 s | 5.57 s | 10.9 s |
+| `B3/S23 20 20 2 -n r --seed 1 --no-stop` | Through the 10th solution | 6.08 s | 0.93 s | 98.9 s | >600 s | 0.41 s | 11.2 s | 2.12 s | 15.9 s | 0.083 s | 0.114 s |
+| `B3/S23 7 7 2 -n a --no-stop` | Exhaustion (9,537 solutions) | 0.65 s | 0.70 s | 1.02 s | 2.32 s | 3.26 s | 1.65 s | 0.68 s | 0.73 s | 3.38 s | 3.18 s |
 
-Every option produced the same solution count on the enumeration rows: 10 for
-the 10th-solution row and 9,537 for exhaustion.
+Every option and combination produced the same solution count on the
+enumeration rows: 10 for the 10th-solution row and 9,537 for exhaustion.
+
+The combinations are not additive. `--phase-saving --activity` is slower than
+at least one of its two parts on every row except `B3/S23 26 8 4`: most
+starkly on `B3/S23 64 64 1`, where the pair times out while `--activity`
+alone finds a solution in 0.021 s, and on `B3/S23 20 20 2`, where it takes
+15.9 s against 0.93 s for `--phase-saving`. Both options reorder branching,
+and their composition can land on a much worse path. The pair is the only
+combination available for the Generations row, where it is also slower than
+both parts.
+
+The learning pairs are mixed. `--activity --nogood` beats `--nogood` alone on
+`B2n3/S23-q` (5.57 s versus 16.4 s) and on `B3/S23 20 20 2` (0.083 s versus
+0.41 s), is close on `B3/S23 7 7 2` (3.38 s versus 3.26 s), and is slower on
+`B3/S23 26 8 4` (3.50 s versus 2.93 s). `--phase-saving --nogood` finishes `R3,C2,S2,B3,N+`
+in 498 s, where `--nogood` and `--activity --nogood` both time out, and
+improves `B2n3/S23-q` and `B3/S23 20 20 2`, but it is 3.4x slower than
+`--nogood` alone on `B3/S23 26 8 4` (9.92 s versus 2.93 s). Neither learning
+pair approaches the plain search on `R3,C2,S2,B3,N+` (71.3 s) or
+`B3/S23 26 8 4` (1.25 s).
+
+`--phase-saving --lookahead` is deliberately not listed: `guess()` consults
+the lookahead probe before phase saving, so phase saving is never read and
+the pair is behaviorally identical to `--lookahead` alone. The `--nogood`
+pairs implicitly enable `--backjump` and inherit the two-state restriction,
+which is why the Generations row is `N/A` for them.
 
 The nogood rows use the automatic capacity unless a future benchmark explicitly
 records another value. Capacity sweeps and one-off profiling belong in the
