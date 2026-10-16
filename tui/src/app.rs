@@ -479,20 +479,13 @@ impl ConfigState {
             }
             ConfigField::Nogood => {
                 self.working_config.nogood = !self.working_config.nogood;
-                // The nogood database enables backjumping in `Config::check`;
-                // keep the form in sync when it is toggled on.
-                if self.working_config.nogood {
-                    self.working_config.backjump = true;
-                }
             }
             ConfigField::NogoodGuard => {
                 self.working_config.nogood_guard = !self.working_config.nogood_guard;
-                // The guard enables the nogood database in `Config::check`,
-                // and the database enables backjumping; keep the form in sync
-                // when it is toggled on.
+                // The guard enables the nogood database in `Config::check`;
+                // keep the form in sync when it is toggled on.
                 if self.working_config.nogood_guard {
                     self.working_config.nogood = true;
-                    self.working_config.backjump = true;
                 }
             }
             ConfigField::Activity => {

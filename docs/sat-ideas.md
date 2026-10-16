@@ -21,9 +21,10 @@ and are available through the current frontends.
 | Descriptor propagation and chronological search | Implemented | default | Checks affected descriptors incrementally, then backtracks through the search chain. | This is local table propagation, not watched-literal BCP. |
 | Phase saving | Implemented | `--phase-saving` | Tries the last real state of a cell before `new_state`. | A polarity heuristic only; it does not select a different cell. |
 | Lookahead | Implemented | `--lookahead` | Probes `Dead` and `Alive` for the next branch candidate and keeps the better polarity. | Two-state rules only; the probe is bounded and does not select a variable. |
-| Conflict analysis and backjumping | Implemented | `--backjump` | Performs 1-UIP-style analysis for selected local conflicts and resumes above the learned conflict level. | Two-state rules only; global and some non-local failures backtrack chronologically. |
-| Exact-position nogood learning | Implemented | `--nogood` | Persists analyzed forbidden assignments and propagates them while the current `World` remains alive. | Two-state rules only; entries use absolute cell indices and cannot be transferred. |
-| Machinery cost guard | Implemented | `--nogood-guard` | Enables nogood learning and suspends the experimental machinery when its measured work is too high. | Opt-in and heuristic; it is not a proof of wall-time improvement. |
+| Conflict analysis and backjumping | Implemented | `--backjump` | Performs 1-UIP-style analysis for selected local conflicts and resumes above the learned conflict level. The analysis machinery is also enabled by `--nogood`. | Two-state rules only; global and some non-local failures backtrack chronologically. |
+| Exact-position nogood learning | Implemented | `--nogood` | Persists analyzed forbidden assignments and propagates them while the current `World` remains alive. With only `--nogood` the search resumes chronologically; `--nogood --backjump` adds the non-chronological resumption. | Two-state rules only; entries use absolute cell indices and cannot be transferred. |
+| Chronological nogood learning | Implemented | `--nogood` (without `--backjump`) | Learns analyzed conflicts but resumes with the ordinary chronological backtracking, isolating the value of the learned patterns from the backjump resumption. | Two-state rules only; pays the analysis and database maintenance without the non-chronological resumption. |
+| Machinery cost guard | Implemented | `--nogood-guard` | Enables nogood learning (not backjumping) and suspends the experimental machinery when its measured work is too high. | Opt-in and heuristic; it is not a proof of wall-time improvement. |
 | Conflict activity branching | Implemented | `--activity` | Chooses the most active unknown cell in a window of eight search-chain cells. | Changes branching order only; the window remains deliberately small. |
 | Relative or cross-world nogoods | Proposed | none | Not implemented. | Boundary, background, symmetry, and world-size assumptions need a validity proof. |
 | Restarts, component caching, and a direct CNF encoding | Proposed | none | Not implemented. | These would be separate search strategies, not drop-in replacements. |
@@ -31,7 +32,10 @@ and are available through the current frontends.
 The option implications and rule restrictions are enforced by
 `Config::check()`:
 
-- `nogood_guard` enables `nogood`, and `nogood` enables `backjump`.
+- `nogood_guard` enables `nogood`; `backjump` stays independent. `--nogood`
+  learns and resumes chronologically, while `--nogood --backjump` is the
+  non-chronological combination, and `--nogood-guard --backjump` is the
+  guarded version of it.
 - `lookahead`, `backjump`, and `nogood` are rejected for rules with more than
   two states.
 - `phase_saving` and `activity` also apply to Generations rules.
@@ -95,9 +99,11 @@ The main loop is `World::search()` and its internal `step()`:
    cell. The default cell is the head of the `next` chain; `activity` may choose
    another cell in its small window. `lookahead`, when enabled, chooses the
    polarity before the real assignment.
-5. A local conflict is analyzed when backjumping is active and the machinery is
-   not suspended. Otherwise `backtrack()` removes assignments until another
-   state can be tried.
+5. A local conflict is analyzed when `backjump` or `nogood` is active and the
+   machinery is not suspended. The resumption policy is selected by
+   `backjump`: it either backjumps above the learned conflict level or calls
+   the ordinary `backtrack()`, which removes assignments until another state
+   can be tried.
 6. When all searchable cells are assigned, `check_period()` applies the current
    smaller-period divisor check. If it passes, `World::search()` reports
    `Solved`; otherwise the assignment is backtracked. A later call continues
@@ -109,7 +115,7 @@ The main loop is `World::search()` and its internal `step()`:
 | --- | --- | --- |
 | Descriptor checks and the trail queue | Unit propagation | One descriptor is an n-ary transition constraint, not a CNF clause. |
 | `next`-chain branching | DPLL branching | The order is spatial and is also tied to the front optimization. |
-| `Reason`, `TrailMeta`, and `Antecedent` | Trail and implication graph | Detailed antecedents exist only when backjumping is enabled. |
+| `Reason`, `TrailMeta`, and `Antecedent` | Trail and implication graph | Detailed antecedents exist only when the conflict analysis machinery is enabled (`backjump` or `nogood`). |
 | `World::analyze()` | 1-UIP conflict analysis | Reasons are reconstructed from mutable descriptors and can become stale. |
 | `NogoodDb` | Learned-clause database | Entries are absolute, world-local forbidden assignments. |
 | `activity` | VSIDS-style branching | Only a fixed local window is reordered; it is not a full SAT variable heuristic. |
@@ -191,15 +197,18 @@ well as all learned nogoods.
 
 ## Conflict Analysis And Backjumping
 
-Backjumping is the first CDCL-inspired experiment. It is enabled by
-`Config::backjump` or implicitly by `Config::nogood`, and is limited to
-two-state rules.
+Backjumping is the first CDCL-inspired experiment. The conflict analysis
+machinery it shares with nogood learning is enabled by `Config::backjump` or
+`Config::nogood`, and is limited to two-state rules. The non-chronological
+resumption itself is selected by `Config::backjump` alone; with only
+`Config::nogood`, the analyzed conflicts are learned into the database but
+resumed chronologically.
 
 ### Trail Metadata
 
 `Reason` remains a small state-setting category: `Known`, `Deduced`, `Guessed`,
-or `TryAnother`. When backjumping is enabled, `World` keeps a parallel
-`TrailMeta` entry containing:
+or `TryAnother`. When the conflict analysis machinery is enabled, `World` keeps
+a parallel `TrailMeta` entry containing:
 
 - the decision level;
 - whether the entry is the level's decision carrier;
@@ -237,6 +246,12 @@ For `Confl::Rule`, `Confl::Symmetry`, or an active `Confl::Nogood`,
 5. Reassigns the 1-UIP cell to the opposite state with a temporary clause
    antecedent.
 
+Steps 4 and 5 are the non-chronological resumption of `Config::backjump`. With
+`--nogood` alone, the analysis still resolves to the 1-UIP (steps 1-2) but
+skips the resumption of steps 4-5: the learned nogood is recorded in the
+persistent database, and the ordinary chronological backtracking resumes the
+search; the temporary clause reason of step 5 is not created.
+
 The temporary clause exists on the current trail. It becomes persistent only
 when `nogood` is enabled. Global conflicts, a failed two-state lookahead, and a
 failed complete-assignment period check use chronological backtracking.
@@ -257,8 +272,11 @@ does not imply a speedup.
 
 ## Exact-Position Nogood Learning
 
-`--nogood` stores the forbidden assignments produced by conflict analysis. It
-also enables backjumping.
+`--nogood` stores the forbidden assignments produced by conflict analysis, and
+enables the analysis machinery itself. It does not enable backjumping: the
+search resumes chronologically unless `--backjump` is set as well. The
+chronological mode is the direct test of the learned patterns, separated from
+the re-check and resumption costs of the backjump.
 
 ### Representation And Lifetime
 
@@ -344,13 +362,15 @@ these counters when requested; they do not affect the search.
 
 ### Cost Guard
 
-`--nogood-guard` enables the database and backjumping, then monitors a proxy for
-the experimental machinery's work:
+`--nogood-guard` enables the database (not backjumping), then monitors a proxy
+for the experimental machinery's work:
 
 `queued_cells + analysis_scanned + bucket_updates`.
 
 Here `queued_cells` includes propagation work after backjumps, while
 `analysis_scanned` and `bucket_updates` measure the two other machinery paths.
+Without backjumping, the same budget bounds the chronological learning
+instead.
 
 Every 1024 search steps, the guard compares this work with a budget of 512
 operations per step. If the budget is exceeded, it disables conflict analysis
@@ -400,6 +420,9 @@ Its values are heuristic state and are not serialized.
 
 These are proposals, not current features. Any implementation should first add
 a differential correctness test and then use the canonical benchmark table.
+Chronological nogood learning was implemented from this list: `--nogood`
+without `--backjump` is the isolated learning mode, and its measurement is
+pending the next unified benchmark rerun.
 
 1. **Translated or canonicalized nogoods.** Reuse relative patterns only after
    proving independence from padding, known cells, diagonal boundaries,
@@ -527,6 +550,13 @@ output.
 
 Fill future reruns in place; do not append a new date-specific table.
 
+The `--nogood`-family columns above predate the decoupling of learning from
+backjumping: at `9cf18a3`, `--nogood` implied `--backjump`. The numbers are
+kept as measured; under the current semantics they correspond to
+`--nogood --backjump` and, for the guard, `--nogood-guard --backjump`. Plain
+`--nogood` and `--nogood-guard` now use the chronological resumption and will
+be re-measured and folded into the table at the next unified rerun.
+
 | Case | Stopping condition | Plain | `--phase-saving` | `--lookahead` | `--backjump` | `--nogood` | `--nogood-guard` | `--activity` | `--phase-saving --activity` | `--activity --nogood` | `--phase-saving --nogood` |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | `B3/S23 26 8 4 -y 1 -n a` | First solution | 1.25 s | 3.94 s | 6.05 s | 39.9 s | 2.93 s | 1.16 s | 1.52 s | 1.32 s | 3.50 s | 9.92 s |
@@ -562,8 +592,11 @@ pair approaches the plain search on `R3,C2,S2,B3,N+` (71.3 s) or
 `--phase-saving --lookahead` is deliberately not listed: `guess()` consults
 the lookahead probe before phase saving, so phase saving is never read and
 the pair is behaviorally identical to `--lookahead` alone. The `--nogood`
-pairs implicitly enable `--backjump` and inherit the two-state restriction,
-which is why the Generations row is `N/A` for them.
+pairs measured above implicitly enabled `--backjump` and inherit the two-state
+restriction, which is why the Generations row is `N/A` for them. Under the
+current semantics every `--nogood` configuration keeps the two-state
+restriction, but only adding `--backjump` enables the non-chronological
+resumption.
 
 The nogood rows use the automatic capacity unless a future benchmark explicitly
 records another value. Capacity sweeps and one-off profiling belong in the

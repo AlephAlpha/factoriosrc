@@ -1,10 +1,12 @@
 //! The nogood database: a persistent memory of forbidden local patterns.
 //!
 //! This is the CA version of the learned-clause database of a CDCL SAT
-//! solver. When the conflict analysis of [`Config::backjump`](crate::Config::backjump)
-//! derives a clause, the corresponding nogood — a set of cells with states
-//! that cannot all hold together in any solution — is recorded here, so that
-//! the knowledge survives the backtracking that discards the trail.
+//! solver. When the conflict analysis machinery (enabled by
+//! [`Config::backjump`](crate::Config::backjump) or
+//! [`Config::nogood`](crate::Config::nogood)) derives a clause, the
+//! corresponding nogood — a set of cells with states that cannot all hold
+//! together in any solution — is recorded here, so that the knowledge
+//! survives the backtracking that discards the trail.
 //!
 //! In this first, exact-position mode, a nogood is stored by the *absolute*
 //! indices and states of its cells. It is valid only within the world where

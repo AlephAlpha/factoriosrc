@@ -310,9 +310,10 @@ pub struct Config {
     /// non-chronological backtracking.
     ///
     /// When this is `true`, each deduction remembers the cells it was deduced
-    /// from, and when a conflict is found, the search analyzes it, jumps to
-    /// the decision that caused it, and remembers the learned clause as long
-    /// as it is valid.
+    /// from, and when a conflict is found, the search analyzes it and jumps to
+    /// the decision that caused it. The learned clause is remembered only as
+    /// long as it is valid on the current trail, unless the persistent
+    /// database of [`nogood`](Config::nogood) is enabled as well.
     ///
     /// This is an experimental feature inspired by the CDCL conflict analysis
     /// of SAT solvers; it does not always help and is usually slower than the
@@ -325,13 +326,19 @@ pub struct Config {
 
     /// Whether to enable the persistent nogood database.
     ///
-    /// When this is `true`, the clauses derived by the conflict analysis of
-    /// [`backjump`](Config::backjump), which this option enables implicitly,
-    /// are recorded in a database of forbidden patterns. During propagation,
-    /// the database can force an unknown cell away from the state that would
-    /// complete a forbidden pattern. When chronological backtracking retries
-    /// the opposite state of a two-state guess, the database also checks
-    /// whether that state would complete a stored pattern and skips it if so.
+    /// When this is `true`, the conflict analysis machinery — which this
+    /// option enables implicitly — records its learned clauses in a database
+    /// of forbidden patterns. During propagation, the database can force an
+    /// unknown cell away from the state that would complete a forbidden
+    /// pattern. When chronological backtracking retries the opposite state of
+    /// a two-state guess, the database also checks whether that state would
+    /// complete a stored pattern and skips it if so.
+    ///
+    /// The search resumes chronologically unless
+    /// [`backjump`](Config::backjump) is enabled as well: with only this
+    /// option, the analyzed nogood is learned but the conflict is handled by
+    /// the ordinary chronological backtracking. This isolates the value of the
+    /// learned patterns from the non-chronological resumption policy.
     ///
     /// The nogoods are stored by absolute cell indices, so they are only
     /// reused within one world: they are dropped when the world is saved and
@@ -376,9 +383,9 @@ pub struct Config {
     /// machinery does not pay off from running much slower than the plain
     /// search, at the cost of giving up the pruning it would provide.
     ///
-    /// This enables [`nogood`](Config::nogood) implicitly, and therefore
-    /// [`backjump`](Config::backjump) as well, and is restricted to 2-state
-    /// rules like they are. The guard is deterministic and is not serialized.
+    /// This enables [`nogood`](Config::nogood) implicitly, but not
+    /// [`backjump`](Config::backjump), and is restricted to 2-state rules
+    /// like it is. The guard is deterministic and is not serialized.
     /// The default is `false`; without it the machinery always stays active.
     #[cfg_attr(feature = "clap", arg(long, help_heading = "Experimental"))]
     #[cfg_attr(feature = "serde", serde(default))]
@@ -565,7 +572,8 @@ impl Config {
 
     /// Enable the persistent nogood database.
     ///
-    /// This enables [`backjump`](Config::backjump) implicitly.
+    /// The search resumes chronologically unless
+    /// [`backjump`](Config::backjump) is enabled as well.
     ///
     /// See [`nogood`](Config::nogood) for more details.
     #[inline]
@@ -678,6 +686,18 @@ impl Config {
         self.symmetry.translation_is_valid(self.dx, self.dy)
     }
 
+    /// Whether the conflict analysis machinery is enabled.
+    ///
+    /// The machinery is used by [`backjump`](Config::backjump) for the
+    /// non-chronological resumption and by [`nogood`](Config::nogood) for
+    /// the exact-position learning. The two options are independent: with
+    /// only `nogood`, the analyzed conflicts are learned into the database
+    /// and the search resumes chronologically.
+    #[inline]
+    pub(crate) const fn analysis_enabled(&self) -> bool {
+        self.backjump || self.nogood
+    }
+
     /// Try to parse the rule string, and check whether the rule is supported.
     ///
     /// Currently, the program supports the following rules:
@@ -728,18 +748,17 @@ impl Config {
 
         // The cost guard bounds the machinery of the nogood database and the
         // conflict analysis, so it enables the database implicitly and shares
-        // its restrictions.
+        // its restrictions. It does not enable backjumping: the guard bounds
+        // whichever resumption policy the configuration selected.
         if self.nogood_guard {
             self.nogood = true;
         }
 
-        // The nogood database builds on the conflict analysis of backjumping,
-        // so it is restricted to the same rules and enables it implicitly.
-        if self.nogood {
-            if rule.states > 2 {
-                return Err(ConfigError::NogoodUnsupported);
-            }
-            self.backjump = true;
+        // The nogood database builds on the conflict analysis machinery, so
+        // it is restricted to the same rules. It does not enable backjumping:
+        // the non-chronological resumption is selected by `backjump` alone.
+        if self.nogood && rule.states > 2 {
+            return Err(ConfigError::NogoodUnsupported);
         }
 
         if self.nogood_capacity == Some(0) {
@@ -1030,17 +1049,33 @@ mod tests {
     }
 
     #[test]
-    fn test_nogood_guard_enables_nogood_and_backjump() {
+    fn test_nogood_guard_enables_nogood_only() {
         let mut config = Config::new("B3/S23", 3, 3, 1).with_nogood_guard();
         config.check().unwrap();
         assert!(config.nogood, "the guard enables the nogood database");
-        assert!(config.backjump, "the nogood database enables backjumping");
+        assert!(
+            !config.backjump,
+            "the guard does not enable non-chronological backjumping"
+        );
 
         // The guard shares the nogood restrictions.
         assert!(matches!(
             Config::new("B3/S23/3", 3, 3, 1).with_nogood_guard().check(),
             Err(ConfigError::NogoodUnsupported)
         ));
+    }
+
+    #[test]
+    fn test_nogood_does_not_enable_backjump() {
+        let mut config = Config::new("B3/S23", 3, 3, 1).with_nogood();
+        config.check().unwrap();
+        assert!(config.nogood);
+        assert!(!config.backjump);
+
+        // Backjumping remains an independent option.
+        let mut config = Config::new("B3/S23", 3, 3, 1).with_nogood().with_backjump();
+        config.check().unwrap();
+        assert!(config.backjump);
     }
 
     #[test]

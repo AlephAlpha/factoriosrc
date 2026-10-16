@@ -61,7 +61,7 @@ pub enum ConfigError {
 
     /// The nogood database is enabled for a Generations rule.
     ///
-    /// The nogood database builds on the conflict analysis of backjumping,
+    /// The nogood database learns from the conflict analysis machinery,
     /// which is restricted to rules with 2 states.
     #[error("The nogood database is only supported for rules with 2 states")]
     NogoodUnsupported,

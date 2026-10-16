@@ -72,11 +72,12 @@ pub enum Status {
     NoSolution,
 }
 
-/// A piece of metadata of a stack entry, used for conflict analysis when
-/// backjumping is enabled.
+/// A piece of metadata of a stack entry, used for conflict analysis.
 ///
-/// When [`Config::backjump`](crate::Config::backjump) is `false` (the default),
-/// no metadata is recorded, and the search behaves exactly like before.
+/// The metadata is recorded when [`Config::backjump`](crate::Config::backjump)
+/// or [`Config::nogood`](crate::Config::nogood) is enabled, i.e. whenever the
+/// conflict analysis machinery is on. When both are `false` (the default), no
+/// metadata is recorded, and the search behaves exactly like before.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrailMeta {
     /// The decision level of the entry: the number of decision carriers in
@@ -116,8 +117,10 @@ pub struct TrailMeta {
 
 /// Why a conflict occurred while checking a cell.
 ///
-/// When backjumping is enabled, a [`Rule`](Confl::Rule) or
-/// [`Symmetry`](Confl::Symmetry) conflict is analyzed to backjump; a
+/// When the conflict analysis machinery is enabled (by
+/// [`Config::backjump`](crate::Config::backjump) or
+/// [`Config::nogood`](crate::Config::nogood)), a [`Rule`](Confl::Rule) or
+/// [`Symmetry`](Confl::Symmetry) conflict is analyzed; a
 /// [`Global`](Confl::Global) conflict is a global constraint failure and is
 /// handled by chronological backtracking.
 #[derive(Debug, Clone, Copy)]
@@ -136,9 +139,9 @@ pub enum Confl {
     ///
     /// The field is the id of the entry in the nogood database. All the cells
     /// of the nogood currently hold their recorded states, which no solution
-    /// can extend. Like a rule or symmetry conflict, this is analyzed to
-    /// backjump when backjumping is enabled (which it always is when the
-    /// nogood database is enabled).
+    /// can extend. Like a rule or symmetry conflict, this is analyzed; the
+    /// resumption policy is the one selected by
+    /// [`Config::backjump`](crate::Config::backjump).
     Nogood(u32),
 
     /// A global constraint failed: the front is empty or the population is too large.
@@ -397,9 +400,11 @@ pub struct World {
 
     /// The metadata of the entries in [`stack`](World::stack).
     ///
-    /// This is only used when [`Config::backjump`](crate::Config::backjump) is
-    /// enabled; the entries are pushed and popped in lockstep with the stack.
-    /// When it is disabled, this vector is always empty.
+    /// This is only used when the conflict analysis machinery is enabled
+    /// ([`Config::backjump`](crate::Config::backjump) or
+    /// [`Config::nogood`](crate::Config::nogood)); the entries are pushed and
+    /// popped in lockstep with the stack. When it is disabled, this vector is
+    /// always empty.
     pub(crate) trail_meta: Vec<TrailMeta>,
 
     /// The decision levels of the flip carriers in
@@ -411,10 +416,12 @@ pub struct World {
     /// backjump target to this level, so that no flip carrier is ever popped:
     /// see [`TrailMeta::flip`](TrailMeta::flip).
     ///
-    /// This is only used when [`Config::backjump`](crate::Config::backjump) is
-    /// enabled. It is maintained in lockstep with the flip entries of
+    /// This is only consumed by the non-chronological resumption of
+    /// [`Config::backjump`](crate::Config::backjump). It is maintained in
+    /// lockstep with the flip entries of
     /// [`trail_meta`](World::trail_meta) by [`set_cell`](World::set_cell) and
-    /// [`pop_meta`](World::pop_meta), and is empty otherwise.
+    /// [`pop_meta`](World::pop_meta) whenever the conflict analysis machinery
+    /// is enabled, and is empty otherwise.
     pub(crate) flip_levels: Vec<u32>,
 
     /// The current decision level: the number of decision carriers in the
@@ -424,25 +431,31 @@ pub struct World {
     /// [`backtrack`](World::backtrack) which is a new value of the same
     /// decision. Every level has exactly one decision carrier.
     ///
-    /// This is only maintained when [`Config::backjump`](crate::Config::backjump)
-    /// is enabled.
+    /// This is only maintained when the conflict analysis machinery is
+    /// enabled ([`Config::backjump`](crate::Config::backjump) or
+    /// [`Config::nogood`](crate::Config::nogood)).
     pub(crate) current_level: u32,
 
     /// The decision level of each cell, indexed by the cell index in the world.
     ///
-    /// This is only used when [`Config::backjump`](crate::Config::backjump) is
-    /// enabled. When it is disabled, this vector is always empty.
+    /// This is only used when the conflict analysis machinery is enabled
+    /// ([`Config::backjump`](crate::Config::backjump) or
+    /// [`Config::nogood`](crate::Config::nogood)). When it is disabled, this
+    /// vector is always empty.
     pub(crate) cell_level: Vec<u32>,
 
     /// The position of each cell in the stack, indexed by the cell index in
     /// the world; meaningless for cells that are not in the stack.
     ///
-    /// This is only used when [`Config::backjump`](crate::Config::backjump) is
-    /// enabled. It is used by the conflict analysis to recover the exact
-    /// antecedent of a deduction: a deduction is based on the cells that were
-    /// already in the stack when the deduction happened, so the antecedent is
-    /// the known part of the descriptor with stack positions before the
-    /// deduced cell. When it is disabled, this vector is always empty.
+    /// This is only used when the conflict analysis machinery is enabled
+    /// ([`Config::backjump`](crate::Config::backjump) or
+    /// [`Config::nogood`](crate::Config::nogood)). It is used by the conflict
+    /// analysis to recover the exact antecedent of a deduction: a deduction is
+    /// based on the cells that were already in the stack when the deduction
+    /// happened, so the antecedent is the known part of the descriptor with
+    /// stack positions before the deduced cell. The nogood database also reads
+    /// it when it builds the clause reason of a fired entry. When the
+    /// machinery is disabled, this vector is always empty.
     pub(crate) cell_pos: Vec<u32>,
 
     /// The rank of each cell in the search-order chain, indexed by the cell
@@ -459,8 +472,10 @@ pub struct World {
     /// The timestamp of the last conflict analysis, used to mark the cells
     /// that have been seen by the analysis.
     ///
-    /// This is only used when [`Config::backjump`](crate::Config::backjump) is
-    /// enabled. When it is disabled, this vector is always empty.
+    /// This is only used when the conflict analysis machinery is enabled
+    /// ([`Config::backjump`](crate::Config::backjump) or
+    /// [`Config::nogood`](crate::Config::nogood)). When it is disabled, this
+    /// vector is always empty.
     pub(crate) seen_stamp: Vec<u32>,
 
     /// The current [`analysis_stamp`](World::analysis_stamp).
@@ -544,7 +559,8 @@ pub struct World {
     /// plus a margin. See [`World::maybe_compact_reason_arena`].
     ///
     /// This is only populated when [`Config::backjump`](crate::Config::backjump)
-    /// is enabled, since clause reasons only exist there. It is not serialized.
+    /// or [`Config::nogood`](crate::Config::nogood) is enabled, since clause
+    /// reasons only exist there. It is not serialized.
     pub(crate) reason_arena: Vec<(*const LifeCell, u32)>,
 
     /// The number of literals of the live [`Antecedent::Clause`] reasons,
@@ -639,6 +655,7 @@ impl World {
         );
 
         let backjump = config.backjump;
+        let analysis = config.backjump || config.nogood;
         let nogood = config.nogood;
         let nogood_capacity = config.nogood_capacity;
         let activity = config.activity;
@@ -659,14 +676,14 @@ impl World {
             trail_meta: Vec::new(),
             flip_levels: Vec::new(),
             current_level: 0,
-            cell_level: if backjump { vec![0; size] } else { Vec::new() },
-            cell_pos: if backjump { vec![0; size] } else { Vec::new() },
+            cell_level: if analysis { vec![0; size] } else { Vec::new() },
+            cell_pos: if analysis { vec![0; size] } else { Vec::new() },
             chain_pos: if backjump || activity {
                 vec![u32::MAX; size]
             } else {
                 Vec::new()
             },
-            seen_stamp: if backjump { vec![0; size] } else { Vec::new() },
+            seen_stamp: if analysis { vec![0; size] } else { Vec::new() },
             analysis_stamp: 0,
             stack_index: 0,
             start: std::ptr::null(),
@@ -1277,14 +1294,17 @@ impl World {
     /// The `antecedent` argument records the cells that caused the set: the
     /// source cell of a rule-based deduction or the source cell of a symmetry
     /// deduction, or none for a guess or a known cell. It is only used when
-    /// [`Config::backjump`](crate::Config::backjump) is enabled, in which case
-    /// it is stored on the stack for the conflict analysis.
+    /// the conflict analysis machinery is enabled
+    /// ([`Config::backjump`](crate::Config::backjump) or
+    /// [`Config::nogood`](crate::Config::nogood)), in which case it is stored
+    /// on the stack for the conflict analysis.
     ///
     /// The `decision` argument is whether the set starts a new decision level
     /// (in the sense of the conflict analysis): this is `true` for a guessed
     /// cell and for the re-tried value of a guessed cell in
     /// [`backtrack`](World::backtrack), which is the same decision with the
-    /// opposite state. It is only used when backjumping is enabled.
+    /// opposite state. It is only used when the conflict analysis machinery is
+    /// enabled.
     ///
     /// # Safety
     ///
@@ -1358,7 +1378,7 @@ impl World {
         // A decision carrier (a guess or the re-tried value of a guess)
         // starts a new decision level; a deduced cell inherits the current
         // one.
-        if self.config.backjump {
+        if self.config.analysis_enabled() {
             // A chronological flip (`backtrack` retrying the other state of a
             // guess) is a decision carrier whose first branch is exhausted;
             // its level must never be popped by the conflict analysis.
@@ -1395,16 +1415,17 @@ impl World {
         }
     }
 
-    /// Update the backjump metadata when a cell is popped from the stack.
+    /// Update the conflict-analysis metadata when a cell is popped from the
+    /// stack.
     ///
     /// This must be called for every cell popped (and then unset) from the
     /// stack. It keeps the metadata in lockstep with the stack, and adjusts
     /// [`current_level`](World::current_level) when the popped entry is a
     /// decision carrier.
     ///
-    /// If backjumping is disabled, this is a no-op.
+    /// If the conflict analysis machinery is disabled, this is a no-op.
     pub(crate) fn pop_meta(&mut self) {
-        if self.config.backjump {
+        if self.config.analysis_enabled() {
             let meta = self.trail_meta.pop().unwrap();
             debug_assert_eq!(meta.level, self.current_level);
             if let Some(Antecedent::Clause { len, .. }) = meta.antecedent {
@@ -2779,6 +2800,21 @@ mod test {
     }
 
     #[test]
+    fn test_miri_nogood_backjump() {
+        // Exercise the non-chronological learning combination under Miri:
+        // the clause-reason arena and the flip-carrier protocol are the
+        // unsafe paths that the chronological mode does not take.
+        let config = Config::new("B3/S23", 4, 4, 2)
+            .with_max_population(1)
+            .with_nogood()
+            .with_backjump();
+        let mut world = World::new(config).unwrap();
+        world.search(None);
+        assert_eq!(world.status(), Status::NoSolution);
+        assert!(world.nogood_db.stats().learned > 0);
+    }
+
+    #[test]
     fn test_miri_activity() {
         // Exercise activity-based branching under Miri: the window selection
         // walks the raw `next` pointers, and the conflict paths bump and
@@ -3456,7 +3492,12 @@ mod test {
             assert_eq!(
                 count_solutions(&config.clone().with_nogood()),
                 expected,
-                "nogood changed the number of solutions"
+                "chronological nogood learning changed the number of solutions"
+            );
+            assert_eq!(
+                count_solutions(&config.clone().with_nogood().with_backjump()),
+                expected,
+                "nogood with backjump changed the number of solutions"
             );
             assert_eq!(
                 count_solutions(&config.clone().with_backjump().with_phase_saving()),
@@ -3573,8 +3614,8 @@ mod test {
 
     #[test]
     fn test_nogood_rejects_generations() {
-        // The nogood database builds on backjumping, so it is restricted to
-        // rules with 2 states as well.
+        // The nogood database builds on the conflict analysis machinery, so
+        // it is restricted to rules with 2 states as well.
         assert!(matches!(
             World::new(Config::new("3457/357/5", 3, 3, 1).with_nogood()),
             Err(ConfigError::NogoodUnsupported)
@@ -3583,14 +3624,44 @@ mod test {
     }
 
     #[test]
-    fn test_nogood_implies_backjump() {
-        // Enabling the nogood database enables the conflict analysis.
+    fn test_nogood_does_not_imply_backjump() {
+        // Enabling the nogood database enables the conflict analysis
+        // machinery, but the search resumes chronologically.
         let mut config = Config::new("B3/S23", 3, 3, 2).with_nogood();
         config.check().unwrap();
-        assert!(config.backjump);
+        assert!(config.nogood);
+        assert!(!config.backjump);
 
         let world = World::new(config.clone()).unwrap();
-        assert!(world.config().backjump);
+        assert!(world.config().nogood);
+        assert!(!world.config().backjump);
+    }
+
+    #[test]
+    fn test_nogood_analysis_metadata_is_recorded() {
+        // The nogood database needs the conflict analysis metadata even
+        // without backjumping, so the level of each entry and the
+        // antecedents are recorded in lockstep with the stack.
+        let mut world = World::new(Config::new("B3/S23", 3, 3, 2).with_nogood()).unwrap();
+        world.search(Some(1000));
+
+        assert_eq!(world.trail_meta.len(), world.stack.len());
+
+        let mut deduced_with_antecedent = 0;
+        for (i, meta) in world.trail_meta.iter().enumerate() {
+            let expected_level = world.trail_meta[..=i]
+                .iter()
+                .filter(|meta| meta.decision)
+                .count() as u32;
+            assert_eq!(meta.level, expected_level);
+            if meta.antecedent.is_some() {
+                deduced_with_antecedent += 1;
+            }
+        }
+        assert!(
+            deduced_with_antecedent > 0,
+            "no deduction was recorded with an antecedent"
+        );
     }
 
     #[test]
@@ -3655,15 +3726,22 @@ mod test {
             Config::new("B026/S1", 3, 3, 2),
             Config::new("R3,C2,S2,B3,N+", 3, 3, 1).with_symmetry(Symmetry::D2H),
         ] {
-            let config = config.with_nogood_guard();
-            let (guarded, suspensions, resumes) = guarded_solution_set(&config);
-            total_resumes += resumes;
-            assert!(suspensions > 0, "the guard never suspended for {config:?}");
-            assert_eq!(
-                solution_set(&config),
-                guarded,
-                "the cost guard changes the solution set for {config:?}"
-            );
+            // The guard bounds the machinery with both resumption policies:
+            // the chronological learning alone and the non-chronological
+            // combination.
+            for config in [
+                config.clone().with_nogood_guard(),
+                config.with_nogood_guard().with_backjump(),
+            ] {
+                let (guarded, suspensions, resumes) = guarded_solution_set(&config);
+                total_resumes += resumes;
+                assert!(suspensions > 0, "the guard never suspended for {config:?}");
+                assert_eq!(
+                    solution_set(&config),
+                    guarded,
+                    "the cost guard changes the solution set for {config:?}"
+                );
+            }
         }
         assert!(total_resumes > 0, "the guard never resumed");
     }
@@ -3817,12 +3895,19 @@ mod test {
 
         let mut world2 = World::try_from(world.to_serde()).unwrap();
         assert!(world2.config().nogood);
-        assert!(world2.config().backjump);
+        assert!(!world2.config().backjump);
         assert!(world2.nogood_db.is_empty());
 
         world.search(None);
         world2.search(None);
         assert_eq!(world.status(), world2.status());
+
+        // The non-chronological combination survives the round trip as well.
+        let world =
+            World::new(Config::new("B3/S23", 3, 3, 2).with_nogood().with_backjump()).unwrap();
+        let world2 = World::try_from(world.to_serde()).unwrap();
+        assert!(world2.config().nogood);
+        assert!(world2.config().backjump);
     }
 
     #[test]

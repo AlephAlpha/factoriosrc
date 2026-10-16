@@ -1078,12 +1078,14 @@ impl World {
             }
             // A conflict was found.
             //
-            // If backjumping is enabled and the conflict is a local one, it is
-            // analyzed and the search backjumps to the decision that caused it;
-            // otherwise the search backtracks chronologically.
+            // If the conflict analysis machinery is enabled and the conflict
+            // is a local one, it is analyzed; the resumption policy (a
+            // non-chronological backjump or the ordinary chronological
+            // backtracking) is chosen inside `analyze`. Otherwise the search
+            // backtracks chronologically.
             Err(confl) => match confl {
                 Confl::Rule(_) | Confl::Symmetry(_, _) | Confl::Nogood(_)
-                    if self.config.backjump && self.guard.active =>
+                    if self.config.analysis_enabled() && self.guard.active =>
                 {
                     self.analyze(confl)
                 }
@@ -1114,9 +1116,9 @@ impl World {
                 self.bump_activity(cell);
                 self.bump_activity(symmetry);
             },
-            // A `Nogood` conflict is always analyzed when nogood learning is
-            // enabled, because nogood learning implies backjumping. It is
-            // therefore not handled here.
+            // A `Nogood` conflict is always analyzed when it occurs, because
+            // the database is only active when the conflict analysis machinery
+            // is enabled. It is therefore not handled here.
             Confl::Nogood(_) | Confl::Global => {}
         }
     }
@@ -1153,15 +1155,22 @@ impl World {
         }
     }
 
-    /// Analyze a local conflict and backjump to the decision that caused it.
+    /// Analyze a local conflict and resume the search.
     ///
     /// This is the CA analogue of CDCL conflict analysis. The conflicting
     /// literal set is resolved backwards through the antecedents of the
     /// deductions (see [`Antecedent`](crate::cell::Antecedent)), until exactly
     /// one literal remains at the current decision level: the first unique
-    /// implication point (1-UIP). The search then pops the trail down to the
-    /// highest level of the remaining literals, and re-sets the 1-UIP cell to
-    /// the opposite state, justified by the learned clause.
+    /// implication point (1-UIP).
+    ///
+    /// The resumption policy depends on [`Config::backjump`](crate::Config::backjump):
+    ///
+    /// - With backjumping, the search pops the trail down to the highest level
+    ///   of the remaining literals and re-sets the 1-UIP cell to the opposite
+    ///   state, justified by the learned clause.
+    /// - Without backjumping (chronological nogood learning), the analyzed
+    ///   nogood is learned into the persistent database and the search resumes
+    ///   with the ordinary [`backtrack`](World::backtrack).
     ///
     /// A literal with no antecedent (a guess, or the flip of a guess by
     /// [`backtrack`](World::backtrack)) is resolved by simply removing it, like
@@ -1170,7 +1179,7 @@ impl World {
     /// If the conflict cannot be analyzed (no 1-UIP is found), the search
     /// backtracks chronologically.
     fn analyze(&mut self, confl: Confl) -> Status {
-        debug_assert!(self.config.backjump);
+        debug_assert!(self.config.analysis_enabled());
         self.search_stats.analyses += 1;
 
         // The previous backtracks may have left garbage in the clause-reason
@@ -1323,6 +1332,21 @@ impl World {
 
         // The state of the 1-UIP cell before it is popped.
         let state = unsafe { (*uip).state() }.unwrap();
+
+        // Chronological nogood learning: learn the analyzed conflict into the
+        // persistent database, then resume with the ordinary chronological
+        // backtracking. The clause reason of the non-chronological path below
+        // is not created, and the flip-carrier protocol of the enumeration
+        // guard is not needed: `backtrack` applies the flip protocol itself.
+        //
+        // The 1-UIP cell still holds its rejected state, so the new database
+        // entry starts fully matched; the backtracking that follows unsets the
+        // cell and brings the matched counter back in sync.
+        if !self.config.backjump {
+            self.learn_analysis_nogood(uip, state, &clause);
+            self.bump_learned(uip, &clause);
+            return self.backtrack();
+        }
 
         // The enumeration protocol guard.
         //

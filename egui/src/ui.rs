@@ -789,11 +789,7 @@ impl App {
 
                                 ui.label("nogood")
                                     .on_hover_text(ConfigHelpField::Nogood.short_help());
-                                if ui.checkbox(&mut config.nogood, "").changed() && config.nogood {
-                                    // The nogood database enables backjumping in
-                                    // `Config::check`; keep the form in sync.
-                                    config.backjump = true;
-                                }
+                                ui.checkbox(&mut config.nogood, "");
                                 ui.end_row();
 
                                 ui.label("nogood capacity")
@@ -821,10 +817,8 @@ impl App {
                                     && config.nogood_guard
                                 {
                                     // The guard enables the nogood database in
-                                    // `Config::check`, and the database enables
-                                    // backjumping; keep the form in sync.
+                                    // `Config::check`; keep the form in sync.
                                     config.nogood = true;
-                                    config.backjump = true;
                                 }
                                 ui.end_row();
 

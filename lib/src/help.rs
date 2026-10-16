@@ -159,13 +159,13 @@ impl ConfigHelpField {
                 "Experimental: CDCL-style conflict analysis with non-chronological backtracking. Only for 2-state rules. Usually slower than the default backtracking."
             }
             Self::Nogood => {
-                "Experimental: remember learned forbidden patterns and use them to reject guesses. Enables Backjump. Only for 2-state rules."
+                "Experimental: remember learned forbidden patterns and use them to reject guesses. Resumes chronologically unless Backjump is also enabled. Only for 2-state rules."
             }
             Self::NogoodCapacity => {
                 "Experimental: maximal number of learned patterns kept by the nogood database. Empty chooses a capacity scaled to the world size (4 entries per cell)."
             }
             Self::NogoodGuard => {
-                "Experimental: bound the work of the nogood database and conflict analysis per search step, suspending and re-probing them when the work exceeds the budget. Enables Nogood. Only for 2-state rules."
+                "Experimental: bound the work of the nogood database and conflict analysis per search step, suspending and re-probing them when the work exceeds the budget. Enables Nogood, not Backjump. Only for 2-state rules."
             }
             Self::Activity => {
                 "Experimental: favor cells that were recently involved in a conflict when guessing. Changes the branching order only."

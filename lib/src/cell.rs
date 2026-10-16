@@ -6,9 +6,11 @@ use serde::{Deserialize, Serialize};
 
 /// The cells that a deduction is deduced from.
 ///
-/// This is used only when [`Config::backjump`](crate::Config::backjump) is
-/// enabled. Each cell set by deduction remembers its antecedent, so that the
-/// implication graph of the search can be reconstructed for conflict analysis.
+/// This is used only when the conflict analysis machinery is enabled
+/// ([`Config::backjump`](crate::Config::backjump) or
+/// [`Config::nogood`](crate::Config::nogood)). Each cell set by deduction
+/// remembers its antecedent, so that the implication graph of the search can
+/// be reconstructed for conflict analysis.
 ///
 /// For a rule-based deduction, the antecedent is *not* stored as a set of
 /// cells: the set can be recovered from the source cell when needed, by
