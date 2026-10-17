@@ -7,6 +7,15 @@
 > but that motivated this study. The code remains the source of truth;
 > `docs/sat-ideas.md` describes the mechanisms.
 
+> **The meaning of `--nogood` in this study.** The measurements predate the
+> decoupling of nogood learning from non-chronological backjumping: at the
+> measured commit, `--nogood` enabled `--backjump` implicitly and therefore
+> resumed non-chronologically. Every `--nogood` result below corresponds to
+> the current `--nogood --backjump`, and every `--nogood-guard` result
+> corresponds to the current `--nogood-guard --backjump`. The current
+> `--nogood` and `--nogood-guard` (without `--backjump`) learn and resume
+> chronologically; that mode was not measured in this study.
+
 The study was prompted by the concern that the automatic capacity
 `max(2048, 4 * world_size)` (`NogoodDb::with_world_size`) may be fitted to
 the small canonical cases and may not extrapolate to larger searches. The

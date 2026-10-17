@@ -421,8 +421,8 @@ Its values are heuristic state and are not serialized.
 These are proposals, not current features. Any implementation should first add
 a differential correctness test and then use the canonical benchmark table.
 Chronological nogood learning was implemented from this list: `--nogood`
-without `--backjump` is the isolated learning mode, and its measurement is
-pending the next unified benchmark rerun.
+without `--backjump` is the isolated learning mode, and it is measured in the
+canonical benchmark tables below.
 
 1. **Translated or canonicalized nogoods.** Reuse relative patterns only after
    proving independence from padding, known cells, diagonal boundaries,
@@ -537,66 +537,111 @@ should only be changed after rerunning the complete external protocol.
 
 ## Canonical Benchmark Table
 
-This is the current unified benchmark. The single-option columns were measured
-on 2026-10-04 with a release build (`cargo build --release`) at commit
-`9cf18a3` on Linux x86-64 (24 cores, 31 GiB RAM), single runs, a 600-second
-per-cell timeout, and the default `new_state` unless the case says otherwise.
-The three combination columns were added on 2026-10-07 at the same commit and
-machine, with the same protocol and a sequential run per cell. Cells report
-wall time from the program's `elapsed_secs`; `>600 s` means the cell hit the
-timeout; `N/A` means `Config::check()` rejects the option for that rule. Step
-counts are deterministic for fixed-seed runs and are available in the JSON
-output.
+This is the current unified benchmark. It was measured on 2026-10-17 with a
+release build (`cargo build --release`) at commit `1ffff53` on Linux x86-64
+(24 cores, 31 GiB RAM), with single runs, up to six concurrent single-threaded
+processes, a 600-second per-cell timeout, and the default `new_state` unless
+the case says otherwise. Each cell runs
+`target/release/factoriosrc-tui new --no-tui --format json <case> <options>`;
+the reported time is the program's `elapsed_secs` at the stopping condition.
+`>600 s` means the cell hit the timeout and `N/A` means `Config::check()`
+rejects the option for that rule. Every option and combination produced the
+same solution count as the plain search on the two enumeration rows: 10 on the
+10th-solution row and 9,537 on the exhaustion row. Step counts are
+deterministic for fixed-seed runs and are available in the JSON output.
+
+`--nogood` resumes chronologically; `--nogood --backjump` reproduces the
+previous run's `--nogood`, and `--nogood-guard --backjump` reproduces its
+guard. The tables are split into single flags, learning combinations, and
+branching combinations.
 
 Fill future reruns in place; do not append a new date-specific table.
 
-The `--nogood`-family columns above predate the decoupling of learning from
-backjumping: at `9cf18a3`, `--nogood` implied `--backjump`. The numbers are
-kept as measured; under the current semantics they correspond to
-`--nogood --backjump` and, for the guard, `--nogood-guard --backjump`. Plain
-`--nogood` and `--nogood-guard` now use the chronological resumption and will
-be re-measured and folded into the table at the next unified rerun.
+### Single Flags
 
-| Case | Stopping condition | Plain | `--phase-saving` | `--lookahead` | `--backjump` | `--nogood` | `--nogood-guard` | `--activity` | `--phase-saving --activity` | `--activity --nogood` | `--phase-saving --nogood` |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `B3/S23 26 8 4 -y 1 -n a` | First solution | 1.25 s | 3.94 s | 6.05 s | 39.9 s | 2.93 s | 1.16 s | 1.52 s | 1.32 s | 3.50 s | 9.92 s |
-| `B3/S23 64 64 1 -n a` | First solution | >600 s | 1.98 s | 0.046 s | 0.016 s | 0.004 s | 0.007 s | 0.021 s | >600 s | 0.008 s | 0.008 s |
-| `3457/357/5 20 16 7 -x 3 -s D2- -n a` | First solution | 2.32 s | 3.37 s | N/A | N/A | N/A | N/A | 2.56 s | 3.96 s | N/A | N/A |
-| `R3,C2,S2,B3,N+ 50 10 4 -x 2 -s D2- -n a` | First solution | 71.3 s | 14.0 s | 31.7 s | >600 s | >600 s | 76.5 s | 60.8 s | 53.4 s | >600 s | 498 s |
-| `B2n3/S23-q 30 9 4 -x 1 -n a` | First solution | 4.26 s | 3.84 s | 4.16 s | 429 s | 16.4 s | 4.67 s | 2.73 s | 4.12 s | 5.57 s | 10.9 s |
-| `B3/S23 20 20 2 -n r --seed 1 --no-stop` | Through the 10th solution | 6.08 s | 0.93 s | 98.9 s | >600 s | 0.41 s | 11.2 s | 2.12 s | 15.9 s | 0.083 s | 0.114 s |
-| `B3/S23 7 7 2 -n a --no-stop` | Exhaustion (9,537 solutions) | 0.65 s | 0.70 s | 1.02 s | 2.32 s | 3.26 s | 1.65 s | 0.68 s | 0.73 s | 3.38 s | 3.18 s |
+| Case | Stopping condition | Plain | `--phase-saving` | `--lookahead` | `--activity` | `--backjump` | `--nogood` | `--nogood-guard` |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `B3/S23 26 8 4 -y 1 -n a` | First solution | 1.25 s | 3.90 s | 5.68 s | 1.49 s | 39.4 s | 1.71 s | 1.38 s |
+| `B3/S23 64 64 1 -n a` | First solution | >600 s | 1.89 s | 0.040 s | 0.016 s | 0.015 s | 5.66 s | 5.72 s |
+| `3457/357/5 20 16 7 -x 3 -s D2- -n a` | First solution | 2.35 s | 3.43 s | N/A | 2.58 s | N/A | N/A | N/A |
+| `R3,C2,S2,B3,N+ 50 10 4 -x 2 -s D2- -n a` | First solution | 72.4 s | 14.0 s | 31.6 s | 60.4 s | >600 s | 376 s | 76.5 s |
+| `B2n3/S23-q 30 9 4 -x 1 -n a` | First solution | 4.29 s | 3.69 s | 4.27 s | 2.70 s | 429 s | 8.51 s | 4.69 s |
+| `B3/S23 20 20 2 -n r --seed 1 --no-stop` | Through the 10th solution | 5.82 s | 0.90 s | 95.7 s | 2.07 s | >600 s | 0.28 s | 528 s |
+| `B3/S23 7 7 2 -n a --no-stop` | Exhaustion (9,537 solutions) | 0.64 s | 0.68 s | 0.99 s | 0.67 s | 2.34 s | 3.54 s | 1.90 s |
 
-Every option and combination produced the same solution count on the
-enumeration rows: 10 for the 10th-solution row and 9,537 for exhaustion.
+### Learning Combinations
 
-The combinations are not additive. `--phase-saving --activity` is slower than
-at least one of its two parts on every row except `B3/S23 26 8 4`: most
-starkly on `B3/S23 64 64 1`, where the pair times out while `--activity`
-alone finds a solution in 0.021 s, and on `B3/S23 20 20 2`, where it takes
-15.9 s against 0.93 s for `--phase-saving`. Both options reorder branching,
-and their composition can land on a much worse path. The pair is the only
-combination available for the Generations row, where it is also slower than
-both parts.
+| Case | Stopping condition | `--nogood --backjump` | `--nogood-guard --backjump` | `--activity --nogood` | `--activity --nogood --backjump` | `--phase-saving --nogood` | `--phase-saving --nogood --backjump` |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `B3/S23 26 8 4 -y 1 -n a` | First solution | 2.98 s | 1.17 s | 1.96 s | 3.56 s | 6.00 s | 9.97 s |
+| `B3/S23 64 64 1 -n a` | First solution | 0.004 s | 0.006 s | 0.70 s | 0.006 s | 0.008 s | 0.008 s |
+| `3457/357/5 20 16 7 -x 3 -s D2- -n a` | First solution | N/A | N/A | N/A | N/A | N/A | N/A |
+| `R3,C2,S2,B3,N+ 50 10 4 -x 2 -s D2- -n a` | First solution | >600 s | 76.8 s | 381 s | >600 s | 421 s | 511 s |
+| `B2n3/S23-q 30 9 4 -x 1 -n a` | First solution | 18.8 s | 4.77 s | 4.83 s | 5.62 s | 4.67 s | 11.0 s |
+| `B3/S23 20 20 2 -n r --seed 1 --no-stop` | Through the 10th solution | 0.41 s | 11.7 s | 0.065 s | 0.077 s | 8.60 s | 0.11 s |
+| `B3/S23 7 7 2 -n a --no-stop` | Exhaustion (9,537 solutions) | 3.96 s | 2.73 s | 3.92 s | 4.12 s | 3.70 s | 3.59 s |
 
-The learning pairs are mixed. `--activity --nogood` beats `--nogood` alone on
-`B2n3/S23-q` (5.57 s versus 16.4 s) and on `B3/S23 20 20 2` (0.083 s versus
-0.41 s), is close on `B3/S23 7 7 2` (3.38 s versus 3.26 s), and is slower on
-`B3/S23 26 8 4` (3.50 s versus 2.93 s). `--phase-saving --nogood` finishes `R3,C2,S2,B3,N+`
-in 498 s, where `--nogood` and `--activity --nogood` both time out, and
-improves `B2n3/S23-q` and `B3/S23 20 20 2`, but it is 3.4x slower than
-`--nogood` alone on `B3/S23 26 8 4` (9.92 s versus 2.93 s). Neither learning
-pair approaches the plain search on `R3,C2,S2,B3,N+` (71.3 s) or
-`B3/S23 26 8 4` (1.25 s).
+### Branching Combinations
 
-`--phase-saving --lookahead` is deliberately not listed: `guess()` consults
-the lookahead probe before phase saving, so phase saving is never read and
-the pair is behaviorally identical to `--lookahead` alone. The `--nogood`
-pairs measured above implicitly enabled `--backjump` and inherit the two-state
-restriction, which is why the Generations row is `N/A` for them. Under the
-current semantics every `--nogood` configuration keeps the two-state
-restriction, but only adding `--backjump` enables the non-chronological
-resumption.
+| Case | Stopping condition | `--phase-saving --activity` | `--activity --backjump` | `--phase-saving --backjump` |
+| --- | --- | ---: | ---: | ---: |
+| `B3/S23 26 8 4 -y 1 -n a` | First solution | 1.30 s | 31.0 s | >600 s |
+| `B3/S23 64 64 1 -n a` | First solution | >600 s | 0.016 s | 0.008 s |
+| `3457/357/5 20 16 7 -x 3 -s D2- -n a` | First solution | 3.98 s | N/A | N/A |
+| `R3,C2,S2,B3,N+ 50 10 4 -x 2 -s D2- -n a` | First solution | 53.5 s | >600 s | >600 s |
+| `B2n3/S23-q 30 9 4 -x 1 -n a` | First solution | 4.10 s | >600 s | >600 s |
+| `B3/S23 20 20 2 -n r --seed 1 --no-stop` | Through the 10th solution | 15.5 s | >600 s | >600 s |
+| `B3/S23 7 7 2 -n a --no-stop` | Exhaustion (9,537 solutions) | 0.82 s | 3.11 s | 2.45 s |
+
+The decoupling did not change the previous semantics: the columns that add
+`--backjump` to a learning pair land on the corresponding previous numbers
+(for example `--activity --nogood --backjump` is 5.62 s against the previous
+`--activity --nogood` 5.57 s on `B2n3/S23-q`, 0.077 s against 0.083 s on
+`B3/S23 20 20 2`, and 3.56 s against 3.50 s on `B3/S23 26 8 4`).
+
+The central comparison is `--nogood` against `--nogood --backjump`.
+Chronological learning is faster on five of the six rows where both run:
+`B3/S23 26 8 4` 1.71 s against 2.98 s, `R3,C2,S2,B3,N+` 376 s against
+a timeout, `B2n3/S23-q` 8.51 s against 18.8 s, and `B3/S23 20 20 2` 0.28 s
+against 0.41 s, plus the exhaustion row where it is 3.54 s against 3.96 s.
+The exception is `B3/S23 64 64 1`, where the non-chronological resumption is
+essential: `--nogood --backjump` finishes in 0.004 s while `--nogood` needs
+5.66 s (still far below the plain timeout). Non-chronological resumption is
+therefore not merely a cost of the previous design; it is the only mode that
+solves that case quickly.
+
+The guard is less reliable in the chronological mode. `--nogood-guard` is the
+best single option on `B3/S23 26 8 4` (1.38 s), close to the plain search on
+`R3,C2,S2,B3,N+` (76.5 s against 72.4 s) and on `B2n3/S23-q` (4.69 s
+against 4.29 s), but it collapses on `B3/S23 20 20 2` (528 s against
+0.28 s for unguarded `--nogood`, and 5.82 s for plain): a suspension changes
+the search path, and the resumed machinery then re-enters a much worse
+region. `--nogood-guard --backjump` keeps the old guarded behavior and is
+still the most robust learning option on the hard `R3,C2,S2,B3,N+` row.
+
+Among the learning combinations, `--activity --nogood` is the best choice on
+`B3/S23 20 20 2` (0.065 s) and matches the plain search on `B2n3/S23-q`
+(4.83 s against 4.29 s), but it is 5x slower than plain on
+`R3,C2,S2,B3,N+` (381 s against 72.4 s). `--phase-saving --nogood` is the
+worst of the chrono learning modes on `B3/S23 26 8 4` (6.00 s against 1.71 s)
+and `B3/S23 20 20 2` (8.60 s against 0.28 s), although its backjump version
+is among the fastest there (0.11 s).
+
+The branching combinations reproduce their known profiles. Combining the two
+branching heuristics still hurts `B3/S23 64 64 1` (`--phase-saving --activity`
+times out while both parts finish in under 2 s). Adding backjumping to a
+branching heuristic remains bad: `--activity --backjump` improves
+`B3/S23 26 8 4` over backjumping alone (31.0 s against 39.4 s) but times out
+on three rows, and `--phase-saving --backjump` even times out on
+`B3/S23 26 8 4`, where every other option finishes.
+
+On the exhaustive small world, every learning mode costs 1.9-4.1 s against
+0.64 s for the plain search: the analysis and database maintenance are pure
+overhead when the search is already cheap. The `--nogood` pairs still carry
+the two-state restriction, which is why the Generations row is `N/A` for
+them. `--phase-saving --lookahead` is deliberately not listed: `guess()`
+consults the lookahead probe before phase saving, so phase saving is never
+read and the pair is behaviorally identical to `--lookahead` alone.
 
 The nogood rows use the automatic capacity unless a future benchmark explicitly
 records another value. Capacity sweeps and one-off profiling belong in the
