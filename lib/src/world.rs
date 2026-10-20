@@ -199,6 +199,16 @@ pub struct SearchStats {
     /// The number of conflicts that entered the conflict analysis.
     pub analyses: u64,
 
+    /// The number of conflicts detected by the search.
+    ///
+    /// This counts failed propagation checks, failed lookahead probes, and
+    /// failed complete-assignment period checks, whether or not the conflict
+    /// analysis is enabled. It drives the restart schedule.
+    pub conflicts: u64,
+
+    /// The number of restarts performed by the search.
+    pub restarts: u64,
+
     /// The number of literals resolved during conflict analysis.
     pub analysis_resolutions: u64,
 
@@ -259,6 +269,21 @@ const GUARD_BUDGET: u64 = 512;
 /// steps, where `n` is the number of consecutive suspensions, capped at this
 /// value.
 pub const GUARD_MAX_BACKOFF: u32 = 6;
+
+/// The default base interval of the Luby restart sequence, in conflicts.
+///
+/// This is used when [`Config::restart_interval`](crate::Config::restart_interval)
+/// is [`None`]. See [`Config::restart`](crate::Config::restart) for the
+/// restart policy.
+pub const RESTART_INTERVAL: u64 = 16;
+
+/// The maximal number of restarts in a search phase.
+///
+/// After this many restarts the search continues without restarting. The
+/// final segment is an ordinary complete search, so a restarted search still
+/// reports [`NoSolution`](Status::NoSolution) when the search space is
+/// exhausted instead of restarting forever.
+pub const RESTART_LIMIT: u64 = 512;
 
 /// The absolute slack of the clause-reason arena before it is compacted.
 ///
@@ -493,6 +518,13 @@ pub struct World {
     /// The starting point to look for an unknown cell according to the search order.
     pub(crate) start: *const LifeCell,
 
+    /// The first cell of the search-order chain.
+    ///
+    /// This is the value of [`start`](World::start) before the search begins,
+    /// stored so that a restart can resume from the beginning of the chain.
+    /// It is rebuilt by [`init_next`](World::init_next) and is not serialized.
+    pub(crate) chain_head: *const LifeCell,
+
     /// Whether the search is currently running a lookahead probe.
     ///
     /// A probe temporarily sets the states of some cells and rolls them back
@@ -588,6 +620,27 @@ pub struct World {
     /// `check_affected`, which reports it as [`Confl::Nogood`].
     pub(crate) pending_nogood_confl: Option<u32>,
 
+    /// The index in the Luby restart sequence.
+    ///
+    /// This is heuristic state: it is not serialized, and a loaded world
+    /// restarts from the beginning of the sequence.
+    pub(crate) restart_index: u64,
+
+    /// The conflict count at which the next restart is due.
+    ///
+    /// This is heuristic state: it is not serialized, and a loaded world
+    /// restarts from the beginning of the sequence.
+    pub(crate) next_restart: u64,
+
+    /// The number of solutions reported by [`search`](World::search).
+    ///
+    /// Restarts are suppressed after the first reported solution unless
+    /// [`reduce_max_population`](Config::reduce_max_population) is enabled:
+    /// popping the flip carriers of an enumeration would report already
+    /// enumerated solutions again. This counter is serialized so that the
+    /// suppression survives save/load.
+    pub(crate) reported_solutions: u64,
+
     /// The search status.
     pub(crate) status: Status,
 
@@ -659,6 +712,9 @@ impl World {
         let nogood = config.nogood;
         let nogood_capacity = config.nogood_capacity;
         let activity = config.activity;
+        let restart_interval = config
+            .restart_interval
+            .map_or(RESTART_INTERVAL, |interval| interval as u64);
 
         let mut world = Self {
             config,
@@ -687,6 +743,7 @@ impl World {
             analysis_stamp: 0,
             stack_index: 0,
             start: std::ptr::null(),
+            chain_head: std::ptr::null(),
             in_probe: false,
             activity: if activity {
                 vec![0.0; size]
@@ -705,6 +762,9 @@ impl World {
             reason_arena_live: 0,
             clause_scratch: Vec::new(),
             pending_nogood_confl: None,
+            restart_index: 0,
+            next_restart: restart_interval,
+            reported_solutions: 0,
             status: Status::NotStarted,
             search_stats: SearchStats::default(),
             guard: Guard::default(),
@@ -1133,6 +1193,10 @@ impl World {
                 }
             }
         }
+
+        // Remember the head of the chain so that a restart can resume from
+        // the beginning of the search order.
+        self.chain_head = self.start;
 
         // The ranks of the cells in the chain, in chain order. The chain is
         // built by pushing cells to the front, so the order of the chain is
@@ -2024,6 +2088,14 @@ struct WorldSerde {
     /// The starting point to look for an unknown cell according to the search order.
     start: Option<usize>,
 
+    /// The number of solutions reported by previous search calls.
+    ///
+    /// This controls whether restarts are allowed during an enumeration; see
+    /// [`Config::restart`]. Older save files do not have this field and are
+    /// treated as having reported no solutions.
+    #[serde(default)]
+    reported_solutions: u64,
+
     /// The search status.
     status: Status,
 }
@@ -2096,6 +2168,7 @@ impl World {
             stack,
             stack_index: self.stack_index,
             start,
+            reported_solutions: self.reported_solutions,
             status: self.status,
         }
     }
@@ -2159,6 +2232,7 @@ impl World {
                 });
         world.front_count = serde.front_count;
         world.stack_index = serde.stack_index;
+        world.reported_solutions = serde.reported_solutions;
         world.status = serde.status;
 
         Ok(world)
@@ -2834,6 +2908,29 @@ mod test {
     }
 
     #[test]
+    fn test_miri_restart() {
+        // Exercise the restart trail unwinding under Miri. The restart pops
+        // raw cell pointers and must keep the trail metadata, flip levels, and
+        // nogood counters in sync.
+        let config = Config::new("B3/S23", 3, 3, 2)
+            .with_restart()
+            .with_restart_interval(1);
+        let mut world = World::new(config).unwrap();
+        world.search(None);
+        assert_eq!(world.status(), Status::Solved);
+
+        // An unsatisfiable configuration exercises many restarts and the
+        // restart cap.
+        let config = Config::new("B3/S23", 4, 4, 2)
+            .with_max_population(1)
+            .with_restart()
+            .with_restart_interval(1);
+        let mut world = World::new(config).unwrap();
+        world.search(None);
+        assert_eq!(world.status(), Status::NoSolution);
+    }
+
+    #[test]
     fn test_below_max_invariant() {
         // The `below_max` counter should always be the number of generations
         // whose population is at most `max_population`.
@@ -3133,6 +3230,178 @@ mod test {
         world.search(None);
         world2.search(None);
         assert_eq!(world.status(), world2.status());
+    }
+
+    #[test]
+    fn test_luby_sequence() {
+        let expected = [1, 1, 2, 1, 1, 2, 4, 1, 1, 2, 1, 1, 2, 4, 8];
+        for (index, value) in expected.into_iter().enumerate() {
+            assert_eq!(World::luby(index as u64 + 1), value);
+        }
+    }
+
+    #[test]
+    fn test_restart_implies_nogood() {
+        let mut config = Config::new("B3/S23", 3, 3, 2).with_restart();
+        config.check().unwrap();
+        assert!(config.nogood);
+    }
+
+    #[test]
+    fn test_restart_rejects_generations() {
+        let mut config = Config::new("B3/S23/4", 3, 3, 1).with_restart();
+        assert!(matches!(
+            config.check(),
+            Err(crate::ConfigError::RestartUnsupported)
+        ));
+    }
+
+    #[test]
+    fn test_restart_interval_must_be_positive() {
+        let mut config = Config::new("B3/S23", 3, 3, 2)
+            .with_restart()
+            .with_restart_interval(0);
+        assert!(matches!(
+            config.check(),
+            Err(crate::ConfigError::InvalidRestartInterval)
+        ));
+    }
+
+    #[test]
+    fn test_restart_finds_solution() {
+        // Restarts should still find solutions for 2-state rules, including
+        // a B0 background and a non-totalistic rule.
+        for config in [
+            Config::new("B3/S23", 3, 3, 2),
+            Config::new("B026/S1", 3, 3, 2),
+            Config::new("B2o/S23oH", 3, 3, 2),
+        ] {
+            let config = config.with_restart().with_restart_interval(1);
+            let mut world = World::new(config).unwrap();
+            world.search(None);
+            assert_eq!(world.status(), Status::Solved);
+        }
+    }
+
+    #[test]
+    fn test_restart_enumerates_same_solutions() {
+        // Restarts change the first solution that is found, but the
+        // enumeration after it must still report the same number of
+        // solutions. The interval is one conflict so that restarts actually
+        // happen before the first solution.
+        for config in [
+            Config::new("B3/S23", 3, 3, 2),
+            Config::new("B026/S1", 3, 3, 2),
+            Config::new("B3/S23", 3, 3, 2).with_known_cell(KnownCell::new(
+                0,
+                0,
+                0,
+                CellState::Alive,
+            )),
+            Config::new("B3/S23", 4, 4, 2).with_symmetry(Symmetry::D2H),
+            Config::new("B3/S23", 3, 3, 2).with_transformation(Transformation::R2),
+        ] {
+            let restart = config.clone().with_restart().with_restart_interval(1);
+            assert_eq!(
+                count_solutions(&config),
+                count_solutions(&restart),
+                "restart changes the solution count for {config:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_restart_with_reduce_max_population() {
+        // The improving search must reach the same minimum population with
+        // restarts enabled. The recorded record-low solutions may differ, so
+        // the original minimum is compared rather than the whole sequence.
+        let config = Config::new("B3/S23", 4, 4, 2).with_reduce_max_population();
+        let restart = config.clone().with_restart().with_restart_interval(1);
+
+        let minimum = |config: Config| {
+            let mut world = World::new(config).unwrap();
+            let mut minimum = usize::MAX;
+            while world.search(None) == Status::Solved {
+                let population = (0..world.config().period)
+                    .map(|t| world.population(t as i32))
+                    .min()
+                    .unwrap();
+                minimum = minimum.min(population);
+            }
+            assert_eq!(world.status(), Status::NoSolution);
+            minimum
+        };
+
+        assert_eq!(minimum(config), minimum(restart));
+    }
+
+    #[test]
+    fn test_restart_stops_after_first_solution() {
+        // Without `reduce_max_population`, an enumeration must not restart
+        // after a solution has been reported: popping the flip carriers would
+        // report already enumerated solutions again.
+        let config = Config::new("B3/S23", 3, 3, 2)
+            .with_restart()
+            .with_restart_interval(1);
+        let mut world = World::new(config).unwrap();
+        assert_eq!(world.search(None), Status::Solved);
+        let restarts = world.search_stats().restarts;
+
+        while world.search(None) == Status::Solved {}
+        assert_eq!(world.status(), Status::NoSolution);
+        assert_eq!(world.search_stats().restarts, restarts);
+    }
+
+    #[test]
+    fn test_restart_deferred_while_guard_suspended() {
+        // A restart without active learned clauses would re-enter the same
+        // path, so the guard suspension also defers restarts.
+        let config = Config::new("B3/S23", 4, 4, 2)
+            .with_max_population(1)
+            .with_restart()
+            .with_nogood_guard()
+            .with_restart_interval(1);
+        let mut world = World::new(config).unwrap();
+        world.guard.active = false;
+        world.guard.resume_step = u64::MAX;
+        world.search(None);
+        assert_eq!(world.status(), Status::NoSolution);
+        assert_eq!(world.search_stats().restarts, 0);
+    }
+
+    #[test]
+    fn test_restart_reaches_no_solution() {
+        // A restart sequence must not prevent the search from exhausting an
+        // unsatisfiable problem.
+        let config = Config::new("B3/S23", 4, 4, 2)
+            .with_max_population(1)
+            .with_restart()
+            .with_restart_interval(1);
+        let mut world = World::new(config).unwrap();
+        world.search(None);
+        assert_eq!(world.status(), Status::NoSolution);
+        assert!(world.search_stats().restarts > 0);
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn test_restart_round_trip_through_serde() {
+        // The restart option and the reported-solution count survive a
+        // save/load round trip. The Luby schedule itself is heuristic state
+        // and starts over.
+        let config = Config::new("B3/S23", 4, 4, 2)
+            .with_restart()
+            .with_restart_interval(1);
+        let mut world = World::new(config).unwrap();
+        world.search(Some(1000));
+        let reported_solutions = world.reported_solutions;
+
+        let world2 = World::try_from(world.to_serde()).unwrap();
+        assert!(world2.config().restart);
+        assert_eq!(world2.config().restart_interval, Some(1));
+        assert_eq!(world2.reported_solutions, reported_solutions);
+        assert_eq!(world2.restart_index, 0);
+        assert_eq!(world2.next_restart, 1);
     }
 
     #[test]

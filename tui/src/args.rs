@@ -422,6 +422,8 @@ mod tests {
             "nogood",
             "nogood-capacity",
             "activity",
+            "restart",
+            "restart-interval",
         ] {
             assert_eq!(
                 heading(&map, flag),

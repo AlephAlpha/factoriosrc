@@ -43,6 +43,10 @@ pub enum ConfigHelpField {
     NogoodGuard,
     /// The activity field.
     Activity,
+    /// The restart field.
+    Restart,
+    /// The restart-interval field.
+    RestartInterval,
     /// The random-seed field.
     Seed,
     /// The known-cells field.
@@ -76,6 +80,8 @@ impl ConfigHelpField {
             Self::NogoodCapacity,
             Self::NogoodGuard,
             Self::Activity,
+            Self::Restart,
+            Self::RestartInterval,
             Self::Seed,
             Self::KnownCells,
             Self::MaxPopulation,
@@ -96,6 +102,8 @@ impl ConfigHelpField {
                 | Self::NogoodCapacity
                 | Self::NogoodGuard
                 | Self::Activity
+                | Self::Restart
+                | Self::RestartInterval
         )
     }
 
@@ -121,6 +129,8 @@ impl ConfigHelpField {
             Self::NogoodCapacity => "Nogood capacity",
             Self::NogoodGuard => "Nogood guard",
             Self::Activity => "Activity",
+            Self::Restart => "Restart",
+            Self::RestartInterval => "Restart interval",
             Self::Seed => "Seed",
             Self::KnownCells => "Known cells",
             Self::MaxPopulation => "Max population",
@@ -170,6 +180,12 @@ impl ConfigHelpField {
             Self::Activity => {
                 "Experimental: favor cells that were recently involved in a conflict when guessing. Changes the branching order only."
             }
+            Self::Restart => {
+                "Experimental: restart from the beginning of the search order after a Luby-scheduled number of conflicts, keeping learned nogoods, phases, and activity. Enables Nogood. Only for 2-state rules; suppressed after the first solution unless Reduce max population is enabled."
+            }
+            Self::RestartInterval => {
+                "Experimental: base interval of the Luby restart sequence, in conflicts. Smaller values restart more often. Empty uses an internal default."
+            }
             Self::Seed => "Random seed used only when New state is random.",
             Self::KnownCells => "Pinned alive/dead cells that must hold before the search starts.",
             Self::MaxPopulation => "Optional upper bound on the population.",
@@ -200,6 +216,8 @@ impl ConfigHelpField {
             Self::NogoodCapacity => "nogood_capacity",
             Self::NogoodGuard => "nogood_guard",
             Self::Activity => "activity",
+            Self::Restart => "restart",
+            Self::RestartInterval => "restart_interval",
             Self::Seed => "seed",
             Self::KnownCells => "known_cells",
             Self::MaxPopulation => "max_population",
@@ -341,7 +359,7 @@ mod tests {
         let fields: Vec<_> = ConfigHelpField::iter().collect();
         assert!(fields.contains(&ConfigHelpField::RuleString));
         assert!(fields.contains(&ConfigHelpField::KnownCells));
-        assert_eq!(fields.len(), 22);
+        assert_eq!(fields.len(), 24);
     }
 
     #[test]
@@ -359,6 +377,8 @@ mod tests {
                 ConfigHelpField::NogoodCapacity,
                 ConfigHelpField::NogoodGuard,
                 ConfigHelpField::Activity,
+                ConfigHelpField::Restart,
+                ConfigHelpField::RestartInterval,
             ]
         );
     }

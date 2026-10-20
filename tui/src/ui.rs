@@ -137,6 +137,8 @@ const fn config_field_help(field: ConfigField) -> &'static str {
         ConfigField::NogoodCapacity => ConfigHelpField::NogoodCapacity.short_help(),
         ConfigField::NogoodGuard => ConfigHelpField::NogoodGuard.short_help(),
         ConfigField::Activity => ConfigHelpField::Activity.short_help(),
+        ConfigField::Restart => ConfigHelpField::Restart.short_help(),
+        ConfigField::RestartInterval => ConfigHelpField::RestartInterval.short_help(),
         ConfigField::Seed => ConfigHelpField::Seed.short_help(),
         ConfigField::MaxPopulation => ConfigHelpField::MaxPopulation.short_help(),
         ConfigField::ReduceMaxPopulation => ConfigHelpField::ReduceMaxPopulation.short_help(),

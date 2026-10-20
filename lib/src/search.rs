@@ -4,7 +4,7 @@ use crate::{
     cell::{Antecedent, LifeCell, Reason},
     config::NewState,
     rule::{CellState, CheckResult, Implication},
-    world::{ACTIVITY_WINDOW, Confl, Status, World},
+    world::{ACTIVITY_WINDOW, Confl, RESTART_INTERVAL, RESTART_LIMIT, Status, World},
 };
 
 /// The maximum number of cells that a lookahead probe may set before it stops.
@@ -704,6 +704,106 @@ impl World {
         Status::NoSolution
     }
 
+    /// The value of the 1-based Luby sequence at `index`.
+    ///
+    /// The sequence starts `1, 1, 2, 1, 1, 2, 4, ...`. The definition is
+    /// evaluated iteratively:
+    ///
+    /// - `luby(2^k - 1) = 2^(k - 1)`, and
+    /// - `luby(i) = luby(i - 2^(k - 1) + 1)` for `2^(k - 1) <= i < 2^k - 1`.
+    pub(crate) const fn luby(mut index: u64) -> u64 {
+        let mut k = 1u32;
+        while k < 63 && (1u64 << k) <= index {
+            k += 1;
+        }
+        while index != (1u64 << k) - 1 {
+            index -= (1u64 << (k - 1)) - 1;
+            k = 1;
+            while k < 63 && (1u64 << k) <= index {
+                k += 1;
+            }
+        }
+        1u64 << (k - 1)
+    }
+
+    /// The base interval of the Luby restart sequence, in conflicts.
+    fn restart_unit(&self) -> u64 {
+        self.config
+            .restart_interval
+            .map_or(RESTART_INTERVAL, |interval| interval as u64)
+    }
+
+    /// Whether a restart is due at the current conflict count.
+    const fn restart_due(&self) -> bool {
+        if !self.config.restart || !self.config.nogood {
+            return false;
+        }
+
+        // The final segment after the cap is an ordinary complete search, so
+        // `NoSolution` remains reachable.
+        if self.restart_index >= RESTART_LIMIT {
+            return false;
+        }
+
+        // A restart pops the flip carriers. Before the first reported solution
+        // they only describe branches with no reported solution, so popping
+        // them is safe. After a solution they must stay in place during an
+        // enumeration. With `reduce_max_population`, every reported solution
+        // is above the tightened bound, so re-entering its branch cannot
+        // report a duplicate.
+        if self.reported_solutions > 0 && !self.config.reduce_max_population {
+            return false;
+        }
+
+        // A suspended machinery would make a deterministic restart repeat the
+        // same path without learned clauses to prune it.
+        if self.config.nogood_guard && !self.guard.active {
+            return false;
+        }
+
+        self.search_stats.conflicts >= self.next_restart
+    }
+
+    /// Restart the search from the beginning of the search order.
+    ///
+    /// All search assignments are unset. The known cells, the learned
+    /// nogoods, the saved phases, the conflict activity, and the random
+    /// generator are kept; the flip carriers, the decision levels, and any
+    /// pending nogood conflict are discarded because they describe the
+    /// discarded trail. The Luby schedule advances.
+    fn restart(&mut self) -> Status {
+        self.search_stats.restarts += 1;
+
+        // Pop the trail down to the known cells. Known entries are at the
+        // bottom of the stack and must stay set.
+        while let Some(&(cell, reason)) = self.stack.last() {
+            if matches!(reason, Reason::Known) {
+                break;
+            }
+            self.stack.pop();
+            self.pop_meta();
+            unsafe { self.unset_cell(&*cell) };
+        }
+
+        self.stack_index = self.stack.len();
+        self.start = self.chain_head;
+        self.pending_nogood_confl = None;
+        self.current_level = 0;
+        self.flip_levels.clear();
+        self.maybe_compact_reason_arena();
+
+        debug_assert_eq!(self.stack.len(), self.trail_meta.len());
+        debug_assert_eq!(self.current_level, 0);
+        debug_assert!(self.flip_levels.is_empty());
+
+        self.restart_index += 1;
+        let unit = self.restart_unit();
+        let interval = unit.saturating_mul(Self::luby(self.restart_index + 1));
+        self.next_restart = self.search_stats.conflicts.saturating_add(interval);
+
+        Status::Running
+    }
+
     /// Find a cell whose state is unknown, and make a guess.
     ///
     /// The cursor [`start`](World::start) always points at the earliest unknown
@@ -1073,7 +1173,10 @@ impl World {
                     GuessResult::Solved => Status::Solved,
                     // Lookahead found that the current partial assignment is
                     // contradictory.
-                    GuessResult::Conflict => self.backtrack(),
+                    GuessResult::Conflict => {
+                        self.search_stats.conflicts += 1;
+                        self.backtrack()
+                    }
                 }
             }
             // A conflict was found.
@@ -1083,23 +1186,26 @@ impl World {
             // non-chronological backjump or the ordinary chronological
             // backtracking) is chosen inside `analyze`. Otherwise the search
             // backtracks chronologically.
-            Err(confl) => match confl {
-                Confl::Rule(_) | Confl::Symmetry(_, _) | Confl::Nogood(_)
-                    if self.config.analysis_enabled() && self.guard.active =>
-                {
-                    self.analyze(confl)
-                }
-                _ => {
-                    // Conflicts handled by chronological backtracking do not
-                    // reach `analyze`, so record their activity here. The
-                    // analyzed conflicts bump the literals of their learned
-                    // clause in `analyze` instead.
-                    if self.config.activity {
-                        self.bump_conflict(confl);
+            Err(confl) => {
+                self.search_stats.conflicts += 1;
+                match confl {
+                    Confl::Rule(_) | Confl::Symmetry(_, _) | Confl::Nogood(_)
+                        if self.config.analysis_enabled() && self.guard.active =>
+                    {
+                        self.analyze(confl)
                     }
-                    self.backtrack()
+                    _ => {
+                        // Conflicts handled by chronological backtracking do
+                        // not reach `analyze`, so record their activity here.
+                        // The analyzed conflicts bump the literals of their
+                        // learned clause in `analyze` instead.
+                        if self.config.activity {
+                            self.bump_conflict(confl);
+                        }
+                        self.backtrack()
+                    }
                 }
-            },
+            }
         }
     }
 
@@ -1731,6 +1837,16 @@ impl World {
                         .iter()
                         .filter(|&&pop| pop < population)
                         .count();
+
+                    // A tighter population bound is a new search problem.
+                    // Start a fresh Luby sequence for it.
+                    if self.config.restart {
+                        self.restart_index = 0;
+                        self.next_restart = self
+                            .search_stats
+                            .conflicts
+                            .saturating_add(self.restart_unit());
+                    }
                 }
                 self.backtrack()
             }
@@ -1744,11 +1860,22 @@ impl World {
             // If a pattern is found, check that its period is correct,
             // and backtrack if not.
             if status == Status::Solved && !self.check_period() {
+                self.search_stats.conflicts += 1;
                 status = self.backtrack();
+            }
+
+            // A restart is only performed while the search is still running,
+            // so a reported solution is never discarded by a restart.
+            if status == Status::Running && self.restart_due() {
+                status = self.restart();
             }
 
             steps += 1;
             self.search_stats.steps += 1;
+        }
+
+        if status == Status::Solved {
+            self.reported_solutions += 1;
         }
 
         self.status = status;

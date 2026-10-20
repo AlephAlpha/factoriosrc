@@ -9,7 +9,8 @@ use egui::{
 };
 use factoriosrc_lib::{
     CellState, Config, ConfigHelpField, DEFAULT_EXPORT_TEMPLATE, KnownCell, NewState,
-    SearchControlHelpField, SearchOrder, Status, Symmetry, Transformation, TranslationCondition,
+    RESTART_INTERVAL, SearchControlHelpField, SearchOrder, Status, Symmetry, Transformation,
+    TranslationCondition,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -825,6 +826,37 @@ impl App {
                                 ui.label("activity")
                                     .on_hover_text(ConfigHelpField::Activity.short_help());
                                 ui.checkbox(&mut config.activity, "");
+                                ui.end_row();
+
+                                ui.label("restart")
+                                    .on_hover_text(ConfigHelpField::Restart.short_help());
+                                if ui.checkbox(&mut config.restart, "").changed() && config.restart
+                                {
+                                    // Restarts enable the nogood database in
+                                    // `Config::check`; keep the form in sync.
+                                    config.nogood = true;
+                                }
+                                ui.end_row();
+
+                                ui.label("restart interval")
+                                    .on_hover_text(ConfigHelpField::RestartInterval.short_help());
+                                ui.horizontal(|ui| {
+                                    let mut checked = config.restart_interval.is_some();
+                                    ui.checkbox(&mut checked, "");
+                                    let mut dummy = 0;
+                                    let interval = if checked {
+                                        config
+                                            .restart_interval
+                                            .get_or_insert(RESTART_INTERVAL as usize)
+                                    } else {
+                                        config.restart_interval = None;
+                                        &mut dummy
+                                    };
+                                    ui.add_enabled(
+                                        checked,
+                                        DragValue::new(interval).speed(1).range(1..=usize::MAX),
+                                    );
+                                });
                                 ui.end_row();
                             });
 

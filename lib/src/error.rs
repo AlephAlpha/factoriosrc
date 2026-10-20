@@ -23,6 +23,10 @@ pub enum ConfigError {
     #[error("The nogood database capacity is zero")]
     InvalidNogoodCapacity,
 
+    /// The base interval of the Luby restart sequence is zero.
+    #[error("The restart interval is zero")]
+    InvalidRestartInterval,
+
     /// The period is not a multiple of the background period.
     ///
     /// For a B0 rule, the cells outside the search range are assumed to follow
@@ -65,6 +69,13 @@ pub enum ConfigError {
     /// which is restricted to rules with 2 states.
     #[error("The nogood database is only supported for rules with 2 states")]
     NogoodUnsupported,
+
+    /// Restarts are enabled for a Generations rule.
+    ///
+    /// Restarts rely on the nogood database, which is restricted to rules
+    /// with 2 states.
+    #[error("Restarts are only supported for rules with 2 states")]
+    RestartUnsupported,
 
     /// A known cell is outside the world.
     #[error("A known cell is outside the world")]

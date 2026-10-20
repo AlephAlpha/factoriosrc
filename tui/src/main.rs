@@ -14,7 +14,7 @@ use crate::{
 };
 use color_eyre::Result;
 use crossterm::tty::IsTty;
-use factoriosrc_lib::{Status, World};
+use factoriosrc_lib::{RESTART_INTERVAL, Status, World};
 use std::{io::stdout, time::Instant};
 
 /// Run a search without the TUI interface.
@@ -93,14 +93,24 @@ fn run_no_tui(
                     })
                 });
                 let search = world.search_stats();
+                let min_population = (0..world.config().period)
+                    .map(|t| world.population(t as i32))
+                    .min()
+                    .unwrap_or(0);
                 let output = serde_json::json!({
                     "status": status.to_string(),
                     "generation": generation,
                     "population": world.population(generation),
+                    "min_population": min_population,
+                    "max_population": world.config().max_population,
                     "elapsed_secs": start.elapsed().as_secs_f64(),
                     "steps": world.search_steps(),
                     "cells_checked": world.cells_checked(),
                     "world_size": world.world_size(),
+                    "restart_interval": world
+                        .config()
+                        .restart_interval
+                        .unwrap_or(RESTART_INTERVAL as usize),
                     "nogood_capacity": world.nogood_capacity(),
                     "nogood_entries": world.nogood_entries(),
                     "search_stats": {
@@ -112,6 +122,8 @@ fn run_no_tui(
                         "descriptor_checks": search.descriptor_checks,
                         "backtracks": search.backtracks,
                         "analyses": search.analyses,
+                        "conflicts": search.conflicts,
+                        "restarts": search.restarts,
                         "analysis_resolutions": search.analysis_resolutions,
                         "analysis_literals": search.analysis_literals,
                         "analysis_scanned": search.analysis_scanned,

@@ -407,6 +407,53 @@ pub struct Config {
     #[cfg_attr(feature = "serde", serde(default))]
     pub activity: bool,
 
+    /// Whether to restart the search periodically.
+    ///
+    /// A restart pops the current trail back to the known cells without
+    /// reporting a solution, keeps the learned nogoods, the saved phases, and
+    /// the conflict activity, and resumes from the beginning of the search
+    /// order. The restarts follow the Luby sequence, measured in conflicts;
+    /// see [`restart_interval`](Config::restart_interval) for the base
+    /// interval.
+    ///
+    /// This enables [`nogood`](Config::nogood) implicitly: without learned
+    /// clauses a deterministic restart would re-enter the same search path.
+    /// The option is therefore restricted to rules with 2 states, like the
+    /// nogood database.
+    ///
+    /// Restarts are suppressed after the first reported solution unless
+    /// [`reduce_max_population`](Config::reduce_max_population) is enabled,
+    /// because popping the flip carriers of an enumeration would report
+    /// already enumerated solutions again. With `reduce_max_population`, every
+    /// previously reported solution is above the tightened population bound,
+    /// so restarts cannot report duplicates; the first solution may differ
+    /// from a run without restarts, but the enumerated solution set and count
+    /// do not. At most 512 restarts are performed in a search phase; after
+    /// that the search continues chronologically, so `NoSolution` remains
+    /// reachable. The restart schedule is heuristic state and is not
+    /// serialized.
+    ///
+    /// This is an experimental heuristic inspired by the restarts of SAT
+    /// solvers; it does not always help. The default is `false`.
+    #[cfg_attr(feature = "clap", arg(long, help_heading = "Experimental"))]
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub restart: bool,
+
+    /// The base interval of the Luby restart sequence, measured in conflicts.
+    ///
+    /// The search restarts after `unit * luby(1)` conflicts, then after
+    /// another `unit * luby(2)` conflicts, and so on, where `luby` is the Luby
+    /// sequence `1, 1, 2, 1, 1, 2, 4, ...`. A conflict is a failed propagation
+    /// check, a failed lookahead probe, or a failed complete-assignment period
+    /// check. Smaller values restart more often.
+    ///
+    /// This only applies when [`restart`](Config::restart) is enabled. The
+    /// default is [`None`], which uses an internal default interval of 16
+    /// conflicts.
+    #[cfg_attr(feature = "clap", arg(long, help_heading = "Experimental"))]
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub restart_interval: Option<usize>,
+
     /// Random seed for guessing the state of an unknown cell.
     ///
     /// This is only used when [`new_state`](Config::new_state) is [`Random`](NewState::Random).
@@ -471,6 +518,8 @@ impl Config {
             nogood_capacity: None,
             nogood_guard: false,
             activity: false,
+            restart: false,
+            restart_interval: None,
             seed: None,
             known_cells: Vec::new(),
             max_population: None,
@@ -615,6 +664,28 @@ impl Config {
         self
     }
 
+    /// Enable periodic restarts of the search.
+    ///
+    /// This enables [`nogood`](Config::nogood) implicitly.
+    ///
+    /// See [`restart`](Config::restart) for more details.
+    #[inline]
+    #[must_use]
+    pub const fn with_restart(mut self) -> Self {
+        self.restart = true;
+        self
+    }
+
+    /// Set the base interval of the Luby restart sequence.
+    ///
+    /// See [`restart_interval`](Config::restart_interval) for more details.
+    #[inline]
+    #[must_use]
+    pub const fn with_restart_interval(mut self, interval: usize) -> Self {
+        self.restart_interval = Some(interval);
+        self
+    }
+
     /// Set the random seed for guessing the state of an unknown cell.
     ///
     /// See [`seed`](Config::seed) for more details.
@@ -754,6 +825,17 @@ impl Config {
             self.nogood = true;
         }
 
+        // Restarts use the learned nogoods to change the search path. A
+        // deterministic restart without learned clauses would re-enter the
+        // same path, so `restart` enables the database implicitly.
+        if self.restart {
+            self.nogood = true;
+        }
+
+        if self.restart && rule.states > 2 {
+            return Err(ConfigError::RestartUnsupported);
+        }
+
         // The nogood database builds on the conflict analysis machinery, so
         // it is restricted to the same rules. It does not enable backjumping:
         // the non-chronological resumption is selected by `backjump` alone.
@@ -763,6 +845,10 @@ impl Config {
 
         if self.nogood_capacity == Some(0) {
             return Err(ConfigError::InvalidNogoodCapacity);
+        }
+
+        if self.restart_interval == Some(0) {
+            return Err(ConfigError::InvalidRestartInterval);
         }
 
         // Backjumping only applies to rules with 2 states: the Generations

@@ -26,21 +26,25 @@ and are available through the current frontends.
 | Chronological nogood learning | Implemented | `--nogood` (without `--backjump`) | Learns analyzed conflicts but resumes with the ordinary chronological backtracking, isolating the value of the learned patterns from the backjump resumption. | Two-state rules only; pays the analysis and database maintenance without the non-chronological resumption. |
 | Machinery cost guard | Implemented | `--nogood-guard` | Enables nogood learning (not backjumping) and suspends the experimental machinery when its measured work is too high. | Opt-in and heuristic; it is not a proof of wall-time improvement. |
 | Conflict activity branching | Implemented | `--activity` | Chooses the most active unknown cell in a window of eight search-chain cells. | Changes branching order only; the window remains deliberately small. |
+| Restarts | Implemented | `--restart` | Performs Luby-scheduled restarts over conflicts. A restart pops the trail to the known cells and resumes from the head of the search order while keeping learned nogoods, saved phases, and activity. | Two-state rules, because restart enables the nogood database; suppressed after the first reported solution unless `reduce_max_population` is enabled. |
 | Relative or cross-world nogoods | Proposed | none | Not implemented. | Boundary, background, symmetry, and world-size assumptions need a validity proof. |
-| Restarts, component caching, and a direct CNF encoding | Proposed | none | Not implemented. | These would be separate search strategies, not drop-in replacements. |
+| Component caching and a direct CNF encoding | Proposed | none | Not implemented. | These would be separate search strategies, not drop-in replacements. |
 
 The option implications and rule restrictions are enforced by
 `Config::check()`:
 
-- `nogood_guard` enables `nogood`; `backjump` stays independent. `--nogood`
-  learns and resumes chronologically, while `--nogood --backjump` is the
-  non-chronological combination, and `--nogood-guard --backjump` is the
-  guarded version of it.
+- `nogood_guard` enables `nogood`; `restart` also enables `nogood`, because a
+  deterministic restart without learned clauses would re-enter the same path;
+  `backjump` stays independent. `--nogood` learns and resumes chronologically,
+  while `--nogood --backjump` is the non-chronological combination, and
+  `--nogood-guard --backjump` is the guarded version of it.
 - `lookahead`, `backjump`, and `nogood` are rejected for rules with more than
-  two states.
+  two states. `restart` is rejected for the same reason, since it enables
+  `nogood`.
 - `phase_saving` and `activity` also apply to Generations rules.
 - `nogood_capacity` changes the database budget; it is not a separate search
-  method.
+  method. `restart_interval` changes the restart schedule; it is not a
+  separate search method either.
 
 Use the following terms consistently:
 
@@ -104,7 +108,11 @@ The main loop is `World::search()` and its internal `step()`:
    `backjump`: it either backjumps above the learned conflict level or calls
    the ordinary `backtrack()`, which removes assignments until another state
    can be tried.
-6. When all searchable cells are assigned, `check_period()` applies the current
+6. While the search is still running, a due restart pops every search
+   assignment back to the known cells and resumes at the head of the search
+   order. Learned nogoods, saved phases, and activity are kept; see
+   [Restarts](#restarts).
+7. When all searchable cells are assigned, `check_period()` applies the current
    smaller-period divisor check. If it passes, `World::search()` reports
    `Solved`; otherwise the assignment is backtracked. A later call continues
    enumeration.
@@ -119,6 +127,7 @@ The main loop is `World::search()` and its internal `step()`:
 | `World::analyze()` | 1-UIP conflict analysis | Reasons are reconstructed from mutable descriptors and can become stale. |
 | `NogoodDb` | Learned-clause database | Entries are absolute, world-local forbidden assignments. |
 | `activity` | VSIDS-style branching | Only a fixed local window is reordered; it is not a full SAT variable heuristic. |
+| `World::restart` and the Luby schedule | CDCL restarts | A restart keeps local search state (phases, activity, nogoods) rather than only a clause database, and it is suppressed in enumeration after the first reported solution. |
 
 ## Semantic Boundaries
 
@@ -185,7 +194,9 @@ The normal use case is enumeration, not merely finding one satisfying
 assignment. After a solution, the next call to `search()` resumes the same
 search and may lower `max_population` when `reduce_max_population` is enabled.
 Generation rotations and other equivalent encodings may still be reported as
-separate solutions when the configuration permits them.
+separate solutions when the configuration permits them. Restarts do not change
+this contract: they are suppressed after the first reported solution unless
+`reduce_max_population` is enabled. See [Restarts](#restarts).
 
 The serialized `World` stores the ordinary configuration, stack, visible search
 state, and random generator. It does not store `TrailMeta`, the nogood database,
@@ -382,6 +393,58 @@ machinery and rebuilds the database counters. The current base cooldown is
 The guard is deterministic, depends on operation counters rather than wall time,
 and is not serialized. It is disabled unless `nogood_guard` is explicitly set.
 
+## Restarts
+
+`--restart` enables Luby-scheduled restarts. A restart pops every search
+assignment back to the known cells, resets the decision levels and flip
+carriers, and resumes at the head of the search order. It keeps the learned
+nogood database, the saved phases, the conflict activity, and the random
+generator. The known cells, background, and symmetry deductions stay in place,
+while the front and population counters are restored by the ordinary
+`unset_cell()` path.
+
+The schedule is the Luby sequence `1, 1, 2, 1, 1, 2, 4, ...`, multiplied by a
+base interval measured in conflicts. A conflict is a failed propagation check,
+a failed lookahead probe, or a failed complete-assignment period check. The
+default base interval is 16 conflicts; `--restart-interval` overrides it.
+Restarts stop after 512 restarts in the current search phase, after which the
+search continues chronologically. The final segment is therefore an ordinary
+complete search, so `NoSolution` remains reachable and a restart sequence
+cannot prevent exhaustion. The schedule and the restart counter are heuristic
+state and are not serialized; `reported_solutions` is serialized so that the
+enumeration gating below survives save/load.
+
+`Config::check()` makes `--restart` imply `--nogood`: a deterministic restart
+without learned clauses would re-enter the same path. The option therefore
+inherits the two-state restriction of the nogood database. Restarts are also
+deferred while `--nogood-guard` has suspended the machinery, because a restart
+without active learned clauses has no pruning to make progress.
+
+### Enumeration And Population Bounds
+
+A restart before the first reported solution is safe for enumeration. It may
+discard flip carriers that marked exhausted branches, but those branches
+contain no reported solution, so re-entering them only repeats work. Once a
+solution has been reported, the flip carriers protect the enumeration from
+reporting it again. The implementation therefore stops restarting after the
+first reported solution unless `reduce_max_population` is enabled.
+
+With `reduce_max_population`, each solution lowers the bound to `p - 1`, where
+`p` is the minimum population of that solution. Every previously reported
+solution is strictly above the new bound, so a restart cannot report one of
+them again, and the search under the new bound remains complete. The first
+solution and the sequence of record-low solutions may differ from a run
+without restarts, but the enumerated solution set and count, and the final
+minimum population, are unchanged. Each time the bound is tightened, the Luby
+schedule and the restart budget start over, because the bound defines a new
+search problem.
+
+Preliminary release runs produced mixed results across the canonical
+workloads, including both large speedups and slowdowns. They were not run with
+the full canonical protocol and are deliberately not recorded here. The next
+unified rerun should add the restart columns before any performance claim is
+recorded.
+
 ## Branching Heuristics
 
 ### Phase Saving
@@ -422,7 +485,9 @@ These are proposals, not current features. Any implementation should first add
 a differential correctness test and then use the canonical benchmark table.
 Chronological nogood learning was implemented from this list: `--nogood`
 without `--backjump` is the isolated learning mode, and it is measured in the
-canonical benchmark tables below.
+canonical benchmark tables below. Restarts were implemented from the same list
+and are described in [Restarts](#restarts); their canonical measurements are
+pending the next unified rerun.
 
 1. **Translated or canonicalized nogoods.** Reuse relative patterns only after
    proving independence from padding, known cells, diagonal boundaries,
@@ -438,10 +503,9 @@ canonical benchmark tables below.
 4. **Database quality policies.** A protected short-clause tier, an LBD-aware
    ranking, or an online capacity policy may be useful, but the current policy
    is recency-based and the LBD is diagnostic only.
-5. **Restarts, component caching, and CNF comparison.** These are separate
-   strategies. A CNF implementation would be an external baseline, not a
-   replacement for descriptor propagation without an encoding and boundary
-   comparison.
+5. **Component caching and CNF comparison.** These are separate strategies. A
+   CNF implementation would be an external baseline, not a replacement for
+   descriptor propagation without an encoding and boundary comparison.
 
 ## External CNF Baseline: Logic Life Search
 
@@ -509,7 +573,7 @@ matched protocol rather than extending this table one row at a time.
 | --- | --- |
 | Supported rules, option implications, and automatic search order | `lib/src/config.rs` |
 | Cell graph, front, global counters, persistence, and public diagnostics | `lib/src/world.rs` |
-| Propagation, branching, probing, backtracking, and analysis | `lib/src/search.rs` |
+| Propagation, branching, probing, restarts, backtracking, and analysis | `lib/src/search.rs` |
 | States, descriptors, and rule-table implications | `lib/src/rule.rs` |
 | Reasons and antecedents | `lib/src/cell.rs` |
 | Nogood representation, propagation, statistics, and eviction | `lib/src/nogood.rs` |

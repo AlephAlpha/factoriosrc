@@ -66,6 +66,8 @@ pub enum ConfigField {
     NogoodCapacity,
     NogoodGuard,
     Activity,
+    Restart,
+    RestartInterval,
     Seed,
     MaxPopulation,
     ReduceMaxPopulation,
@@ -105,6 +107,8 @@ impl ConfigField {
             Self::NogoodCapacity,
             Self::NogoodGuard,
             Self::Activity,
+            Self::Restart,
+            Self::RestartInterval,
             Self::Apply,
             Self::Cancel,
         ]
@@ -130,6 +134,8 @@ impl ConfigField {
             Self::NogoodCapacity => "Nogood cap",
             Self::NogoodGuard => "Nogood guard",
             Self::Activity => "Activity",
+            Self::Restart => "Restart",
+            Self::RestartInterval => "Restart int",
             Self::Seed => "Seed",
             Self::MaxPopulation => "Max pop",
             Self::ReduceMaxPopulation => "Reduce pop",
@@ -154,6 +160,7 @@ impl ConfigField {
                 | Self::Seed
                 | Self::MaxPopulation
                 | Self::NogoodCapacity
+                | Self::RestartInterval
                 | Self::ExportResults
         )
     }
@@ -169,6 +176,7 @@ impl ConfigField {
                 | Self::Backjump
                 | Self::Nogood
                 | Self::Activity
+                | Self::Restart
                 | Self::SearchOrder
                 | Self::ReduceMaxPopulation
                 | Self::IncreaseWorldSize
@@ -191,6 +199,8 @@ impl ConfigField {
                 | Self::NogoodCapacity
                 | Self::NogoodGuard
                 | Self::Activity
+                | Self::Restart
+                | Self::RestartInterval
         )
     }
 }
@@ -270,6 +280,10 @@ impl ConfigState {
             }
             ConfigField::NogoodGuard => cfg.nogood_guard.to_string(),
             ConfigField::Activity => cfg.activity.to_string(),
+            ConfigField::Restart => cfg.restart.to_string(),
+            ConfigField::RestartInterval => cfg
+                .restart_interval
+                .map_or(String::new(), |i| i.to_string()),
             ConfigField::Seed => cfg.seed.map_or(String::new(), |s| s.to_string()),
             ConfigField::MaxPopulation => {
                 cfg.max_population.map_or(String::new(), |p| p.to_string())
@@ -383,6 +397,23 @@ impl ConfigState {
                     self.working_config.nogood_capacity = Some(v);
                 }
             }
+            ConfigField::RestartInterval => {
+                if self.edit_buffer.is_empty() {
+                    self.working_config.restart_interval = None;
+                } else {
+                    let Ok(v) = self.edit_buffer.parse::<usize>() else {
+                        self.error =
+                            Some("restart interval must be a positive integer".to_string());
+                        return;
+                    };
+                    if v == 0 {
+                        self.error =
+                            Some("restart interval must be a positive integer".to_string());
+                        return;
+                    }
+                    self.working_config.restart_interval = Some(v);
+                }
+            }
             ConfigField::ExportResults => {
                 self.export = Some(self.edit_buffer.clone());
             }
@@ -490,6 +521,14 @@ impl ConfigState {
             }
             ConfigField::Activity => {
                 self.working_config.activity = !self.working_config.activity;
+            }
+            ConfigField::Restart => {
+                self.working_config.restart = !self.working_config.restart;
+                // Restarts enable the nogood database in `Config::check`;
+                // keep the form in sync when they are toggled on.
+                if self.working_config.restart {
+                    self.working_config.nogood = true;
+                }
             }
             ConfigField::IncreaseWorldSize => {
                 self.increase_world_size = !self.increase_world_size;
