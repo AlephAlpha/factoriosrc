@@ -27,7 +27,7 @@ and are available through the current frontends.
 | Machinery cost guard | Implemented | `--nogood-guard` | Enables nogood learning (not backjumping) and suspends the experimental machinery when its measured work is too high. | Opt-in and heuristic; it is not a proof of wall-time improvement. |
 | Conflict activity branching | Implemented | `--activity` | Chooses the most active unknown cell in a window of eight search-chain cells. | Changes branching order only; the window remains deliberately small. |
 | Restarts | Implemented | `--restart` | Performs Luby-scheduled restarts over conflicts. A restart pops the trail to the known cells and resumes from the head of the search order while keeping learned nogoods, saved phases, and activity. | Two-state rules, because restart enables the nogood database; suppressed after the first reported solution unless `reduce_max_population` is enabled. |
-| Relative or cross-world nogoods | Proposed | none | Not implemented. | Boundary, background, symmetry, and world-size assumptions need a validity proof. |
+| Relative or cross-world nogoods | Rejected | none | A translation-relative prototype was measured and removed. Cross-world reuse would build on the same relative representation. | Watch-based translated matching was far slower than exact-position nogoods; see [Measured Alternatives](#measured-alternatives-not-kept). |
 | Component caching and a direct CNF encoding | Proposed | none | Not implemented. | These would be separate search strategies, not drop-in replacements. |
 
 The option implications and rule restrictions are enforced by
@@ -56,6 +56,8 @@ Use the following terms consistently:
   canonical benchmark table near the end of this document. Archived external
   comparisons are labeled separately and are not current measurements.
 - **Proposed** means that no current search mode implements the idea.
+- **Rejected** means that a prototype was implemented and measured, then
+  removed; it is not current behavior.
 
 ## Search Model
 
@@ -346,6 +348,22 @@ kept: repeated release runs were consistently slower (about +3.2% on `c1`,
 +1.1% on `c7`, and +1.2% on `c5`), even where it lowered the step count
 slightly. None of these variants is in the repository.
 
+Translated, translation-relative nogoods were prototyped behind a temporary
+`--relative-nogood` flag and removed. The prototype canonicalized each clause
+by the offsets from its lexicographically smallest `(generation, y, x)` cell
+and created placements lazily from two watched literals. It kept a clause only
+when its analysis used no level-0 cell or symmetry deduction and the
+transformation was the identity. Differential tests on small worlds matched the
+plain solution set. In an ad-hoc release run of `B3/S23 20 20 2 -n r --seed 1`
+(first solution), `--nogood` took 0.28 s and 202,471 steps, while the relative
+mode took 32.3 s and 410,916 steps and created and evicted about 41.5M
+placements. On `B2n3/S23-q 30 9 4 -x 1 -n a` it exceeded 180 s (canonical
+`--nogood`: 8.49 s), and on `B3/S23 7 7 2 -n a --no-stop` it exceeded 60 s
+(3.06 s). Watch discovery creates too many speculative placements, so a
+fundamentally cheaper indexing scheme would be needed; the mode is not kept,
+and cross-world nogoods are not pursued because they depend on the same
+relative representation.
+
 ### Capacity And Eviction
 
 The current implementation uses these limits:
@@ -489,21 +507,16 @@ canonical benchmark tables below. Restarts were implemented from the same list
 and are described in [Restarts](#restarts); their canonical measurements are
 recorded in the restart and minimization tables below.
 
-1. **Translated or canonicalized nogoods.** Reuse relative patterns only after
-   proving independence from padding, known cells, diagonal boundaries,
-   background phase, symmetry mappings, transformations, and generation
-   anchoring. The current exact-position database intentionally makes none of
-   these claims.
-2. **Stronger consistency across descriptors.** Adjacent descriptors share
+1. **Stronger consistency across descriptors.** Adjacent descriptors share
    cells and successors. A bounded on-demand consistency check could compose
    facts that one descriptor cannot derive alone.
-3. **Learning for Generations.** Possible encodings include learning only in the
+2. **Learning for Generations.** Possible encodings include learning only in the
    dead/alive layer or using multi-valued variables. They must preserve dying
    transitions and `TryAnother` enumeration semantics.
-4. **Database quality policies.** A protected short-clause tier, an LBD-aware
+3. **Database quality policies.** A protected short-clause tier, an LBD-aware
    ranking, or an online capacity policy may be useful, but the current policy
    is recency-based and the LBD is diagnostic only.
-5. **Component caching and CNF comparison.** These are separate strategies. A
+4. **Component caching and CNF comparison.** These are separate strategies. A
    CNF implementation would be an external baseline, not a replacement for
    descriptor propagation without an encoding and boundary comparison.
 
