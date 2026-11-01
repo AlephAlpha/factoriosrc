@@ -681,6 +681,40 @@ impl RuleTable {
         }
     }
 
+    /// Apply a hypothetical state to one neighbor of a descriptor.
+    ///
+    /// This is used by the bounded pair consistency check, which enumerates
+    /// assignments on descriptor copies without changing the real world. The
+    /// neighbor index is the position in the source cell's neighborhood.
+    #[inline]
+    pub(crate) fn assume_neighbor(
+        &self,
+        descriptor: &mut Descriptor,
+        index: usize,
+        state: CellState,
+    ) {
+        match &self.impl_ {
+            RuleTableImpl::Count(_) => match state {
+                CellState::Dead => descriptor.increment_dead(),
+                CellState::Alive => descriptor.increment_alive(),
+                CellState::Dying(_) => unreachable!("dying states are not supported here"),
+            },
+            RuleTableImpl::Mask(_) => {
+                // Neighbor fields use the same encoding as the lookup table:
+                // `0b01` is alive and `0b10` is dead. This is the opposite of
+                // `CellState::base_code`, which is used by the current and
+                // successor fields.
+                let code = match state {
+                    CellState::Alive => 0b01,
+                    CellState::Dead => 0b10,
+                    CellState::Dying(_) => unreachable!("dying states are not supported here"),
+                };
+                let shift = Descriptor::NEIGHBOR_STATE_SHIFT + 2 * index;
+                descriptor.0 = (descriptor.0 & !(0b11 << shift)) | (code << shift);
+            }
+        }
+    }
+
     /// Update the descriptors of the neighbors of a cell when the cell is set to a state.
     ///
     /// # Safety
@@ -1309,6 +1343,24 @@ mod tests {
             i += 1;
         }
         Descriptor(value)
+    }
+
+    #[test]
+    fn test_assume_neighbor_uses_the_mask_encoding() {
+        // The neighbor fields of the mask table use `0b01` for alive and
+        // `0b10` for dead, the opposite bit order of `CellState::base_code`.
+        // The hypothetical assignment used by pair consistency must use the
+        // same encoding as `set_neighbors`.
+        let rule = parse_rule("B2a/S12").unwrap();
+        let table = RuleTable::new(&rule).unwrap();
+        let shift = Descriptor::NEIGHBOR_STATE_SHIFT + 2;
+
+        let mut descriptor = Descriptor::default();
+        table.assume_neighbor(&mut descriptor, 1, CellState::Alive);
+        assert_eq!((descriptor.0 >> shift) & 0b11, 0b01);
+
+        table.assume_neighbor(&mut descriptor, 1, CellState::Dead);
+        assert_eq!((descriptor.0 >> shift) & 0b11, 0b10);
     }
 
     #[test]

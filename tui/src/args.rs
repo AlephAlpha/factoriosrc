@@ -418,6 +418,7 @@ mod tests {
         for flag in [
             "phase-saving",
             "lookahead",
+            "pair-consistency",
             "backjump",
             "nogood",
             "nogood-capacity",

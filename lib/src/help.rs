@@ -33,6 +33,8 @@ pub enum ConfigHelpField {
     PhaseSaving,
     /// The lookahead field.
     Lookahead,
+    /// The pair-consistency field.
+    PairConsistency,
     /// The backjump field.
     Backjump,
     /// The nogood field.
@@ -75,6 +77,7 @@ impl ConfigHelpField {
             Self::NewState,
             Self::PhaseSaving,
             Self::Lookahead,
+            Self::PairConsistency,
             Self::Backjump,
             Self::Nogood,
             Self::NogoodCapacity,
@@ -97,6 +100,7 @@ impl ConfigHelpField {
             self,
             Self::PhaseSaving
                 | Self::Lookahead
+                | Self::PairConsistency
                 | Self::Backjump
                 | Self::Nogood
                 | Self::NogoodCapacity
@@ -124,6 +128,7 @@ impl ConfigHelpField {
             Self::NewState => "New state",
             Self::PhaseSaving => "Phase saving",
             Self::Lookahead => "Lookahead",
+            Self::PairConsistency => "Pair consistency",
             Self::Backjump => "Backjump",
             Self::Nogood => "Nogood",
             Self::NogoodCapacity => "Nogood capacity",
@@ -164,6 +169,9 @@ impl ConfigHelpField {
             }
             Self::Lookahead => {
                 "Experimental: probe both states of an unknown cell before guessing it. Only for 2-state rules. May help or hurt."
+            }
+            Self::PairConsistency => {
+                "Experimental: jointly check neighboring descriptor pairs for bounded local consequences that single-descriptor propagation misses. Only for 2-state rules."
             }
             Self::Backjump => {
                 "Experimental: CDCL-style conflict analysis with non-chronological backtracking. Only for 2-state rules. Usually slower than the default backtracking."
@@ -211,6 +219,7 @@ impl ConfigHelpField {
             Self::NewState => "new_state",
             Self::PhaseSaving => "phase_saving",
             Self::Lookahead => "lookahead",
+            Self::PairConsistency => "pair_consistency",
             Self::Backjump => "backjump",
             Self::Nogood => "nogood",
             Self::NogoodCapacity => "nogood_capacity",
@@ -359,7 +368,7 @@ mod tests {
         let fields: Vec<_> = ConfigHelpField::iter().collect();
         assert!(fields.contains(&ConfigHelpField::RuleString));
         assert!(fields.contains(&ConfigHelpField::KnownCells));
-        assert_eq!(fields.len(), 24);
+        assert_eq!(fields.len(), 25);
     }
 
     #[test]
@@ -372,6 +381,7 @@ mod tests {
             vec![
                 ConfigHelpField::PhaseSaving,
                 ConfigHelpField::Lookahead,
+                ConfigHelpField::PairConsistency,
                 ConfigHelpField::Backjump,
                 ConfigHelpField::Nogood,
                 ConfigHelpField::NogoodCapacity,

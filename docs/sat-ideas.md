@@ -23,6 +23,7 @@ and are available through the current frontends.
 | Lookahead | Implemented | `--lookahead` | Probes `Dead` and `Alive` for the next branch candidate and keeps the better polarity. | Two-state rules only; the probe is bounded and does not select a variable. |
 | Conflict analysis and backjumping | Implemented | `--backjump` | Performs 1-UIP-style analysis for selected local conflicts and resumes above the learned conflict level. The analysis machinery is also enabled by `--nogood`. | Two-state rules only; global and some non-local failures backtrack chronologically. |
 | Exact-position nogood learning | Implemented | `--nogood` | Persists analyzed forbidden assignments and propagates them while the current `World` remains alive. With only `--nogood` the search resumes chronologically; `--nogood --backjump` adds the non-chronological resumption. | Two-state rules only; entries use absolute cell indices and cannot be transferred. |
+| Bounded descriptor-pair consistency | Implemented | `--pair-consistency` | At each propagation fixed point, enumerates the unknown cells shared by a small number of neighboring descriptor pairs and commits a jointly forced cell or reports a joint conflict. | Two-state rules only; one pair and at most eight unknown cells per fixed point; it is not a global or persistent consistency level. |
 | Chronological nogood learning | Implemented | `--nogood` (without `--backjump`) | Learns analyzed conflicts but resumes with the ordinary chronological backtracking, isolating the value of the learned patterns from the backjump resumption. | Two-state rules only; pays the analysis and database maintenance without the non-chronological resumption. |
 | Machinery cost guard | Implemented | `--nogood-guard` | Enables nogood learning (not backjumping) and suspends the experimental machinery when its measured work is too high. | Opt-in and heuristic; it is not a proof of wall-time improvement. |
 | Conflict activity branching | Implemented | `--activity` | Chooses the most active unknown cell in a window of eight search-chain cells. | Changes branching order only; the window remains deliberately small. |
@@ -38,9 +39,9 @@ The option implications and rule restrictions are enforced by
   `backjump` stays independent. `--nogood` learns and resumes chronologically,
   while `--nogood --backjump` is the non-chronological combination, and
   `--nogood-guard --backjump` is the guarded version of it.
-- `lookahead`, `backjump`, and `nogood` are rejected for rules with more than
-  two states. `restart` is rejected for the same reason, since it enables
-  `nogood`.
+- `lookahead`, `pair_consistency`, `backjump`, and `nogood` are rejected for
+  rules with more than two states. `restart` is rejected for the same reason,
+  since it enables `nogood`.
 - `phase_saving` and `activity` also apply to Generations rules.
 - `nogood_capacity` changes the database budget; it is not a separate search
   method. `restart_interval` changes the restart schedule; it is not a
@@ -101,10 +102,12 @@ The main loop is `World::search()` and its internal `step()`:
 3. Generations rules use a separate check because dying states advance
    deterministically and are only equivalent to dead in the underlying
    two-state neighborhood rule.
-4. When propagation reaches a fixed point, `guess()` chooses the next unknown
-   cell. The default cell is the head of the `next` chain; `activity` may choose
-   another cell in its small window. `lookahead`, when enabled, chooses the
-   polarity before the real assignment.
+4. When propagation reaches a fixed point, `pair_consistency` may perform one
+   bounded joint check on descriptors near the next branch cell. A joint
+   deduction is committed and the search returns to propagation; otherwise
+   `guess()` chooses the next unknown cell. The default cell is the head of the
+   `next` chain; `activity` may choose another cell in its small window.
+   `lookahead`, when enabled, chooses the polarity before the real assignment.
 5. A local conflict is analyzed when `backjump` or `nogood` is active and the
    machinery is not suspended. The resumption policy is selected by
    `backjump`: it either backjumps above the learned conflict level or calls
@@ -128,6 +131,7 @@ The main loop is `World::search()` and its internal `step()`:
 | `Reason`, `TrailMeta`, and `Antecedent` | Trail and implication graph | Detailed antecedents exist only when the conflict analysis machinery is enabled (`backjump` or `nogood`). |
 | `World::analyze()` | 1-UIP conflict analysis | Reasons are reconstructed from mutable descriptors and can become stale. |
 | `NogoodDb` | Learned-clause database | Entries are absolute, world-local forbidden assignments. |
+| `--pair-consistency` | Bounded pairwise constraint consistency | Two n-ary descriptor constraints are joined exactly; there is no global closure or persistent learned relation. |
 | `activity` | VSIDS-style branching | Only a fixed local window is reordered; it is not a full SAT variable heuristic. |
 | `World::restart` and the Luby schedule | CDCL restarts | A restart keeps local search state (phases, activity, nogoods) rather than only a clause database, and it is suppressed in enumeration after the first reported solution. |
 
@@ -145,7 +149,10 @@ geometry description is kept in [`docs/front.md`](front.md) and
 A transition relates a cell, its successor, and a neighborhood that can contain
 many cells. A conflict is therefore closer to a hypergraph constraint than to a
 Boolean clause. A learned nogood is sound only for the exact assignments and
-assumptions used by the current analysis.
+assumptions used by the current analysis. The descriptor-pair check joins two
+such n-ary constraints exactly, but it does not close the whole network, and
+its conclusions are recomputed from the current world instead of being stored
+as clauses.
 
 ### Global And Complete-Assignment Constraints
 
@@ -411,6 +418,96 @@ machinery and rebuilds the database counters. The current base cooldown is
 The guard is deterministic, depends on operation counters rather than wall time,
 and is not serialized. It is disabled unless `nogood_guard` is explicitly set.
 
+## Bounded Descriptor-Pair Consistency
+
+`--pair-consistency` implements a small, exact consistency check over two
+neighborhood descriptors. It attacks a gap left by ordinary propagation: after
+the per-descriptor implications reach a fixed point, two constraints can still
+have no joint completion, or can jointly force a cell that neither constraint
+forces alone. The implementation lives in `lib/src/consistency.rs`, with the
+search scheduling in `lib/src/search.rs` and the hypothetical neighbor update
+in `lib/src/rule.rs`.
+
+### Scope And Trigger
+
+The check runs only after `check_stack()` reaches a fixed point and before the
+next `guess()`. It starts from the descriptors around the earliest unknown cell
+of the search chain, scans at most eight neighboring descriptor sources, and
+performs at most one complete joint enumeration per fixed point. A pair is
+considered eligible only when:
+
+- the two descriptor scopes share at least two unknown cells; with only one
+  shared unknown, the per-descriptor supports can be combined trivially at a
+  fixed point;
+- the union of their unknown cells contains at most eight cells, so the joint
+  enumeration is at most 256 assignments.
+
+A candidate that fails either condition is skipped. A skip is only lost
+pruning and never a deduction or a conflict. The result is exact whenever a
+joint enumeration runs.
+
+### Joint Support
+
+For a pair, the checker collects the current cell, successor, and non-null
+neighbors of both sources. Cells and successor aliases are deduplicated by
+identity, so `period == 1` and transformed worlds are handled without a
+coordinate-level assumption. Known cells and the background encoded in the
+descriptors remain fixed. The checker then enumerates every assignment of the
+unknown cells in the union and tests both transition constraints using the same
+two-state rule table as propagation.
+
+The projected support of each unknown cell is accumulated over all joint
+solutions:
+
+- no joint solution means `Confl::RulePair`;
+- a cell with only one supported state is committed as `Reason::Deduced`;
+- otherwise the pair contributes nothing.
+
+Only one deduction is committed per step. The next search step returns to the
+ordinary propagation queue before another pair check, so the joint result is
+never mixed with assignments derived from the same local state.
+
+The checker works on descriptor copies and never calls `set_cell()` for a
+hypothetical assignment. It therefore does not need a probe rollback, does not
+touch phase saving or the nogood counters, and cannot leave partial heuristic
+state behind.
+
+### Reasons And Conflict Analysis
+
+A pair deduction needs an antecedent that explains both constraints. When the
+conflict analysis machinery is enabled, the search records an
+`Antecedent::Clause` containing every cell that was known in either descriptor
+at the time of the check, excluding the deduced cell and duplicates. The
+existing stale-reason check and reason-arena compaction apply unchanged.
+
+A pair conflict is a `Confl::RulePair(first, second)`. Conflict analysis seeds
+it with the known literals of both descriptors. The resulting 1-UIP, learned
+nogood, backjump target, and flip-carrier guard are the ordinary ones. The
+learned entry remains an absolute, world-local nogood; there is no
+translation-relative matching.
+
+### Semantic Limits
+
+This is not a global consistency algorithm and not a general path-consistency
+closure. It joins one pair, selected near the current branch, and discards the
+result after the next propagation. It does not combine three or more
+descriptors, and it does not infer a relation that requires a longer time
+window. A pair that is skipped can hide a valid consequence from this check.
+
+Generations rules are rejected by `Config::check()`: their transition relation
+has more than two values, and the current cell representation cannot retain a
+domain with several supported dying states. `--pair-consistency` also does not
+persist assignments or pair facts across save/load or world growth; only the
+option itself, as part of `Config`, is serialized.
+
+The mechanism has a separate work budget rather than a claim of speed. The
+`SearchStats` counters `pair_consistency_checks`,
+`pair_consistency_assignments`, `pair_consistency_deductions`,
+`pair_consistency_conflicts`, and `pair_consistency_skips` expose the number of
+candidate pairs, enumerated assignments, successful deductions, joint
+conflicts, and skipped pairs. The canonical benchmark table is updated after a
+unified rerun rather than mixing ad-hoc pair measurements into it.
+
 ## Restarts
 
 `--restart` enables Luby-scheduled restarts. A restart pops every search
@@ -507,9 +604,11 @@ canonical benchmark tables below. Restarts were implemented from the same list
 and are described in [Restarts](#restarts); their canonical measurements are
 recorded in the restart and minimization tables below.
 
-1. **Stronger consistency across descriptors.** Adjacent descriptors share
-   cells and successors. A bounded on-demand consistency check could compose
-   facts that one descriptor cannot derive alone.
+1. **Broader consistency beyond one descriptor pair.** The bounded
+   two-descriptor join is now implemented as `--pair-consistency`. Extending it
+   to three or more overlapping descriptors, a network-wide singleton check,
+   or persistent pair facts would require a larger work budget and a more
+   general antecedent representation.
 2. **Learning for Generations.** Possible encodings include learning only in the
    dead/alive layer or using multi-valued variables. They must preserve dying
    transitions and `TryAnother` enumeration semantics.
@@ -590,6 +689,7 @@ matched protocol rather than extending this table one row at a time.
 | States, descriptors, and rule-table implications | `lib/src/rule.rs` |
 | Reasons and antecedents | `lib/src/cell.rs` |
 | Nogood representation, propagation, statistics, and eviction | `lib/src/nogood.rs` |
+| Bounded descriptor-pair scope collection and joint support | `lib/src/consistency.rs` |
 | Front invariant and its proof obligations | [`docs/front.md`](front.md) |
 
 When changing one of these implementations:
@@ -600,6 +700,9 @@ When changing one of these implementations:
 - Include B0 backgrounds, symmetry and transformation, known cells, population
   bounds, `reduce_max_population`, save/load, and world growth when the change
   affects learning or backtracking.
+- For descriptor-pair changes, also compare the joint result with an independent
+  exhaustive oracle over the two scopes, and test pairs with shared current or
+  successor aliases (`period == 1`).
 - For changes to unsafe search internals, run the Miri check required by
   [`AGENTS.md`](../AGENTS.md).
 - Use paths and symbol names instead of line numbers. Keep this document about

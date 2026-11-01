@@ -63,6 +63,13 @@ pub enum ConfigError {
     #[error("Lookahead is only supported for rules with 2 states")]
     LookaheadUnsupported,
 
+    /// Pair consistency is enabled for a Generations rule.
+    ///
+    /// The bounded pair check enumerates the two values of an unknown cell
+    /// and uses the two-state descriptor table.
+    #[error("Pair consistency is only supported for rules with 2 states")]
+    PairConsistencyUnsupported,
+
     /// The nogood database is enabled for a Generations rule.
     ///
     /// The nogood database learns from the conflict analysis machinery,

@@ -306,6 +306,28 @@ pub struct Config {
     #[cfg_attr(feature = "serde", serde(default))]
     pub lookahead: bool,
 
+    /// Whether to run bounded joint checks on pairs of neighboring descriptors.
+    ///
+    /// When ordinary propagation reaches a fixed point, a pair of overlapping
+    /// descriptors is checked together. The search enumerates the assignments
+    /// of the unknown cells in the union of the two scopes, projects the joint
+    /// solutions back onto those cells, and commits a cell that has only one
+    /// supported state. If the two descriptors have no joint solution at all,
+    /// the check reports a conflict.
+    ///
+    /// This is stronger than checking each descriptor separately, but it is
+    /// deliberately local: only a small number of pairs near the next branch
+    /// cell are checked, and a pair with too many unknown cells is skipped.
+    /// It also does not persist any learned state. The check is exact when it
+    /// runs; skipping only loses pruning, never correctness.
+    ///
+    /// This is an experimental technique inspired by stronger consistency
+    /// algorithms for constraint satisfaction. It only applies to rules with 2
+    /// states in the current implementation. The default is `false`.
+    #[cfg_attr(feature = "clap", arg(long, help_heading = "Experimental"))]
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub pair_consistency: bool,
+
     /// Whether to enable the CDCL-style conflict analysis with
     /// non-chronological backtracking.
     ///
@@ -513,6 +535,7 @@ impl Config {
             new_state: NewState::Dead,
             phase_saving: false,
             lookahead: false,
+            pair_consistency: false,
             backjump: false,
             nogood: false,
             nogood_capacity: None,
@@ -605,6 +628,16 @@ impl Config {
     #[must_use]
     pub const fn with_lookahead(mut self) -> Self {
         self.lookahead = true;
+        self
+    }
+
+    /// Enable bounded joint checks on pairs of neighboring descriptors.
+    ///
+    /// See [`pair_consistency`](Config::pair_consistency) for more details.
+    #[inline]
+    #[must_use]
+    pub const fn with_pair_consistency(mut self) -> Self {
+        self.pair_consistency = true;
         self
     }
 
@@ -863,6 +896,14 @@ impl Config {
         // states of a Generations rule.
         if self.lookahead && rule.states > 2 {
             return Err(ConfigError::LookaheadUnsupported);
+        }
+
+        // The pair consistency check enumerates assignments of binary cells
+        // and uses the two-state descriptor table. Generations rules need a
+        // multi-valued transition evaluator and a domain representation that
+        // can retain several supported dying states.
+        if self.pair_consistency && rule.states > 2 {
+            return Err(ConfigError::PairConsistencyUnsupported);
         }
 
         // For a B0 rule, the cells outside the search range are assumed to
@@ -1132,6 +1173,22 @@ mod tests {
             check_rule_symmetry(&only_nw, Symmetry::C1, Transformation::S0),
             Err(ConfigError::TransformationIncompatibleWithRule)
         ));
+    }
+
+    #[test]
+    fn test_pair_consistency_rejects_generations() {
+        assert!(matches!(
+            Config::new("B3/S23/3", 3, 3, 1)
+                .with_pair_consistency()
+                .check(),
+            Err(ConfigError::PairConsistencyUnsupported)
+        ));
+        assert!(
+            Config::new("B3/S23", 3, 3, 1)
+                .with_pair_consistency()
+                .check()
+                .is_ok()
+        );
     }
 
     #[test]

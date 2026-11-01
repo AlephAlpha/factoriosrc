@@ -119,16 +119,22 @@ pub struct TrailMeta {
 ///
 /// When the conflict analysis machinery is enabled (by
 /// [`Config::backjump`](crate::Config::backjump) or
-/// [`Config::nogood`](crate::Config::nogood)), a [`Rule`](Confl::Rule) or
-/// [`Symmetry`](Confl::Symmetry) conflict is analyzed; a
-/// [`Global`](Confl::Global) conflict is a global constraint failure and is
-/// handled by chronological backtracking.
+/// [`Config::nogood`](crate::Config::nogood)), a [`Rule`](Confl::Rule),
+/// [`RulePair`](Confl::RulePair), or [`Symmetry`](Confl::Symmetry) conflict is
+/// analyzed; a [`Global`](Confl::Global) conflict is a global constraint
+/// failure and is handled by chronological backtracking.
 #[derive(Debug, Clone, Copy)]
 pub enum Confl {
     /// The rule lookup on the neighborhood descriptor of a cell found a conflict.
     ///
     /// The cell must be in the same world as `self`.
     Rule(*const LifeCell),
+
+    /// Two descriptors have no joint solution for the current assignment.
+    ///
+    /// The cells are the two descriptor sources. They must be in the same
+    /// world as `self`.
+    RulePair(*const LifeCell, *const LifeCell),
 
     /// Two symmetry-equivalent cells have different states.
     ///
@@ -192,6 +198,30 @@ pub struct SearchStats {
     /// Each processed cell checks the descriptors of itself, its predecessor,
     /// and its neighbors, so this is the dominant baseline propagation work.
     pub descriptor_checks: u64,
+
+    /// The number of descriptor pairs passed to the bounded consistency check.
+    ///
+    /// A pair may still be skipped because it shares too few unknown cells or
+    /// has too many unknowns to enumerate; see
+    /// [`pair_consistency_skips`](SearchStats::pair_consistency_skips).
+    pub pair_consistency_checks: u64,
+
+    /// The number of complete local assignments enumerated by pair checks.
+    ///
+    /// This is the dominant work measure of the mechanism. It is zero when
+    /// [`pair_consistency`](Config::pair_consistency) is disabled.
+    pub pair_consistency_assignments: u64,
+
+    /// The number of cells forced by a bounded pair check.
+    pub pair_consistency_deductions: u64,
+
+    /// The number of pair checks that found no joint solution.
+    pub pair_consistency_conflicts: u64,
+
+    /// The number of pairs skipped without a conclusion.
+    ///
+    /// Skipping only loses pruning and never changes the solution set.
+    pub pair_consistency_skips: u64,
 
     /// The number of chronological backtracks.
     pub backtracks: u64,
@@ -2889,6 +2919,31 @@ mod test {
     }
 
     #[test]
+    fn test_miri_pair_consistency() {
+        // Exercise the bounded pair check under Miri: it walks raw neighborhood
+        // pointers, clones descriptors, and builds explicit clause reasons.
+        let config = Config::new("B3/S23", 4, 4, 2)
+            .with_pair_consistency()
+            .with_nogood()
+            .with_backjump();
+        let mut world = World::new(config).unwrap();
+        world.search(None);
+        assert_eq!(world.status(), Status::Solved);
+        assert!(
+            world.search_stats().pair_consistency_deductions
+                + world.search_stats().pair_consistency_conflicts
+                > 0
+        );
+
+        let config = Config::new("B3/S23", 4, 4, 2)
+            .with_max_population(1)
+            .with_pair_consistency();
+        let mut world = World::new(config).unwrap();
+        world.search(None);
+        assert_eq!(world.status(), Status::NoSolution);
+    }
+
+    #[test]
     fn test_miri_activity() {
         // Exercise activity-based branching under Miri: the window selection
         // walks the raw `next` pointers, and the conflict paths bump and
@@ -3879,6 +3934,129 @@ mod test {
             world.search(None);
             assert_eq!(world.status(), Status::Solved);
         }
+    }
+
+    #[test]
+    fn test_pair_consistency_rejects_generations() {
+        assert!(matches!(
+            World::new(Config::new("3457/357/5", 3, 3, 1).with_pair_consistency()),
+            Err(ConfigError::PairConsistencyUnsupported)
+        ));
+        assert!(World::new(Config::new("B3/S23", 3, 3, 2).with_pair_consistency()).is_ok());
+    }
+
+    #[test]
+    fn test_pair_consistency_finds_solution() {
+        for config in [
+            Config::new("B3/S23", 5, 5, 2).with_pair_consistency(),
+            Config::new("B2a/S12", 3, 3, 1).with_pair_consistency(),
+            Config::new("B2o/S23oH", 4, 4, 2).with_pair_consistency(),
+            Config::new("B026/S1", 4, 4, 2).with_pair_consistency(),
+            Config::new("R3,C2,S2,B3,N+", 3, 3, 1).with_pair_consistency(),
+        ] {
+            let mut world = World::new(config).unwrap();
+            world.search(None);
+            assert_eq!(world.status(), Status::Solved);
+        }
+    }
+
+    #[test]
+    fn test_pair_consistency_enumerates_same_solutions() {
+        for config in [
+            Config::new("B3/S23", 3, 3, 2),
+            Config::new("B3/S23", 4, 4, 2),
+            Config::new("B2a/S12", 3, 3, 1),
+            Config::new("B2o/S23oH", 4, 4, 2),
+            Config::new("B026/S1", 4, 4, 2),
+        ] {
+            assert_eq!(
+                count_solutions(&config),
+                count_solutions(&config.clone().with_pair_consistency()),
+                "pair consistency changes the solution count for {config:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_pair_consistency_with_learning_keeps_enumeration_counts() {
+        // Pair deductions use explicit clause antecedents, so the conflict
+        // analysis must produce the same number of solutions with and without
+        // the bounded consistency check.
+        for config in [
+            Config::new("B3/S23", 3, 3, 2),
+            Config::new("B3/S23", 4, 4, 2),
+            Config::new("B2a/S12", 3, 3, 1),
+            Config::new("B3/S23", 4, 4, 2).with_symmetry(Symmetry::D2H),
+        ] {
+            let expected = count_solutions(&config);
+            assert_eq!(
+                count_solutions(
+                    &config
+                        .clone()
+                        .with_pair_consistency()
+                        .with_nogood()
+                        .with_backjump()
+                ),
+                expected,
+                "pair consistency with learning changed the count for {config:?}"
+            );
+            assert_eq!(
+                count_solutions(&config.clone().with_pair_consistency().with_nogood()),
+                expected,
+                "pair consistency with chronological learning changed the count for {config:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_pair_consistency_with_conflict_options() {
+        for config in [
+            Config::new("B3/S23", 4, 4, 2)
+                .with_pair_consistency()
+                .with_backjump(),
+            Config::new("B3/S23", 4, 4, 2)
+                .with_pair_consistency()
+                .with_nogood(),
+            Config::new("B3/S23", 4, 4, 2)
+                .with_pair_consistency()
+                .with_nogood()
+                .with_backjump(),
+            Config::new("B3/S23", 4, 4, 2)
+                .with_pair_consistency()
+                .with_lookahead()
+                .with_activity(),
+        ] {
+            let mut world = World::new(config).unwrap();
+            world.search(None);
+            assert_eq!(world.status(), Status::Solved);
+        }
+    }
+
+    #[test]
+    fn test_pair_consistency_records_work() {
+        let mut world = World::new(Config::new("B3/S23", 7, 7, 2).with_pair_consistency()).unwrap();
+        assert_eq!(world.search(None), Status::Solved);
+        let stats = world.search_stats();
+        assert!(stats.pair_consistency_checks > 0);
+        assert!(stats.pair_consistency_assignments > 0);
+        assert!(
+            stats.pair_consistency_deductions + stats.pair_consistency_conflicts > 0,
+            "the pair consistency check never produced a fact"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn test_pair_consistency_round_trip_through_serde() {
+        let mut world = World::new(Config::new("B3/S23", 4, 4, 2).with_pair_consistency()).unwrap();
+        world.search(Some(1000));
+
+        let mut world2 = World::try_from(world.to_serde()).unwrap();
+        assert!(world2.config().pair_consistency);
+
+        world.search(None);
+        world2.search(None);
+        assert_eq!(world.status(), world2.status());
     }
 
     #[test]

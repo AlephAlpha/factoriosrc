@@ -783,6 +783,11 @@ impl App {
                                 ui.checkbox(&mut config.lookahead, "");
                                 ui.end_row();
 
+                                ui.label("pair consistency")
+                                    .on_hover_text(ConfigHelpField::PairConsistency.short_help());
+                                ui.checkbox(&mut config.pair_consistency, "");
+                                ui.end_row();
+
                                 ui.label("backjump")
                                     .on_hover_text(ConfigHelpField::Backjump.short_help());
                                 ui.checkbox(&mut config.backjump, "");

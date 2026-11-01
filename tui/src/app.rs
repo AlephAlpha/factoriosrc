@@ -61,6 +61,7 @@ pub enum ConfigField {
     NewState,
     PhaseSaving,
     Lookahead,
+    PairConsistency,
     Backjump,
     Nogood,
     NogoodCapacity,
@@ -102,6 +103,7 @@ impl ConfigField {
             Self::ExportResults,
             Self::PhaseSaving,
             Self::Lookahead,
+            Self::PairConsistency,
             Self::Backjump,
             Self::Nogood,
             Self::NogoodCapacity,
@@ -129,6 +131,7 @@ impl ConfigField {
             Self::NewState => "New state",
             Self::PhaseSaving => "Phase saving",
             Self::Lookahead => "Lookahead",
+            Self::PairConsistency => "Pair consistency",
             Self::Backjump => "Backjump",
             Self::Nogood => "Nogood",
             Self::NogoodCapacity => "Nogood cap",
@@ -173,6 +176,7 @@ impl ConfigField {
                 | Self::NewState
                 | Self::PhaseSaving
                 | Self::Lookahead
+                | Self::PairConsistency
                 | Self::Backjump
                 | Self::Nogood
                 | Self::Activity
@@ -194,6 +198,7 @@ impl ConfigField {
             self,
             Self::PhaseSaving
                 | Self::Lookahead
+                | Self::PairConsistency
                 | Self::Backjump
                 | Self::Nogood
                 | Self::NogoodCapacity
@@ -273,6 +278,7 @@ impl ConfigState {
             ConfigField::NewState => cfg.new_state.to_string(),
             ConfigField::PhaseSaving => cfg.phase_saving.to_string(),
             ConfigField::Lookahead => cfg.lookahead.to_string(),
+            ConfigField::PairConsistency => cfg.pair_consistency.to_string(),
             ConfigField::Backjump => cfg.backjump.to_string(),
             ConfigField::Nogood => cfg.nogood.to_string(),
             ConfigField::NogoodCapacity => {
@@ -504,6 +510,9 @@ impl ConfigState {
             }
             ConfigField::Lookahead => {
                 self.working_config.lookahead = !self.working_config.lookahead;
+            }
+            ConfigField::PairConsistency => {
+                self.working_config.pair_consistency = !self.working_config.pair_consistency;
             }
             ConfigField::Backjump => {
                 self.working_config.backjump = !self.working_config.backjump;
@@ -1858,8 +1867,12 @@ mod tests {
             position(ConfigField::PhaseSaving) + 1
         );
         assert_eq!(
+            position(ConfigField::PairConsistency),
+            position(ConfigField::Lookahead) + 1
+        );
+        assert_eq!(
             position(ConfigField::Backjump),
-            position(ConfigField::PhaseSaving) + 2
+            position(ConfigField::PairConsistency) + 1
         );
         assert_eq!(
             position(ConfigField::Nogood),
@@ -1900,6 +1913,7 @@ mod tests {
                 position(ConfigField::ExportResults),
                 position(ConfigField::PhaseSaving),
                 position(ConfigField::Lookahead),
+                position(ConfigField::PairConsistency),
                 position(ConfigField::Backjump),
                 position(ConfigField::Nogood),
                 position(ConfigField::NogoodCapacity),
@@ -1911,6 +1925,7 @@ mod tests {
             export,
             phase_saving,
             lookahead,
+            pair_consistency,
             backjump,
             nogood,
             nogood_capacity,
@@ -1925,7 +1940,8 @@ mod tests {
 
         // The rest of the run is contiguous: no extra lines inside the group.
         assert_eq!(before[lookahead], before[phase_saving] + 1);
-        assert_eq!(before[backjump], before[lookahead] + 1);
+        assert_eq!(before[pair_consistency], before[lookahead] + 1);
+        assert_eq!(before[backjump], before[pair_consistency] + 1);
         assert_eq!(before[nogood], before[backjump] + 1);
         assert_eq!(before[nogood_capacity], before[nogood] + 1);
         assert_eq!(before[nogood_guard], before[nogood_capacity] + 1);

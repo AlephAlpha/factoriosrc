@@ -3,12 +3,50 @@ use rand::RngExt;
 use crate::{
     cell::{Antecedent, LifeCell, Reason},
     config::NewState,
+    consistency::{self, PairCheck},
     rule::{CellState, CheckResult, Implication},
     world::{ACTIVITY_WINDOW, Confl, RESTART_INTERVAL, RESTART_LIMIT, Status, World},
 };
 
 /// The maximum number of cells that a lookahead probe may set before it stops.
 const MAX_PROBE_DEDUCTIONS: usize = 256;
+
+/// The maximum number of candidate descriptor pairs examined at one fixed
+/// point of ordinary propagation.
+const MAX_PAIR_CANDIDATES: usize = 8;
+
+/// The maximum number of complete joint enumerations at one fixed point.
+///
+/// Pairs skipped by the size or sharing checks do not count: their screening
+/// is cheap compared with a joint enumeration.
+const MAX_PAIR_JOINS: usize = 1;
+
+/// The result of the bounded pair consistency check in a search step.
+enum PairStep {
+    /// No pair produced a conclusion, so the ordinary guess continues.
+    None,
+    /// A pair forced one cell, which has been assigned.
+    Deduced,
+    /// A pair found that the current partial assignment is contradictory.
+    Conflict(Confl),
+}
+
+/// Add a candidate peer descriptor to the bounded pair list.
+fn push_pair_candidate(
+    candidates: &mut [usize; MAX_PAIR_CANDIDATES],
+    len: &mut usize,
+    source_index: usize,
+    candidate_index: usize,
+) {
+    if candidate_index == source_index
+        || candidates[..*len].contains(&candidate_index)
+        || *len == MAX_PAIR_CANDIDATES
+    {
+        return;
+    }
+    candidates[*len] = candidate_index;
+    *len += 1;
+}
 
 /// The result of a guess.
 enum GuessResult {
@@ -557,6 +595,159 @@ impl World {
         }
 
         Ok(())
+    }
+
+    /// Run the bounded joint checks on descriptor pairs near the next branch
+    /// cell.
+    ///
+    /// This is called only after ordinary propagation has reached a fixed
+    /// point. It examines a small, deterministic set of descriptors adjacent
+    /// to the earliest unknown cell of the search chain. A deduction is
+    /// committed with a complete explicit clause antecedent, so conflict
+    /// analysis and nogood learning remain sound. A pair that is too large is
+    /// skipped without drawing a conclusion.
+    fn pair_consistency_step(&mut self) -> PairStep {
+        if !self.config.pair_consistency {
+            return PairStep::None;
+        }
+
+        let mut start = self.start;
+        while let Some(cell) = unsafe { start.as_ref() } {
+            if cell.state().is_some() {
+                start = cell.next;
+            } else {
+                break;
+            }
+        }
+        let Some(source) = (unsafe { start.as_ref() }) else {
+            return PairStep::None;
+        };
+        let source_ptr = source as *const LifeCell;
+        let source_index = unsafe { self.cell_index(source_ptr) };
+
+        let mut candidates = [usize::MAX; MAX_PAIR_CANDIDATES];
+        let mut candidate_len = 0;
+        unsafe {
+            for i in 0..source.neighborhood_len {
+                if let Some(neighbor) = source.neighborhood[i].as_ref() {
+                    let index = self.cell_index(neighbor as *const LifeCell);
+                    push_pair_candidate(&mut candidates, &mut candidate_len, source_index, index);
+                }
+            }
+            if let Some(predecessor) = source.predecessor.as_ref() {
+                let index = self.cell_index(predecessor as *const LifeCell);
+                push_pair_candidate(&mut candidates, &mut candidate_len, source_index, index);
+            }
+            if let Some(successor) = source.successor.as_ref() {
+                let index = self.cell_index(successor as *const LifeCell);
+                push_pair_candidate(&mut candidates, &mut candidate_len, source_index, index);
+            }
+        }
+
+        let mut joins = 0;
+        for &candidate_index in &candidates[..candidate_len] {
+            let candidate = unsafe { self.cell_by_index(candidate_index as u32) };
+            let result = unsafe { consistency::check_pair(&self.rule, source, &*candidate) };
+            self.search_stats.pair_consistency_checks += 1;
+            self.search_stats.pair_consistency_assignments += result.assignments;
+
+            if result.assignments > 0 {
+                joins += 1;
+            }
+
+            match result.outcome {
+                PairCheck::TooFewShared | PairCheck::TooManyUnknowns => {
+                    self.search_stats.pair_consistency_skips += 1;
+                }
+                PairCheck::NoNewFact => {}
+                PairCheck::Conflict => {
+                    self.search_stats.pair_consistency_conflicts += 1;
+                    return PairStep::Conflict(Confl::RulePair(source_ptr, candidate));
+                }
+                PairCheck::Deduced { target, state } => {
+                    self.search_stats.pair_consistency_deductions += 1;
+                    let antecedent = unsafe { self.pair_antecedent(source_ptr, candidate, target) };
+                    unsafe {
+                        self.set_cell(&*target, state, Reason::Deduced, antecedent, false);
+                    }
+                    return PairStep::Deduced;
+                }
+            }
+
+            if joins >= MAX_PAIR_JOINS {
+                break;
+            }
+        }
+
+        PairStep::None
+    }
+
+    /// Build the explicit antecedent of a bounded pair deduction.
+    ///
+    /// The antecedent contains every cell that was known in either descriptor
+    /// when the joint check ran, except the deduced cell itself. The pair
+    /// check is exact, so these known inputs together with the two transition
+    /// constraints are a complete explanation of the deduction.
+    ///
+    /// # Safety
+    ///
+    /// The source cells and the target must belong to the same world as
+    /// `self`.
+    unsafe fn pair_antecedent(
+        &mut self,
+        first: *const LifeCell,
+        second: *const LifeCell,
+        target: *const LifeCell,
+    ) -> Option<Antecedent> {
+        if !self.config.analysis_enabled() {
+            return None;
+        }
+
+        let mut literals = Vec::new();
+        unsafe {
+            self.pair_descriptor_literals(first, second, target, self.stack.len(), &mut literals);
+        }
+
+        self.clause_scratch.clear();
+        for &cell in &literals {
+            let pos = unsafe { self.cell_pos[self.cell_index(cell)] };
+            self.clause_scratch.push((cell, pos));
+        }
+        Some(Self::push_clause_reason(
+            &mut self.reason_arena,
+            &mut self.reason_arena_live,
+            &self.clause_scratch,
+        ))
+    }
+
+    /// Collect the known cells of two descriptors, without duplicate cells.
+    ///
+    /// The `before` filter and the `exclude` target have the same meaning as
+    /// in [`descriptor_literals`](World::descriptor_literals).
+    ///
+    /// # Safety
+    ///
+    /// The source cells must belong to the same world as `self`.
+    unsafe fn pair_descriptor_literals(
+        &self,
+        first: *const LifeCell,
+        second: *const LifeCell,
+        exclude: *const LifeCell,
+        before: usize,
+        literals: &mut Vec<*const LifeCell>,
+    ) {
+        literals.clear();
+        let mut part = Vec::new();
+        for source in [first, second] {
+            unsafe {
+                self.descriptor_literals(&*source, exclude, before, &mut part);
+            }
+            for &cell in &part {
+                if !literals.contains(&cell) {
+                    literals.push(cell);
+                }
+            }
+        }
     }
 
     /// Backtrack to the last cell whose state was chosen as a guess,
@@ -1165,46 +1356,56 @@ impl World {
 
         match self.check_stack() {
             Ok(()) => {
-                // All cells have been checked.
-                match self.guess() {
-                    // A guess was made.
-                    GuessResult::Guessed => Status::Running,
-                    // All cells are known.
-                    GuessResult::Solved => Status::Solved,
-                    // Lookahead found that the current partial assignment is
-                    // contradictory.
-                    GuessResult::Conflict => {
-                        self.search_stats.conflicts += 1;
-                        self.backtrack()
+                // Ordinary propagation has reached a fixed point. Try a small
+                // number of exact pair checks before branching.
+                match self.pair_consistency_step() {
+                    PairStep::Deduced => Status::Running,
+                    PairStep::Conflict(confl) => self.handle_conflict(confl),
+                    PairStep::None => {
+                        // All cells have been checked.
+                        match self.guess() {
+                            // A guess was made.
+                            GuessResult::Guessed => Status::Running,
+                            // All cells are known.
+                            GuessResult::Solved => Status::Solved,
+                            // Lookahead found that the current partial
+                            // assignment is contradictory.
+                            GuessResult::Conflict => {
+                                self.search_stats.conflicts += 1;
+                                self.backtrack()
+                            }
+                        }
                     }
                 }
             }
-            // A conflict was found.
-            //
-            // If the conflict analysis machinery is enabled and the conflict
-            // is a local one, it is analyzed; the resumption policy (a
-            // non-chronological backjump or the ordinary chronological
-            // backtracking) is chosen inside `analyze`. Otherwise the search
-            // backtracks chronologically.
-            Err(confl) => {
-                self.search_stats.conflicts += 1;
-                match confl {
-                    Confl::Rule(_) | Confl::Symmetry(_, _) | Confl::Nogood(_)
-                        if self.config.analysis_enabled() && self.guard.active =>
-                    {
-                        self.analyze(confl)
-                    }
-                    _ => {
-                        // Conflicts handled by chronological backtracking do
-                        // not reach `analyze`, so record their activity here.
-                        // The analyzed conflicts bump the literals of their
-                        // learned clause in `analyze` instead.
-                        if self.config.activity {
-                            self.bump_conflict(confl);
-                        }
-                        self.backtrack()
-                    }
+            // A conflict was found. If the conflict analysis machinery is
+            // enabled and the conflict is a local one, `handle_conflict`
+            // analyzes it; otherwise it backtracks chronologically.
+            Err(confl) => self.handle_conflict(confl),
+        }
+    }
+
+    /// Handle a conflict by conflict analysis or chronological backtracking.
+    ///
+    /// This is shared by the ordinary propagation conflicts and the conflicts
+    /// found by the pair consistency check.
+    fn handle_conflict(&mut self, confl: Confl) -> Status {
+        self.search_stats.conflicts += 1;
+        match confl {
+            Confl::Rule(_) | Confl::RulePair(_, _) | Confl::Symmetry(_, _) | Confl::Nogood(_)
+                if self.config.analysis_enabled() && self.guard.active =>
+            {
+                self.analyze(confl)
+            }
+            _ => {
+                // Conflicts handled by chronological backtracking do not
+                // reach `analyze`, so record their activity here. The
+                // analyzed conflicts bump the literals of their learned
+                // clause in `analyze` instead.
+                if self.config.activity {
+                    self.bump_conflict(confl);
                 }
+                self.backtrack()
             }
         }
     }
@@ -1218,6 +1419,10 @@ impl World {
         match confl {
             // Safety: the cells of a conflict are in the same world as `self`.
             Confl::Rule(source) => unsafe { self.bump_activity(source) },
+            Confl::RulePair(first, second) => unsafe {
+                self.bump_activity(first);
+                self.bump_activity(second);
+            },
             Confl::Symmetry(cell, symmetry) => unsafe {
                 self.bump_activity(cell);
                 self.bump_activity(symmetry);
@@ -1343,6 +1548,17 @@ impl World {
             Confl::Rule(source) => unsafe {
                 self.descriptor_literals(&*source, std::ptr::null(), usize::MAX, &mut literals);
                 self.search_stats.analysis_scanned += (*source).neighborhood_len as u64 + 2;
+            },
+            Confl::RulePair(first, second) => unsafe {
+                self.pair_descriptor_literals(
+                    first,
+                    second,
+                    std::ptr::null(),
+                    usize::MAX,
+                    &mut literals,
+                );
+                self.search_stats.analysis_scanned +=
+                    (*first).neighborhood_len as u64 + (*second).neighborhood_len as u64 + 4;
             },
             Confl::Symmetry(cell, symmetry) => {
                 literals.push(cell);

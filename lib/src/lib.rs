@@ -9,6 +9,7 @@
 
 mod cell;
 mod config;
+mod consistency;
 mod error;
 mod export;
 mod help;
