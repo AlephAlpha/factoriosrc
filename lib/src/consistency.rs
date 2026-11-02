@@ -15,13 +15,18 @@ use crate::{
     cell::LifeCell,
     rule::{CellState, Descriptor, MAX_NEIGHBORHOOD_SIZE, RuleTable},
 };
+use std::mem::MaybeUninit;
 
 /// The maximal number of unknown cells in the union of two descriptor scopes.
 ///
 /// The joint check enumerates `2^n` assignments, so the bound keeps the work
 /// of one check predictable. A pair above the bound is skipped: this loses
-/// pruning, never correctness.
+/// pruning, never correctness. The scratch buffers keep room for the wider
+/// bound used by the unit tests, but the search uses [`PAIR_UNKNOWN_LIMIT`].
 pub const MAX_PAIR_UNKNOWNS: usize = 8;
+
+/// The unknown-union limit used by the search.
+pub const PAIR_UNKNOWN_LIMIT: usize = 4;
 
 /// The maximal number of distinct cells in two descriptor scopes.
 const MAX_PAIR_SCOPE: usize = 2 * (MAX_NEIGHBORHOOD_SIZE + 2);
@@ -34,10 +39,24 @@ const MAX_VAR_ROLES: usize = 6;
 
 /// A role of a cell inside one of the two descriptors.
 #[derive(Clone, Copy)]
-enum Role {
-    Current(u8),
-    Successor(u8),
-    Neighbor(u8, usize),
+struct Role {
+    side: u8,
+    kind: u8,
+    index: u8,
+}
+
+impl Role {
+    const CURRENT: u8 = 0;
+    const SUCCESSOR: u8 = 1;
+    const NEIGHBOR: u8 = 2;
+
+    const fn new(side: u8, kind: u8, index: usize) -> Self {
+        Self {
+            side,
+            kind,
+            index: index as u8,
+        }
+    }
 }
 
 /// A cell that occurs in the union of two descriptor scopes.
@@ -54,7 +73,7 @@ impl Variable {
     const fn new(cell: *const LifeCell, in_first: bool, in_second: bool) -> Self {
         Self {
             cell,
-            roles: [Role::Current(0); MAX_VAR_ROLES],
+            roles: [Role::new(0, Role::CURRENT, 0); MAX_VAR_ROLES],
             role_len: 0,
             in_first,
             in_second,
@@ -75,7 +94,7 @@ pub enum PairCheck {
     /// individual descriptors cannot be strengthened by joining them.
     TooFewShared,
 
-    /// The union of the unknown cells exceeded [`MAX_PAIR_UNKNOWNS`].
+    /// The union of the unknown cells exceeded the configured limit.
     TooManyUnknowns,
 
     /// Every unknown cell still has a support for both states.
@@ -102,26 +121,34 @@ pub struct PairCheckResult {
     pub assignments: u64,
 }
 
+/// The prefix of initialized variables used by one pair check.
+///
+/// Only the first `len` entries are initialized. The array is not initialized
+/// up front because its full size is much larger than the two scopes that are
+/// actually collected, and the check runs on a hot path.
+type Variables = [MaybeUninit<Variable>; MAX_PAIR_SCOPE];
+
 /// Find a variable in the scope list, or add it.
 fn variable_index(
-    variables: &mut [Variable; MAX_PAIR_SCOPE],
+    variables: &mut Variables,
     len: &mut usize,
     cell: *const LifeCell,
     in_first: bool,
     in_second: bool,
 ) -> usize {
-    if let Some(index) = variables[..*len]
-        .iter()
-        .position(|variable| variable.cell == cell)
-    {
-        variables[index].in_first |= in_first;
-        variables[index].in_second |= in_second;
-        return index;
+    for (index, slot) in variables.iter_mut().enumerate().take(*len) {
+        // Safety: the prefix `0..len` is initialized.
+        let variable = unsafe { slot.assume_init_mut() };
+        if variable.cell == cell {
+            variable.in_first |= in_first;
+            variable.in_second |= in_second;
+            return index;
+        }
     }
 
     debug_assert!(*len < MAX_PAIR_SCOPE);
     let index = *len;
-    variables[index] = Variable::new(cell, in_first, in_second);
+    variables[index].write(Variable::new(cell, in_first, in_second));
     *len += 1;
     index
 }
@@ -135,17 +162,18 @@ fn variable_index(
 unsafe fn add_descriptor_scope(
     source: &LifeCell,
     side: u8,
-    variables: &mut [Variable; MAX_PAIR_SCOPE],
+    variables: &mut Variables,
     len: &mut usize,
 ) {
     let source_ptr = source as *const LifeCell;
     let index = variable_index(variables, len, source_ptr, side == 0, side == 1);
-    variables[index].add_role(Role::Current(side));
+    // Safety: `variable_index` returned an initialized entry.
+    unsafe { variables[index].assume_init_mut() }.add_role(Role::new(side, Role::CURRENT, 0));
 
     if let Some(successor) = unsafe { source.successor.as_ref() } {
         let successor_ptr = successor as *const LifeCell;
         let index = variable_index(variables, len, successor_ptr, side == 0, side == 1);
-        variables[index].add_role(Role::Successor(side));
+        unsafe { variables[index].assume_init_mut() }.add_role(Role::new(side, Role::SUCCESSOR, 0));
     }
 
     for i in 0..source.neighborhood_len {
@@ -154,7 +182,7 @@ unsafe fn add_descriptor_scope(
         };
         let neighbor_ptr = neighbor as *const LifeCell;
         let index = variable_index(variables, len, neighbor_ptr, side == 0, side == 1);
-        variables[index].add_role(Role::Neighbor(side, i));
+        unsafe { variables[index].assume_init_mut() }.add_role(Role::new(side, Role::NEIGHBOR, i));
     }
 }
 
@@ -178,13 +206,16 @@ fn apply_assignment(
 ) {
     let [first, second] = descriptors;
     for &role in &variable.roles[..variable.role_len] {
-        match role {
-            Role::Current(0) => first.update_current(state),
-            Role::Current(_) => second.update_current(state),
-            Role::Successor(0) => first.update_successor(state),
-            Role::Successor(_) => second.update_successor(state),
-            Role::Neighbor(0, i) => rule.assume_neighbor(first, i, state),
-            Role::Neighbor(_, i) => rule.assume_neighbor(second, i, state),
+        let descriptor = if role.side == 0 {
+            &mut *first
+        } else {
+            &mut *second
+        };
+        match role.kind {
+            Role::CURRENT => descriptor.update_current(state),
+            Role::SUCCESSOR => descriptor.update_successor(state),
+            Role::NEIGHBOR => rule.assume_neighbor(descriptor, role.index as usize, state),
+            _ => unreachable!("invalid descriptor role"),
         }
     }
 }
@@ -202,17 +233,39 @@ fn apply_assignment(
 /// all pointers reachable from them must be valid for the duration of the
 /// call.
 pub unsafe fn check_pair(rule: &RuleTable, first: &LifeCell, second: &LifeCell) -> PairCheckResult {
-    let mut variables = [Variable::new(std::ptr::null(), false, false); MAX_PAIR_SCOPE];
+    unsafe { check_pair_with_limit(rule, first, second, PAIR_UNKNOWN_LIMIT) }
+}
+
+/// The implementation of [`check_pair`] with an explicit unknown-cell limit.
+///
+/// The unit tests use the wider [`MAX_PAIR_UNKNOWNS`] limit to exercise joint
+/// consequences that need more than four unknown cells.
+///
+/// # Safety
+///
+/// The same requirements as [`check_pair`] apply. `limit` must not exceed
+/// [`MAX_PAIR_UNKNOWNS`].
+unsafe fn check_pair_with_limit(
+    rule: &RuleTable,
+    first: &LifeCell,
+    second: &LifeCell,
+    limit: usize,
+) -> PairCheckResult {
+    debug_assert!(limit <= MAX_PAIR_UNKNOWNS);
+    let mut variables: Variables = [const { MaybeUninit::uninit() }; MAX_PAIR_SCOPE];
     let mut len = 0;
     unsafe {
         add_descriptor_scope(first, 0, &mut variables, &mut len);
         add_descriptor_scope(second, 1, &mut variables, &mut len);
     }
+    // Safety: the prefix `0..len` has been initialized by the scope walk.
+    let variables: &[Variable] =
+        unsafe { std::slice::from_raw_parts(variables.as_ptr().cast(), len) };
 
     let mut unknown = [0u8; MAX_PAIR_UNKNOWNS];
     let mut unknown_len = 0;
     let mut shared = 0;
-    for (index, variable) in variables[..len].iter().enumerate() {
+    for (index, variable) in variables.iter().enumerate() {
         let state = unsafe { (*variable.cell).state() };
         if state.is_some() {
             continue;
@@ -220,7 +273,7 @@ pub unsafe fn check_pair(rule: &RuleTable, first: &LifeCell, second: &LifeCell) 
         if variable.in_first && variable.in_second {
             shared += 1;
         }
-        if unknown_len == MAX_PAIR_UNKNOWNS {
+        if unknown_len == limit {
             return PairCheckResult {
                 outcome: PairCheck::TooManyUnknowns,
                 assignments: 0,
@@ -242,6 +295,7 @@ pub unsafe fn check_pair(rule: &RuleTable, first: &LifeCell, second: &LifeCell) 
     let assignments = 1u64 << unknown_len;
     let mut supports = [0u8; MAX_PAIR_UNKNOWNS];
     let mut any_solution = false;
+    let mut fully_supported = 0;
 
     for assignment in 0..assignments {
         let mut first_descriptor = base_first;
@@ -269,12 +323,28 @@ pub unsafe fn check_pair(rule: &RuleTable, first: &LifeCell, second: &LifeCell) 
 
         any_solution = true;
         for (bit, support) in supports.iter_mut().enumerate().take(unknown_len) {
+            if *support == 0b11 {
+                continue;
+            }
             let state = if assignment & (1 << bit) == 0 {
                 CellState::Dead
             } else {
                 CellState::Alive
             };
             *support |= 1 << state.number();
+            if *support == 0b11 {
+                fully_supported += 1;
+            }
+        }
+
+        // Every variable already has both values in some joint solution.
+        // Continuing the enumeration cannot produce a deduction or a conflict,
+        // because at least one joint solution already exists.
+        if fully_supported == unknown_len {
+            return PairCheckResult {
+                outcome: PairCheck::NoNewFact,
+                assignments: assignment + 1,
+            };
         }
     }
 
@@ -318,11 +388,13 @@ mod tests {
     ///
     /// The returned vector contains the 3x4 spatial block plus the two known
     /// successor cells at the end.
+    type Fixture = (Vec<LifeCell>, usize, usize, HashMap<(i32, i32), usize>);
+
     fn fixture(
         known: &[(i32, i32)],
         center_dead: bool,
         extra: &[(i32, i32, CellState)],
-    ) -> (Vec<LifeCell>, usize, usize, HashMap<(i32, i32), usize>) {
+    ) -> Fixture {
         let rule = RuleTable::new(&parse_rule("B3/S23").unwrap()).unwrap();
         let spatial = (WIDTH * HEIGHT) as usize;
         let mut cells = (0..spatial + 2)
@@ -405,7 +477,9 @@ mod tests {
         no_single_implication(&rule, &cells[first]);
         no_single_implication(&rule, &cells[second]);
 
-        let result = unsafe { check_pair(&rule, &cells[first], &cells[second]) };
+        let result = unsafe {
+            check_pair_with_limit(&rule, &cells[first], &cells[second], MAX_PAIR_UNKNOWNS)
+        };
         assert_eq!(result.assignments, 256);
         let PairCheck::Deduced { target, state } = result.outcome else {
             panic!("expected a joint deduction, got {:?}", result.outcome);
@@ -417,9 +491,7 @@ mod tests {
         assert!(
             matches!(
                 (target, state),
-                ((-1, -1), CellState::Dead)
-                    | ((0, 0), CellState::Alive)
-                    | ((2, 0), CellState::Alive)
+                ((-1, -1), CellState::Dead) | ((0 | 2, 0), CellState::Alive)
             ),
             "unexpected joint deduction: {target:?} = {state:?}"
         );
@@ -439,7 +511,9 @@ mod tests {
         no_single_implication(&rule, &cells[first]);
         no_single_implication(&rule, &cells[second]);
 
-        let result = unsafe { check_pair(&rule, &cells[first], &cells[second]) };
+        let result = unsafe {
+            check_pair_with_limit(&rule, &cells[first], &cells[second], MAX_PAIR_UNKNOWNS)
+        };
         assert_eq!(result.assignments, 64);
         assert_eq!(result.outcome, PairCheck::Conflict);
     }

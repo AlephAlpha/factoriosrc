@@ -23,7 +23,7 @@ and are available through the current frontends.
 | Lookahead | Implemented | `--lookahead` | Probes `Dead` and `Alive` for the next branch candidate and keeps the better polarity. | Two-state rules only; the probe is bounded and does not select a variable. |
 | Conflict analysis and backjumping | Implemented | `--backjump` | Performs 1-UIP-style analysis for selected local conflicts and resumes above the learned conflict level. The analysis machinery is also enabled by `--nogood`. | Two-state rules only; global and some non-local failures backtrack chronologically. |
 | Exact-position nogood learning | Implemented | `--nogood` | Persists analyzed forbidden assignments and propagates them while the current `World` remains alive. With only `--nogood` the search resumes chronologically; `--nogood --backjump` adds the non-chronological resumption. | Two-state rules only; entries use absolute cell indices and cannot be transferred. |
-| Bounded descriptor-pair consistency | Implemented | `--pair-consistency` | At each propagation fixed point, enumerates the unknown cells shared by a small number of neighboring descriptor pairs and commits a jointly forced cell or reports a joint conflict. | Two-state rules only; one pair and at most eight unknown cells per fixed point; it is not a global or persistent consistency level. |
+| Bounded descriptor-pair consistency | Implemented | `--pair-consistency` | At each propagation fixed point, enumerates the unknown cells shared by a small number of neighboring descriptor pairs and commits a jointly forced cell or reports a joint conflict. | Two-state rules only; one pair and at most four unknown cells per fixed point; it is not a global or persistent consistency level. |
 | Chronological nogood learning | Implemented | `--nogood` (without `--backjump`) | Learns analyzed conflicts but resumes with the ordinary chronological backtracking, isolating the value of the learned patterns from the backjump resumption. | Two-state rules only; pays the analysis and database maintenance without the non-chronological resumption. |
 | Machinery cost guard | Implemented | `--nogood-guard` | Enables nogood learning (not backjumping) and suspends the experimental machinery when its measured work is too high. | Opt-in and heuristic; it is not a proof of wall-time improvement. |
 | Conflict activity branching | Implemented | `--activity` | Chooses the most active unknown cell in a window of eight search-chain cells. | Changes branching order only; the window remains deliberately small. |
@@ -432,15 +432,16 @@ in `lib/src/rule.rs`.
 
 The check runs only after `check_stack()` reaches a fixed point and before the
 next `guess()`. It starts from the descriptors around the earliest unknown cell
-of the search chain, scans at most eight neighboring descriptor sources, and
-performs at most one complete joint enumeration per fixed point. A pair is
-considered eligible only when:
+of the search chain, scans at most four neighboring descriptor sources, and
+performs at most one complete joint enumeration per fixed point. A cheap scope
+count skips the whole step when the source descriptor alone already has more
+unknown cells than the limit. A pair is considered eligible only when:
 
 - the two descriptor scopes share at least two unknown cells; with only one
   shared unknown, the per-descriptor supports can be combined trivially at a
   fixed point;
-- the union of their unknown cells contains at most eight cells, so the joint
-  enumeration is at most 256 assignments.
+- the union of their unknown cells contains at most four cells, so the joint
+  enumeration is at most 16 assignments.
 
 A candidate that fails either condition is skipped. A skip is only lost
 pruning and never a deduction or a conflict. The result is exact whenever a
@@ -456,12 +457,17 @@ descriptors remain fixed. The checker then enumerates every assignment of the
 unknown cells in the union and tests both transition constraints using the same
 two-state rule table as propagation.
 
-The projected support of each unknown cell is accumulated over all joint
+The projected support of each unknown cell is accumulated over the joint
 solutions:
 
 - no joint solution means `Confl::RulePair`;
 - a cell with only one supported state is committed as `Reason::Deduced`;
 - otherwise the pair contributes nothing.
+
+The enumeration stops as soon as every unknown cell has both states in some
+joint solution. At that point a solution already exists, so there can be no
+conflict, and no cell can be forced. This early exit is exact and avoids
+finishing the enumeration for the common no-new-fact result.
 
 Only one deduction is committed per step. The next search step returns to the
 ordinary propagation queue before another pair check, so the joint result is

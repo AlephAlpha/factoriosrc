@@ -13,7 +13,7 @@ const MAX_PROBE_DEDUCTIONS: usize = 256;
 
 /// The maximum number of candidate descriptor pairs examined at one fixed
 /// point of ordinary propagation.
-const MAX_PAIR_CANDIDATES: usize = 8;
+const MAX_PAIR_CANDIDATES: usize = 4;
 
 /// The maximum number of complete joint enumerations at one fixed point.
 ///
@@ -624,6 +624,42 @@ impl World {
         };
         let source_ptr = source as *const LifeCell;
         let source_index = unsafe { self.cell_index(source_ptr) };
+
+        // Every pair includes the whole scope of the source, so if that scope
+        // alone has more unknown cells than the pair limit, no pair can be
+        // eligible. This cheap check avoids collecting candidate scopes on the
+        // many early fixed points where the pair check would only be skipped.
+        let mut source_unknowns = [usize::MAX; consistency::PAIR_UNKNOWN_LIMIT + 1];
+        let mut source_unknown_len = 0;
+        unsafe {
+            let source_cells = std::iter::once(source_ptr)
+                .chain(
+                    source
+                        .successor
+                        .as_ref()
+                        .map(|cell| cell as *const LifeCell),
+                )
+                .chain(
+                    source.neighborhood[..source.neighborhood_len]
+                        .iter()
+                        .filter_map(|neighbor| neighbor.as_ref())
+                        .map(|neighbor| neighbor as *const LifeCell),
+                );
+            for cell in source_cells {
+                if (*cell).state().is_some() {
+                    continue;
+                }
+                let index = self.cell_index(cell);
+                if source_unknowns[..source_unknown_len].contains(&index) {
+                    continue;
+                }
+                if source_unknown_len == consistency::PAIR_UNKNOWN_LIMIT {
+                    return PairStep::None;
+                }
+                source_unknowns[source_unknown_len] = index;
+                source_unknown_len += 1;
+            }
+        }
 
         let mut candidates = [usize::MAX; MAX_PAIR_CANDIDATES];
         let mut candidate_len = 0;
