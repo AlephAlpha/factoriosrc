@@ -3854,7 +3854,7 @@ mod test {
                 "activity with phase saving changed the number of solutions"
             );
             assert_eq!(
-                count_solutions(&config.clone().with_activity().with_lookahead()),
+                count_solutions(&config.with_activity().with_lookahead()),
                 expected,
                 "activity with lookahead changed the number of solutions"
             );

@@ -176,8 +176,11 @@ unsafe fn add_descriptor_scope(
         unsafe { variables[index].assume_init_mut() }.add_role(Role::new(side, Role::SUCCESSOR, 0));
     }
 
-    for i in 0..source.neighborhood_len {
-        let Some(neighbor) = (unsafe { source.neighborhood[i].as_ref() }) else {
+    for (i, neighbor) in source.neighborhood[..source.neighborhood_len]
+        .iter()
+        .enumerate()
+    {
+        let Some(neighbor) = (unsafe { neighbor.as_ref() }) else {
             continue;
         };
         let neighbor_ptr = neighbor as *const LifeCell;

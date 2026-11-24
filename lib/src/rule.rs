@@ -728,10 +728,10 @@ impl RuleTable {
             // front of the array, so no null checks are needed.
             RuleTableImpl::Count(_) => match state {
                 CellState::Dead | CellState::Dying(_) => {
-                    for i in 0..cell.neighborhood_len {
+                    for neighbor in &cell.neighborhood[..cell.neighborhood_len] {
                         // Safety: the neighbors must be in the same world as the cell.
                         unsafe {
-                            let neighbor = &*cell.neighborhood[i];
+                            let neighbor = &**neighbor;
                             let mut descriptor = neighbor.descriptor.get();
                             descriptor.increment_dead();
                             neighbor.descriptor.set(descriptor);
@@ -739,10 +739,10 @@ impl RuleTable {
                     }
                 }
                 CellState::Alive => {
-                    for i in 0..cell.neighborhood_len {
+                    for neighbor in &cell.neighborhood[..cell.neighborhood_len] {
                         // Safety: the neighbors must be in the same world as the cell.
                         unsafe {
-                            let neighbor = &*cell.neighborhood[i];
+                            let neighbor = &**neighbor;
                             let mut descriptor = neighbor.descriptor.get();
                             descriptor.increment_alive();
                             neighbor.descriptor.set(descriptor);
@@ -782,10 +782,10 @@ impl RuleTable {
             // front of the array, so no null checks are needed.
             RuleTableImpl::Count(_) => match state {
                 CellState::Dead | CellState::Dying(_) => {
-                    for i in 0..cell.neighborhood_len {
+                    for neighbor in &cell.neighborhood[..cell.neighborhood_len] {
                         // Safety: the neighbors must be in the same world as the cell.
                         unsafe {
-                            let neighbor = &*cell.neighborhood[i];
+                            let neighbor = &**neighbor;
                             let mut descriptor = neighbor.descriptor.get();
                             descriptor.decrement_dead();
                             neighbor.descriptor.set(descriptor);
@@ -793,10 +793,10 @@ impl RuleTable {
                     }
                 }
                 CellState::Alive => {
-                    for i in 0..cell.neighborhood_len {
+                    for neighbor in &cell.neighborhood[..cell.neighborhood_len] {
                         // Safety: the neighbors must be in the same world as the cell.
                         unsafe {
-                            let neighbor = &*cell.neighborhood[i];
+                            let neighbor = &**neighbor;
                             let mut descriptor = neighbor.descriptor.get();
                             descriptor.decrement_alive();
                             neighbor.descriptor.set(descriptor);

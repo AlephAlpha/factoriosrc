@@ -304,9 +304,9 @@ impl World {
                             self.set_cell(cell, CellState::Dead, Reason::Deduced, None, false);
                         }
                         if result.flags().contains(Implication::NeighborhoodAlive) {
-                            for i in 0..cell.neighborhood_len {
+                            for neighbor in &cell.neighborhood[..cell.neighborhood_len] {
                                 // Safety: the neighbors are in the same world as the cell.
-                                if let Some(neighbor) = cell.neighborhood[i].as_ref()
+                                if let Some(neighbor) = neighbor.as_ref()
                                     && neighbor.state().is_none()
                                 {
                                     self.set_cell(
@@ -404,9 +404,9 @@ impl World {
             // There is no "all unknown neighbors are dead" implication here: a neighbor
             // in a dying state would also behave as dead.
             if result.flags().contains(Implication::NeighborhoodAlive) {
-                for i in 0..cell.neighborhood_len {
+                for neighbor in &cell.neighborhood[..cell.neighborhood_len] {
                     // Safety: the neighbors are in the same world as the cell.
-                    if let Some(neighbor) = cell.neighborhood[i].as_ref()
+                    if let Some(neighbor) = neighbor.as_ref()
                         && neighbor.state().is_none()
                     {
                         self.set_cell(neighbor, CellState::Alive, Reason::Deduced, None, false);
@@ -545,16 +545,16 @@ impl World {
             // For a totalistic rule, the non-null neighbors are packed to the
             // front of the array, so no null checks are needed.
             if self.rule.is_totalistic() {
-                for i in 0..cell.neighborhood_len {
+                for neighbor in &cell.neighborhood[..cell.neighborhood_len] {
                     // Safety: the neighbors are in the same world as the cell.
-                    let neighbor = &*cell.neighborhood[i];
+                    let neighbor = &**neighbor;
                     self.check_descriptor(neighbor)
                         .ok_or(Confl::Rule(neighbor))?;
                 }
             } else {
-                for i in 0..cell.neighborhood_len {
+                for neighbor in &cell.neighborhood[..cell.neighborhood_len] {
                     // Safety: the neighbors are in the same world as the cell.
-                    if let Some(neighbor) = cell.neighborhood[i].as_ref() {
+                    if let Some(neighbor) = neighbor.as_ref() {
                         self.check_descriptor(neighbor)
                             .ok_or(Confl::Rule(neighbor))?;
                     }
@@ -664,8 +664,8 @@ impl World {
         let mut candidates = [usize::MAX; MAX_PAIR_CANDIDATES];
         let mut candidate_len = 0;
         unsafe {
-            for i in 0..source.neighborhood_len {
-                if let Some(neighbor) = source.neighborhood[i].as_ref() {
+            for neighbor in &source.neighborhood[..source.neighborhood_len] {
+                if let Some(neighbor) = neighbor.as_ref() {
                     let index = self.cell_index(neighbor as *const LifeCell);
                     push_pair_candidate(&mut candidates, &mut candidate_len, source_index, index);
                 }
@@ -1777,8 +1777,8 @@ impl World {
                 if let Some(pred) = popped.predecessor.as_ref() {
                     self.note_affected(pred as *const LifeCell, pop_target, &mut recheck);
                 }
-                for i in 0..popped.neighborhood_len {
-                    if let Some(neighbor) = popped.neighborhood[i].as_ref() {
+                for neighbor in &popped.neighborhood[..popped.neighborhood_len] {
+                    if let Some(neighbor) = neighbor.as_ref() {
                         self.note_affected(neighbor as *const LifeCell, pop_target, &mut recheck);
                     }
                 }
@@ -1919,9 +1919,9 @@ impl World {
     ) {
         literals.clear();
         unsafe {
-            for i in 0..source.neighborhood_len {
+            for neighbor in &source.neighborhood[..source.neighborhood_len] {
                 // Safety: the neighbors are in the same world as the cell.
-                if let Some(neighbor) = source.neighborhood[i].as_ref()
+                if let Some(neighbor) = neighbor.as_ref()
                     && neighbor.state().is_some()
                     && (self.cell_pos[self.cell_index(neighbor as *const LifeCell)] as usize)
                         < before
