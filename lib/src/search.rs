@@ -4,15 +4,15 @@ use crate::{
     cell::{Antecedent, LifeCell, Reason},
     config::NewState,
     consistency::{self, PairCheck},
-    rule::{CellState, CheckResult, Implication},
+    rule::{CellState, CheckResult, Implication, MAX_NEIGHBORHOOD_SIZE},
     world::{ACTIVITY_WINDOW, Confl, RESTART_INTERVAL, RESTART_LIMIT, Status, World},
 };
 
 /// The maximum number of cells that a lookahead probe may set before it stops.
 const MAX_PROBE_DEDUCTIONS: usize = 256;
 
-/// The maximum number of candidate descriptor pairs examined at one fixed
-/// point of ordinary propagation.
+/// The maximum number of same-generation neighbor descriptors considered at
+/// one fixed point of ordinary propagation.
 const MAX_PAIR_CANDIDATES: usize = 4;
 
 /// The maximum number of complete joint enumerations at one fixed point.
@@ -46,6 +46,48 @@ fn push_pair_candidate(
     }
     candidates[*len] = candidate_index;
     *len += 1;
+}
+
+/// Count the shared and private unknown cells of two descriptor scopes.
+///
+/// `unknown` is the de-duplicated unknown-cell list of the source scope. The
+/// returned pair is the number of those cells that also occur in `second` and
+/// the total unknown-cell union size. This is a cheap screening step before
+/// the full role table and joint enumeration are built.
+unsafe fn pair_overlap(second: &LifeCell, unknown: &[*const LifeCell]) -> (usize, usize) {
+    let mut seen = [std::ptr::null(); MAX_NEIGHBORHOOD_SIZE + 2];
+    let mut seen_len = 0;
+    let mut shared = 0;
+    let mut extra = 0;
+
+    macro_rules! visit {
+        ($cell:expr) => {{
+            let cell = $cell;
+            unsafe {
+                if (*cell).state().is_none() && !seen[..seen_len].contains(&cell) {
+                    seen[seen_len] = cell;
+                    seen_len += 1;
+                    if unknown.contains(&cell) {
+                        shared += 1;
+                    } else {
+                        extra += 1;
+                    }
+                }
+            }
+        }};
+    }
+
+    visit!(second as *const LifeCell);
+    if let Some(successor) = unsafe { second.successor.as_ref() } {
+        visit!(successor as *const LifeCell);
+    }
+    for neighbor in &second.neighborhood[..second.neighborhood_len] {
+        if let Some(neighbor) = unsafe { neighbor.as_ref() } {
+            visit!(neighbor as *const LifeCell);
+        }
+    }
+
+    (shared, unknown.len() + extra)
 }
 
 /// The result of a guess.
@@ -629,7 +671,7 @@ impl World {
         // alone has more unknown cells than the pair limit, no pair can be
         // eligible. This cheap check avoids collecting candidate scopes on the
         // many early fixed points where the pair check would only be skipped.
-        let mut source_unknowns = [usize::MAX; consistency::PAIR_UNKNOWN_LIMIT + 1];
+        let mut source_unknowns = [std::ptr::null(); consistency::PAIR_UNKNOWN_LIMIT + 1];
         let mut source_unknown_len = 0;
         unsafe {
             let source_cells = std::iter::once(source_ptr)
@@ -649,16 +691,22 @@ impl World {
                 if (*cell).state().is_some() {
                     continue;
                 }
-                let index = self.cell_index(cell);
-                if source_unknowns[..source_unknown_len].contains(&index) {
+                if source_unknowns[..source_unknown_len].contains(&cell) {
                     continue;
                 }
                 if source_unknown_len == consistency::PAIR_UNKNOWN_LIMIT {
                     return PairStep::None;
                 }
-                source_unknowns[source_unknown_len] = index;
+                source_unknowns[source_unknown_len] = cell;
                 source_unknown_len += 1;
             }
+        }
+
+        // A temporal predecessor/successor normally shares only the source
+        // cell with the source scope, so it can never pass the shared >= 2
+        // check. Only same-generation neighbors are considered.
+        if source_unknown_len < 2 {
+            return PairStep::None;
         }
 
         let mut candidates = [usize::MAX; MAX_PAIR_CANDIDATES];
@@ -670,18 +718,42 @@ impl World {
                     push_pair_candidate(&mut candidates, &mut candidate_len, source_index, index);
                 }
             }
-            if let Some(predecessor) = source.predecessor.as_ref() {
-                let index = self.cell_index(predecessor as *const LifeCell);
-                push_pair_candidate(&mut candidates, &mut candidate_len, source_index, index);
-            }
-            if let Some(successor) = source.successor.as_ref() {
-                let index = self.cell_index(successor as *const LifeCell);
-                push_pair_candidate(&mut candidates, &mut candidate_len, source_index, index);
-            }
         }
 
+        // Screen on the exact shared/union counts before constructing the
+        // role tables and enumerating. The first candidate decides whether
+        // screening pays off: if it is ineligible, screen the remaining
+        // candidates as well; if it is already eligible, keep the normal order
+        // and avoid extra scans when most candidates will pass anyway.
+        let mut eligible = [usize::MAX; MAX_PAIR_CANDIDATES];
+        let mut eligible_len = 0;
+        if candidate_len > 0 {
+            let first_index = candidates[0];
+            let first = unsafe { self.cell_by_index(first_index as u32) };
+            let (shared, union) =
+                unsafe { pair_overlap(&*first, &source_unknowns[..source_unknown_len]) };
+            let first_eligible = shared >= 2 && union <= consistency::PAIR_UNKNOWN_LIMIT;
+            if first_eligible {
+                eligible[..candidate_len].copy_from_slice(&candidates[..candidate_len]);
+                eligible_len = candidate_len;
+            } else {
+                self.search_stats.pair_consistency_skips += 1;
+                for &candidate_index in &candidates[1..candidate_len] {
+                    let candidate = unsafe { self.cell_by_index(candidate_index as u32) };
+                    let (shared, union) = unsafe {
+                        pair_overlap(&*candidate, &source_unknowns[..source_unknown_len])
+                    };
+                    if shared >= 2 && union <= consistency::PAIR_UNKNOWN_LIMIT {
+                        eligible[eligible_len] = candidate_index;
+                        eligible_len += 1;
+                    } else {
+                        self.search_stats.pair_consistency_skips += 1;
+                    }
+                }
+            }
+        }
         let mut joins = 0;
-        for &candidate_index in &candidates[..candidate_len] {
+        for &candidate_index in &eligible[..eligible_len] {
             let candidate = unsafe { self.cell_by_index(candidate_index as u32) };
             let result = unsafe { consistency::check_pair(&self.rule, source, &*candidate) };
             self.search_stats.pair_consistency_checks += 1;

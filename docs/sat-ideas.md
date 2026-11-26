@@ -432,10 +432,13 @@ in `lib/src/rule.rs`.
 
 The check runs only after `check_stack()` reaches a fixed point and before the
 next `guess()`. It starts from the descriptors around the earliest unknown cell
-of the search chain, scans at most four neighboring descriptor sources, and
-performs at most one complete joint enumeration per fixed point. A cheap scope
-count skips the whole step when the source descriptor alone already has more
-unknown cells than the limit. A pair is considered eligible only when:
+of the search chain, scans at most four same-generation neighbor descriptors,
+and performs at most one complete joint enumeration per fixed point. Temporal
+predecessor and successor descriptors are not candidates: in the current model
+they normally share only the source cell and can never satisfy the shared-cell
+requirement below. A cheap scope count skips the whole step when the source
+descriptor alone already has more unknown cells than the limit. A pair is
+considered eligible only when:
 
 - the two descriptor scopes share at least two unknown cells; with only one
   shared unknown, the per-descriptor supports can be combined trivially at a
@@ -443,7 +446,13 @@ unknown cells than the limit. A pair is considered eligible only when:
 - the union of their unknown cells contains at most four cells, so the joint
   enumeration is at most 16 assignments.
 
-A candidate that fails either condition is skipped. A skip is only lost
+A candidate that fails either condition is skipped. Before the full role
+tables are built, the search counts the exact shared and union unknown cells
+for the leading candidate with a cheap scope scan. If that candidate is
+ineligible, the remaining candidates are screened the same way; if it is
+already eligible, the normal order is kept to avoid speculative scans. The
+screen uses the same conditions as the full pair routine, so it only removes
+work that the full check would immediately discard. A skip is only lost
 pruning and never a deduction or a conflict. The result is exact whenever a
 joint enumeration runs.
 
